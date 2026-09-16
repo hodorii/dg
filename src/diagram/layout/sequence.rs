@@ -7,7 +7,7 @@ use crate::diagram::canvas::{Canvas, EAST, LineKind, NORTH, WEST};
 use crate::diagram::ir::{Marker, NotePlacement, ParticipantKind, Sequence, SequenceItem, Shape};
 use crate::diagram::layout::shape;
 use crate::line::Line;
-use crate::text::{width_of, wrap_plain};
+use crate::text::{truncate, width_of, wrap_plain};
 use crate::style::Theme;
 
 pub fn render(sequence: &Sequence, theme: &Theme, width: usize) -> Option<Vec<Line>> {
@@ -29,10 +29,22 @@ struct Fragment {
     hi: usize,
     inner_depth: usize,
     start_row: usize,
+    /// `else`/`option`/`and` 구분선의 라벨(폭 계산·그리기에 모두 씀).
+    else_labels: Vec<String>,
     else_rows: Vec<(usize, String)>,
     end_row: usize,
     x_lo: usize,
     x_hi: usize,
+}
+
+/// 프레임 위쪽 테두리에 얹는 제목(`kind [label]`). 폭 계산과 그리기가 같은 문자열을 쓰게 한다.
+fn frame_title(kind: &str, label: &str) -> String {
+    if label.is_empty() { format!(" {kind} ") } else { format!(" {kind} [{label}] ") }
+}
+
+/// `else`/`option`/`and` 구분선의 라벨 표시. 비어 있으면 그리지 않는다.
+fn frame_else_title(label: &str) -> String {
+    format!(" [{label}] ")
 }
 
 struct ParticipantBox {
@@ -126,6 +138,7 @@ impl<'a> SequenceLayout<'a> {
                         hi: 0,
                         inner_depth: 0,
                         start_row: 0,
+                        else_labels: Vec::new(),
                         else_rows: Vec::new(),
                         end_row: 0,
                         x_lo: usize::MAX,
@@ -134,6 +147,11 @@ impl<'a> SequenceLayout<'a> {
                     let id = self.fragments.len() - 1;
                     self.fragment_of_item[index] = Some(id);
                     stack.push(id);
+                }
+                SequenceItem::FragmentElse { label } => {
+                    if let Some(&id) = stack.last() {
+                        self.fragments[id].else_labels.push(label.clone());
+                    }
                 }
                 SequenceItem::FragmentEnd => {
                     if let Some(closed) = stack.pop() {
@@ -255,6 +273,23 @@ impl<'a> SequenceLayout<'a> {
                 constraints.push((fragment.hi, fragment.hi + 1, 5 + 2 * fragment.inner_depth));
             } else {
                 right_margin = right_margin.max(5 + 2 * fragment.inner_depth);
+            }
+            // 위쪽 테두리에 얹는 제목(`kind [label]`, `[else 라벨]`)이 다 들어갈 만큼 안쪽 폭도 확보한다.
+            let pad = 1 + 2 * fragment.inner_depth;
+            let title_width = std::iter::once(width_of(&frame_title(&fragment.kind, &fragment.label)))
+                .chain(fragment.else_labels.iter().map(|l| width_of(&frame_else_title(l))))
+                .max()
+                .unwrap_or(0);
+            let interior_need = title_width.saturating_sub(2 * pad);
+            if interior_need == 0 {
+                continue;
+            }
+            if fragment.hi > fragment.lo {
+                constraints.push((fragment.lo, fragment.hi, interior_need));
+            } else if fragment.lo > 0 {
+                constraints.push((fragment.lo - 1, fragment.lo, interior_need));
+            } else {
+                left_margin = left_margin.max(interior_need);
             }
         }
         constraints.sort_by_key(|&(a, b, _)| (b - a, a));
@@ -459,16 +494,16 @@ impl<'a> SequenceLayout<'a> {
             let x_hi = (fragment.x_hi.max(self.centers[fragment.hi]) + pad + 1).min(self.total_width - 1);
             let height = fragment.end_row + 1 - fragment.start_row;
             canvas.rect(x_lo, fragment.start_row, x_hi - x_lo + 1, height, LineKind::Solid, theme.diagram_group, false);
-            let title = if fragment.label.is_empty() {
-                format!(" {} ", fragment.kind)
-            } else {
-                format!(" {} [{}] ", fragment.kind, fragment.label)
-            };
+            // 폭 계산이 빗나가도(둥근 폭·희귀 경로) 테두리를 뚫고 나가지 않도록 안쪽 폭에 맞춰 자른다.
+            let inner_width = x_hi.saturating_sub(x_lo + 1);
+            let title = truncate(&frame_title(&fragment.kind, &fragment.label), inner_width);
             canvas.text(x_lo + 1, fragment.start_row, &title, theme.diagram_accent.bold());
             for (else_row, label) in &fragment.else_rows {
                 canvas.hline(x_lo + 1, x_hi - 1, *else_row, LineKind::Dashed, theme.diagram_group);
                 if !label.is_empty() {
-                    canvas.text(x_lo + 2, *else_row, &format!(" [{label}] "), theme.diagram_accent);
+                    let else_inner_width = x_hi.saturating_sub(x_lo + 2);
+                    let else_title = truncate(&frame_else_title(label), else_inner_width);
+                    canvas.text(x_lo + 2, *else_row, &else_title, theme.diagram_accent);
                 }
             }
         }
@@ -572,5 +607,22 @@ mod tests {
     #[test]
     fn too_narrow_returns_none() {
         assert!(render(&sample(), &Theme::none(), 10).is_none());
+    }
+
+    /// 프레임 조건이 참여자 간격보다 훨씬 길면, 잘려서 대괄호가 닫히지 않은 채 테두리를 뚫고
+    /// 나가는 대신 간격을 늘려서라도 제목이 온전히 들어가야 한다.
+    #[test]
+    fn long_fragment_label_does_not_overflow_border() {
+        let mut s = Sequence::default();
+        let a = s.intern("A", "A", ParticipantKind::Box);
+        let b = s.intern("B", "B", ParticipantKind::Box);
+        let label = "매우 긴 조건 텍스트가 참여자 두 개 사이 간격보다 훨씬 길게 이어집니다";
+        s.items.push(SequenceItem::FragmentStart { kind: "alt".into(), label: label.into() });
+        s.items.push(SequenceItem::Message { from: a, to: b, label: "hi".into(), kind: LineKind::Solid, head: Marker::Arrow, activate_target: false, deactivate_source: false });
+        s.items.push(SequenceItem::FragmentEnd);
+        let out = render(&s, &Theme::none(), 200).unwrap();
+        let text: Vec<String> = out.iter().map(Line::plain).collect();
+        let joined = text.join("\n");
+        assert!(joined.contains(&format!("[{label}]")), "{joined}");
     }
 }
