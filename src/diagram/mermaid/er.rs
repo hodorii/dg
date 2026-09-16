@@ -1,7 +1,7 @@
 //! mermaid `erDiagram` 파서.
 
 use super::text::{clean_lines, label};
-use crate::diagram::ir::{Edge, Graph, LineKind, Marker, Shape};
+use crate::diagram::ir::{crow_marker, Edge, Graph, LineKind, Shape};
 
 pub fn parse(source: &str) -> Graph {
     let mut graph = Graph::default();
@@ -88,11 +88,11 @@ fn parse_relation(graph: &mut Graph, line: &str) {
         from: a,
         to: b,
         label: text,
-        tail_label: cardinality(left).to_string(),
-        head_label: cardinality(right).to_string(),
+        tail_label: String::new(),
+        head_label: String::new(),
         kind: if dashed { LineKind::Dashed } else { LineKind::Solid },
-        tail: Marker::None,
-        head: Marker::None,
+        tail: crow_marker(cardinality(left)),
+        head: crow_marker(cardinality(right)),
     });
 }
 
@@ -104,8 +104,8 @@ mod tests {
     fn parses_entities_and_relations() {
         let g = parse("erDiagram\n CUSTOMER ||--o{ ORDER : places\n CUSTOMER {\n  string name PK\n  int age\n }\n");
         assert_eq!(g.nodes[0].sections[1], vec!["name : string [PK]", "age : int"]);
-        assert_eq!(g.edges[0].tail_label, "1");
-        assert_eq!(g.edges[0].head_label, "0..N");
+        assert_eq!(g.edges[0].tail, crate::diagram::ir::Marker::CrowOne);
+        assert_eq!(g.edges[0].head, crate::diagram::ir::Marker::CrowZeroMany);
         assert_eq!(g.edges[0].label, "places");
     }
 }

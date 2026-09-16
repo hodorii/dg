@@ -125,6 +125,9 @@ struct Layout<'a> {
     gap: Vec<usize>,
     gap_label_room: Vec<usize>,
     gap_head_room: Vec<usize>,
+    /// 통로 위쪽에서 꼬리 표식이 차지하는 줄 수(최소 1), 아래쪽에서 머리 표식이 차지하는 줄 수.
+    gap_tail_rows: Vec<usize>,
+    gap_head_rows: Vec<usize>,
     /// 통로 라벨이 블록 폭 밖으로 삐져나갈 때 필요한 가로 폭.
     extra_across: usize,
     /// 라벨이 그룹 밖으로 나가지 않도록 블록마다 더 주는 폭.
@@ -462,6 +465,8 @@ impl<'a> Layout<'a> {
             gap: Vec::new(),
             gap_label_room: Vec::new(),
             gap_head_room: Vec::new(),
+            gap_tail_rows: Vec::new(),
+            gap_head_rows: Vec::new(),
             extra_across: 0,
             block_extra: Vec::new(),
             debug: std::env::var_os("DG_DEBUG").is_some(),
@@ -1207,6 +1212,23 @@ impl<'a> Layout<'a> {
         self.gap = vec![GAP_ALONG_MIN; gap_count];
         self.gap_label_room = vec![0; gap_count];
         self.gap_head_room = vec![0; gap_count];
+        self.gap_tail_rows = vec![1; gap_count];
+        self.gap_head_rows = vec![1; gap_count];
+        for s in 0..self.segments.len() {
+            let segment = &self.segments[s];
+            let layer = self.lnodes[segment.from].layer;
+            if layer >= gap_count {
+                continue;
+            }
+            let edge = &self.graph.edges[segment.edge];
+            let (top_marker, bottom_marker) = if self.reversed[segment.edge] { (edge.head, edge.tail) } else { (edge.tail, edge.head) };
+            if segment.is_first {
+                self.gap_tail_rows[layer] = self.gap_tail_rows[layer].max(marker_glyphs(top_marker, self.direction, true).len());
+            }
+            if segment.is_last {
+                self.gap_head_rows[layer] = self.gap_head_rows[layer].max(marker_glyphs(bottom_marker, self.direction, false).len());
+            }
+        }
         for layer in 0..gap_count {
             let mut intervals: Vec<(usize, usize, usize)> = Vec::new();
             let mut label_room = 0;
@@ -1247,7 +1269,8 @@ impl<'a> Layout<'a> {
             let room = |w: usize| if w > 0 { w + 1 } else { 0 };
             self.gap_label_room[layer] = room(label_room);
             self.gap_head_room[layer] = room(head_room);
-            self.gap[layer] = GAP_ALONG_MIN.max(2 + self.gap_label_room[layer] + channels + self.gap_head_room[layer]);
+            self.gap[layer] = GAP_ALONG_MIN
+                .max(self.gap_tail_rows[layer] + self.gap_label_room[layer] + channels + self.gap_head_room[layer] + self.gap_head_rows[layer]);
         }
 
         self.layer_start = vec![0; self.layer_count];
@@ -1677,7 +1700,7 @@ impl<'a> Layout<'a> {
     fn channel_position(&self, s: usize, gap_start: usize) -> Option<usize> {
         let segment = &self.segments[s];
         let layer = self.lnodes[segment.from].layer;
-        segment.channel.map(|c| gap_start + 1 + self.gap_label_room[layer] + c)
+        segment.channel.map(|c| gap_start + self.gap_tail_rows[layer] + self.gap_label_room[layer] + c)
     }
 
     fn draw_segment(&self, canvas: &mut Canvas, s: usize) {
@@ -1716,17 +1739,30 @@ impl<'a> Layout<'a> {
         let (label, tail_label, head_label) = self.segment_labels(s);
         let (top_marker, bottom_marker) = if reversed { (edge.head, edge.tail) } else { (edge.tail, edge.head) };
         let marker_style = self.theme.diagram_line;
-        if segment.is_first
-            && let Some(glyph) = marker_glyph(top_marker, self.direction, true)
-        {
-            let (x, y) = self.to_canvas(top, segment.exit);
-            canvas.put(x, y, glyph, marker_style);
+        if segment.is_first {
+            // 위쪽 끝: 마지막 글자가 노드(top)에 닿고, 앞 글자들은 그 아래로 이어진다.
+            let glyphs = marker_glyphs(top_marker, self.direction, true);
+            let count = glyphs.len();
+            for (k, glyph) in glyphs.into_iter().enumerate() {
+                let along = top + (count - 1 - k);
+                if along > bottom {
+                    continue;
+                }
+                let (x, y) = self.to_canvas(along, segment.exit);
+                canvas.put(x, y, glyph, marker_style);
+            }
         }
-        if segment.is_last
-            && let Some(glyph) = marker_glyph(bottom_marker, self.direction, false)
-        {
-            let (x, y) = self.to_canvas(bottom, segment.entry);
-            canvas.put(x, y, glyph, marker_style);
+        if segment.is_last {
+            let glyphs = marker_glyphs(bottom_marker, self.direction, false);
+            let count = glyphs.len();
+            for (k, glyph) in glyphs.into_iter().enumerate() {
+                let Some(along) = bottom.checked_sub(count - 1 - k) else { continue };
+                if along < top {
+                    continue;
+                }
+                let (x, y) = self.to_canvas(along, segment.entry);
+                canvas.put(x, y, glyph, marker_style);
+            }
         }
         let label_style = self.theme.diagram_label;
         match self.direction {
@@ -1813,26 +1849,33 @@ fn port_spacing_for(label_width: usize) -> usize {
     if label_width == 0 { 2 } else { label_width + 3 }
 }
 
-/// 끝 표식 글자. `at_top`이면 위(또는 왼쪽) 노드에 붙는 쪽이다.
-fn marker_glyph(marker: Marker, direction: Direction, at_top: bool) -> Option<char> {
+/// 끝 표식 글자들. `at_top`이면 위(또는 왼쪽) 노드에 붙는 쪽이다.
+/// 여러 글자면 선에서 노드 쪽으로 차례로 놓는다(마지막 글자가 노드에 닿는다).
+fn marker_glyphs(marker: Marker, direction: Direction, at_top: bool) -> Vec<char> {
     let index = match (direction, at_top) {
         (Direction::TopDown, true) => 0,
         (Direction::TopDown, false) => 1,
         (Direction::LeftRight, true) => 2,
         (Direction::LeftRight, false) => 3,
     };
-    let glyphs: [char; 4] = match marker {
-        Marker::None => return None,
-        Marker::Arrow => ['▲', '▼', '◀', '▶'],
-        Marker::OpenArrow => ['∧', '∨', '<', '>'],
-        Marker::Triangle => ['△', '▽', '◁', '▷'],
-        // 합성·집합 표식은 같은 크기의 카드 무늬 마름모 ♦(U+2666)·♢(U+2662): 폭이 한 칸으로 고정이고 고정폭 글꼴에 있다.
-        Marker::DiamondFilled => ['♦'; 4],
-        Marker::DiamondOpen => ['♢'; 4],
-        Marker::Circle => ['○'; 4],
-        Marker::Cross => ['✕'; 4],
+    // 까치발: 발가락이 노드 쪽으로 벌어진다. 한 개는 가로막대(╪/╫), 없음은 ○.
+    let one = ['╪', '╪', '╫', '╫'][index];
+    let many = ['⋎', '⋏', '≻', '≺'][index];
+    let glyphs: Vec<char> = match marker {
+        Marker::None => return Vec::new(),
+        Marker::Arrow => vec![['▲', '▼', '◀', '▶'][index]],
+        Marker::OpenArrow => vec![['∧', '∨', '<', '>'][index]],
+        Marker::Triangle => vec![['△', '▽', '◁', '▷'][index]],
+        Marker::DiamondFilled => vec!['♦'],
+        Marker::DiamondOpen => vec!['♢'],
+        Marker::Circle => vec!['○'],
+        Marker::Cross => vec!['✕'],
+        Marker::CrowOne => vec![one, one],
+        Marker::CrowZeroOne => vec!['○', one],
+        Marker::CrowMany => vec![one, many],
+        Marker::CrowZeroMany => vec!['○', many],
     };
-    Some(glyphs[index])
+    glyphs
 }
 
 #[cfg(test)]

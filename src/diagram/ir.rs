@@ -51,6 +51,25 @@ pub enum Marker {
     DiamondOpen,
     Circle,
     Cross,
+    /// 까치발(crow's foot) 표기: 정확히 하나 `||`.
+    CrowOne,
+    /// 없거나 하나 `|o`.
+    CrowZeroOne,
+    /// 하나 이상 `|{`.
+    CrowMany,
+    /// 없거나 여럿 `o{`.
+    CrowZeroMany,
+}
+
+/// ER 카디널리티 문자열(`1`, `0..1`, `1..N`, `0..N`)을 까치발 표식으로.
+pub fn crow_marker(cardinality: &str) -> Marker {
+    match cardinality {
+        "1" => Marker::CrowOne,
+        "0..1" => Marker::CrowZeroOne,
+        "1..N" => Marker::CrowMany,
+        "0..N" => Marker::CrowZeroMany,
+        _ => Marker::None,
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -2,7 +2,7 @@
 
 use super::relation;
 use super::text::{clean_lines, keyword, label, split_alias, stereotype_of, strip_decorations};
-use crate::diagram::ir::{Direction, Edge, Graph, Shape};
+use crate::diagram::ir::{crow_marker, Direction, Edge, Graph, Marker, Shape};
 
 enum Scope {
     Group,
@@ -247,11 +247,16 @@ pub fn parse_relation(graph: &mut Graph, line: &str, group: Option<usize>) -> bo
     }
     let a = intern(graph, &left_name, group);
     let b = intern(graph, &right_name, group);
-    let left_multiplicity = if left_multiplicity.is_empty() { relation.left_cardinality.to_string() } else { left_multiplicity };
-    let right_multiplicity = if right_multiplicity.is_empty() { relation.right_cardinality.to_string() } else { right_multiplicity };
-    let (from, to, tail_label, head_label) =
-        if relation.left_first { (a, b, left_multiplicity, right_multiplicity) } else { (b, a, right_multiplicity, left_multiplicity) };
-    graph.add_edge(Edge { from, to, label: text, tail_label, head_label, kind: relation.kind, tail: relation.tail, head: relation.head });
+    // 까치발 카디널리티(`||--o{`)는 표식으로, 따옴표 다중성(`"1" -- "*"`)은 글자로 그린다.
+    let (left_marker, right_marker) = (crow_marker(relation.left_cardinality), crow_marker(relation.right_cardinality));
+    let tail = if relation.tail == Marker::None { left_marker } else { relation.tail };
+    let head = if relation.head == Marker::None { right_marker } else { relation.head };
+    let (from, to, tail_label, head_label, tail, head) = if relation.left_first {
+        (a, b, left_multiplicity, right_multiplicity, tail, head)
+    } else {
+        (b, a, right_multiplicity, left_multiplicity, head, tail)
+    };
+    graph.add_edge(Edge { from, to, label: text, tail_label, head_label, kind: relation.kind, tail, head });
     true
 }
 
@@ -316,7 +321,7 @@ mod tests {
         let source = "entity User {\n  *id : int <<PK>>\n  --\n  name : text\n}\nentity Order {\n  *id : int\n}\nUser ||--o{ Order : places";
         let g = parse(source);
         assert_eq!(g.nodes[0].sections[1], vec!["*id : int «PK»"]);
-        assert_eq!(g.edges[0].tail_label, "1");
-        assert_eq!(g.edges[0].head_label, "0..N");
+        assert_eq!(g.edges[0].tail, Marker::CrowOne);
+        assert_eq!(g.edges[0].head, Marker::CrowZeroMany);
     }
 }

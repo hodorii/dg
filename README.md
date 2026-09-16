@@ -66,7 +66,7 @@ dg -s light -w 80 doc.md      # 밝은 테마, 폭 80
 | `flowchart`/`graph` | `TB`/`LR` 방향, 노드 모양 `[ ]` `( )` `([ ])` `[[ ]]` `[( )]` `(( ))` `{ }` `{{ }}`, `-->` `---` `-.->` `==>` `<-->` `--x` `--o`, `-- 글 -->`, `-->\|글\|`, `A & B --> C`, `subgraph`(중첩, `subgraph Id["제목"]`), 서브그래프 아이디로 향하는 간선(상자 위로 들어옴), 자기 간선, 되돌아가는 간선 |
 | `sequenceDiagram` | `participant`/`actor`(`as` 별칭), `->>` `-->>` `-x` `-)` `->`, `+`/`-` 활성화, `activate`/`deactivate`, `Note left/right of/over`, `alt`/`else`/`opt`/`loop`/`par`/`critical`/`break`/`rect`, `box`, `autonumber`, `title` |
 | `classDiagram` | `class X { }`, `X : 멤버`, `<<interface>>`, 제네릭 `~T~`, `<\|--` `--\|>` `<\|..` `..\|>` `*--` `o--` `-->` `..>` `--`, 다중성 `"1" --> "*"`, 라벨 `: 글`, `namespace`, `direction` |
-| `erDiagram` | 엔터티 속성(`type name PK "설명"` → `name : type [PK]`), `\|\|--o{` 계열 카디널리티(`1`, `0..1`, `1..N`, `0..N`), 식별(실선)/비식별(점선) |
+| `erDiagram` | 엔터티 속성(`type name PK "설명"` → `name : type [PK]`), `\|\|--o{` 계열 카디널리티를 까치발 표식으로(`╪` 하나, `○` 없음, `⋏`/`⋎` 여럿), 식별(실선)/비식별(점선) |
 | `stateDiagram(-v2)` | `[*]` 시작(●)/끝(◉), `-->` 전이 라벨, `state "설명" as X`, 합성 상태 `state X { }`, `<<choice>>` |
 
 ### PlantUML (` ```plantuml `, ` ```puml `)
@@ -77,7 +77,7 @@ dg -s light -w 80 doc.md      # 밝은 테마, 폭 80
 |------|------|
 | 시퀀스 | `participant`/`actor`/`boundary`/`control`/`entity`/`database`/`collections`/`queue`(`"긴 이름" as X`, `X as "긴 이름"`), `->` `-->` `->>` `->x` `->o` `<-` `<--`, `++`/`--` 활성화, `activate`/`deactivate`/`return`, `note left/right of/over` (한 줄·`end note`), `alt`/`else`/`opt`/`loop`/`par`/`break`/`critical`/`group`/`end`, `== 구분 ==`, `...지연...`, `box`, `autonumber`, `title` |
 | 클래스 | `class`/`abstract`/`interface`/`enum`/`annotation`/`object`(`{ }` 본문, `--`·`..`·`==` 칸 구분, `{static}` 등 제거), `extends`/`implements`, `X : 멤버`, `<\|--` `..\|>` `*--` `o--` `-->` `..>` `--`, `-down->` 같은 방향 힌트와 `[hidden]`·`[#색]` 무시, 다중성 `"1" -- "*"`, `package`/`namespace`, `left to right direction`, `title` |
-| ER | `entity X { *id : int <<PK>> \n -- \n name }`, `\|\|--o{` `}o--\|\|` `\|o--o\|` `}\|--\|{` 카디널리티 |
+| ER | `entity X { *id : int <<PK>> \n -- \n name }`, `\|\|--o{` `}o--\|\|` `\|o--o\|` `}\|--\|{` 카디널리티(까치발 표식) |
 | 컴포넌트·배치·유스케이스 | `[이름]`, `[이름] as 별칭`, `component`/`interface`/`()`/`database`/`node`/`cloud`/`folder`/`frame`/`rectangle`/`storage`/`queue`/`actor`/`:액터:`/`usecase`/`(유스케이스)` 등, `package … { }` 중첩 그룹, `-->` `..>` `--` 와 `: 라벨`, `left to right direction`, `title` |
 
 `skinparam`, `hide/show`, `!전처리`, `'주석`, `/' 블록 '/`, `legend`, `header/footer`는 무시한다.
