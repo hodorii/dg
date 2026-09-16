@@ -24,10 +24,28 @@ struct TableState {
     has_header: bool,
 }
 
+/// 렌더링된 문서. 다이어그램 블록의 위치와 원문을 함께 돌려주어 페이저가 원문을 펼칠 수 있게 한다.
+pub struct Document {
+    pub lines: Vec<Line>,
+    pub diagrams: Vec<DiagramBlock>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DiagramBlock {
+    /// 캡션 줄 번호.
+    pub start: usize,
+    /// 마지막 줄 다음 번호.
+    pub end: usize,
+    /// 코드 펜스에 적힌 언어 이름.
+    pub lang: String,
+    pub source: String,
+}
+
 pub struct Renderer<'a> {
     theme: &'a Theme,
     width: usize,
     lines: Vec<Line>,
+    diagrams: Vec<DiagramBlock>,
     inline: Vec<Span>,
     style_stack: Vec<Style>,
     indents: Vec<Indent>,
@@ -39,7 +57,19 @@ pub struct Renderer<'a> {
     in_heading: Option<HeadingLevel>,
 }
 
+#[cfg(test)]
 pub fn render(source: &str, theme: &Theme, width: usize) -> Vec<Line> {
+    render_document(source, theme, width).lines
+}
+
+/// 다이어그램 원문을 코드블록으로 그린다(펼쳐 보기용).
+pub fn render_source_block(lang: &str, source: &str, theme: &Theme, width: usize) -> Vec<Line> {
+    let mut renderer = Renderer::new(theme, width);
+    renderer.emit_code_block(lang, source, false);
+    renderer.lines
+}
+
+pub fn render_document(source: &str, theme: &Theme, width: usize) -> Document {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -48,20 +78,7 @@ pub fn render(source: &str, theme: &Theme, width: usize) -> Vec<Line> {
     options.insert(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
     options.insert(Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS);
     let parser = Parser::new_ext(source, options);
-    let mut renderer = Renderer {
-        theme,
-        width: width.max(10),
-        lines: Vec::new(),
-        inline: Vec::new(),
-        style_stack: vec![theme.text],
-        indents: Vec::new(),
-        list_counters: Vec::new(),
-        code: None,
-        table: None,
-        link_url: None,
-        in_metadata: false,
-        in_heading: None,
-    };
+    let mut renderer = Renderer::new(theme, width);
     for event in parser {
         renderer.handle(event);
     }
@@ -69,10 +86,28 @@ pub fn render(source: &str, theme: &Theme, width: usize) -> Vec<Line> {
     while renderer.lines.last().is_some_and(Line::is_blank) {
         renderer.lines.pop();
     }
-    renderer.lines
+    Document { lines: renderer.lines, diagrams: renderer.diagrams }
 }
 
-impl Renderer<'_> {
+impl<'a> Renderer<'a> {
+    fn new(theme: &'a Theme, width: usize) -> Renderer<'a> {
+        Renderer {
+            theme,
+            width: width.max(10),
+            lines: Vec::new(),
+            diagrams: Vec::new(),
+            inline: Vec::new(),
+            style_stack: vec![theme.text],
+            indents: Vec::new(),
+            list_counters: Vec::new(),
+            code: None,
+            table: None,
+            link_url: None,
+            in_metadata: false,
+            in_heading: None,
+        }
+    }
+
     fn style(&self) -> Style {
         *self.style_stack.last().unwrap()
     }
@@ -358,7 +393,7 @@ impl Renderer<'_> {
             }
             TagEnd::CodeBlock => {
                 let Some((lang, buffer)) = self.code.take() else { return };
-                self.emit_code_block(&lang, &buffer);
+                self.emit_code_block(&lang, &buffer, true);
                 self.emit_blank();
             }
             TagEnd::List(_) => {
@@ -433,14 +468,17 @@ impl Renderer<'_> {
         }
     }
 
-    fn emit_code_block(&mut self, lang: &str, buffer: &str) {
+    fn emit_code_block(&mut self, lang: &str, buffer: &str, allow_diagram: bool) {
         let available = self.available();
-        if let Some(language) = diagram::language_of_fence(lang)
+        if allow_diagram
+            && let Some(language) = diagram::language_of_fence(lang)
             && let Some(lines) = diagram::render(language, buffer, self.theme, available.saturating_sub(2))
         {
+            let start = self.lines.len();
             for line in lines {
                 self.emit(line);
             }
+            self.diagrams.push(DiagramBlock { start, end: self.lines.len(), lang: lang.to_string(), source: buffer.to_string() });
             return;
         }
         let rule_width = available.min(60);

@@ -10,7 +10,7 @@ mod text;
 use clap::Parser;
 use cli::{Cli, LangArg, StyleArg};
 use diagram::Language;
-use line::Line;
+use markdown::{DiagramBlock, Document};
 use std::io::{self, IsTerminal, Read, Write};
 use style::Theme;
 
@@ -37,13 +37,19 @@ fn run() -> io::Result<()> {
     } else {
         None
     };
-    let render = move |width: usize| -> Vec<Line> {
+    let render = move |width: usize| -> Document {
         match diagram_language {
-            Some(language) => diagram::render(language, &source, &theme, width).unwrap_or_else(|| {
-                let fence = format!("```{}\n{}\n```\n", if language == Language::Mermaid { "mermaid" } else { "plantuml" }, source.trim_end());
-                markdown::render(&fence, &theme, width)
-            }),
-            None => markdown::render(&source, &theme, width),
+            Some(language) => {
+                let lang = if language == Language::Mermaid { "mermaid" } else { "plantuml" };
+                match diagram::render(language, &source, &theme, width) {
+                    Some(lines) => {
+                        let block = DiagramBlock { start: 0, end: lines.len(), lang: lang.to_string(), source: source.clone() };
+                        Document { lines, diagrams: vec![block] }
+                    }
+                    None => markdown::render_document(&format!("```{lang}\n{}\n```\n", source.trim_end()), &theme, width),
+                }
+            }
+            None => markdown::render_document(&source, &theme, width),
         }
     };
     let use_pager = stdout_is_tty && !cli.print;
@@ -56,7 +62,7 @@ fn run() -> io::Result<()> {
         columns.min(MAX_WIDTH)
     });
     let mut out = io::BufWriter::new(io::stdout().lock());
-    for line in render(width) {
+    for line in render(width).lines {
         writeln!(out, "{}", line.to_ansi(&theme))?;
     }
     out.flush()

@@ -19,12 +19,9 @@ pub fn render(graph: &Graph, theme: &Theme, width: usize) -> Option<Vec<Line>> {
     }
     let preferred = graph.direction.unwrap_or(Direction::TopDown);
     let caps = [30usize, 22, 16, 12];
-    // 1) 있는 그대로: 원하는 방향 → 반대 방향, 라벨 폭을 줄여 가며
-    // 2) 그래도 넓으면 위→아래 배치에서 넓은 층을 여러 줄로 접는다
-    let attempts = caps
-        .iter()
-        .flat_map(|&cap| [(cap, preferred, false), (cap, preferred.other(), false)])
-        .chain(caps.iter().map(|&cap| (cap, Direction::TopDown, true)));
+    // 라벨 폭마다: 원하는 방향 → 반대 방향 → 위→아래로 층 접기. 라벨을 잘게 접는 것보다
+    // 층을 접어 세로로 길어지는 쪽이 읽기 낫다.
+    let attempts = caps.iter().flat_map(|&cap| [(cap, preferred, false), (cap, preferred.other(), false), (cap, Direction::TopDown, true)]);
     for (cap, direction, allow_fold) in attempts {
         if let Some(canvas) = Layout::build(graph, theme, direction, cap, width, allow_fold) {
             let mut lines = canvas.into_lines();
@@ -40,6 +37,8 @@ pub fn render(graph: &Graph, theme: &Theme, width: usize) -> Option<Vec<Line>> {
 
 struct LayoutNode {
     node: Option<usize>,
+    /// 가상 노드가 속한 간선.
+    edge: Option<usize>,
     layer: usize,
     group: Option<usize>,
     along_size: usize,
@@ -84,6 +83,18 @@ enum Child {
     Block(usize),
 }
 
+fn same_child(a: Child, b: Child) -> bool {
+    matches!((a, b), (Child::Node(x), Child::Node(y)) if x == y) || matches!((a, b), (Child::Block(x), Child::Block(y)) if x == y)
+}
+
+#[derive(Clone, Copy)]
+struct FoldCandidate {
+    target: Child,
+    layer: usize,
+    /// 같은 줄의 다른 자식들이 걸친 마지막 층(블록을 그 아래로 내릴 때 쓴다).
+    others_max: usize,
+}
+
 struct Block {
     group: Option<usize>,
     children: Vec<Child>,
@@ -125,39 +136,69 @@ struct Layout<'a> {
 const GAP_ALONG_MIN: usize = 3;
 /// 층 접기 최대 횟수.
 const MAX_FOLDS: usize = 40;
+/// 폭이 줄지 않는 접기를 연속으로 참아 주는 횟수.
+const FOLD_PATIENCE: usize = 12;
 
 impl<'a> Layout<'a> {
     fn build(graph: &'a Graph, theme: &'a Theme, direction: Direction, cap: usize, width: usize, allow_fold: bool) -> Option<Canvas> {
         let mut layout = Layout::new(graph, theme, direction, cap);
         layout.assign_layers();
         layout.push_outputs_below_groups();
-        let mut folds = 0;
-        loop {
-            layout.arrange();
-            let total_across = layout.blocks[0].width.max(layout.extra_across);
-            let total_along = layout.total_along();
-            let (canvas_width, canvas_height) = match direction {
-                Direction::TopDown => (total_across, total_along),
-                Direction::LeftRight => (total_along, total_across),
-            };
+        layout.arrange(false);
+        let mut best_width = layout.canvas_size().0;
+        let mut stalls = 0;
+        for _ in 0..MAX_FOLDS {
+            let (canvas_width, _) = layout.canvas_size();
             if canvas_width == 0 {
                 return None;
             }
+            if layout.debug {
+                eprintln!("attempt cap {cap} {direction:?} fold {allow_fold}: width {canvas_width} / {width}");
+            }
             if canvas_width <= width {
+                // 최종 배치에서만 이웃 교환으로 간선을 짧게 한다. 폭이 넘치면 교환 전으로 되돌린다.
+                layout.reset_arrangement();
+                layout.arrange(true);
+                if layout.canvas_size().0 > width {
+                    layout.reset_arrangement();
+                    layout.arrange(false);
+                }
+                let (canvas_width, canvas_height) = layout.canvas_size();
                 let mut canvas = Canvas::new(canvas_width, canvas_height);
                 layout.draw(&mut canvas);
                 return Some(canvas);
             }
-            if !allow_fold || direction != Direction::TopDown || folds >= MAX_FOLDS || !layout.fold_widest_row() {
+            if !allow_fold || direction != Direction::TopDown || !layout.fold_widest_row() {
                 return None;
             }
-            folds += 1;
             layout.reset_arrangement();
+            layout.arrange(false);
+            let folded_width = layout.canvas_size().0;
+            if folded_width < best_width {
+                best_width = folded_width;
+                stalls = 0;
+            } else {
+                stalls += 1;
+                if stalls > FOLD_PATIENCE {
+                    return None;
+                }
+            }
+        }
+        None
+    }
+
+    /// (가로, 세로) 캔버스 크기.
+    fn canvas_size(&self) -> (usize, usize) {
+        let total_across = self.blocks[0].width.max(self.extra_across);
+        let total_along = self.total_along();
+        match self.direction {
+            Direction::TopDown => (total_across, total_along),
+            Direction::LeftRight => (total_along, total_across),
         }
     }
 
-    /// 층이 정해진 뒤의 배치 전 과정.
-    fn arrange(&mut self) {
+    /// 층이 정해진 뒤의 배치 전 과정. `refine`이면 이웃 교환 탐색까지 한다.
+    fn arrange(&mut self, refine: bool) {
         self.make_segments();
         self.build_blocks();
         for _ in 0..4 {
@@ -165,6 +206,9 @@ impl<'a> Layout<'a> {
             self.reorder();
         }
         self.place();
+        if refine {
+            self.improve_by_swaps();
+        }
         self.assign_ports();
         self.straighten();
         self.route();
@@ -191,10 +235,16 @@ impl<'a> Layout<'a> {
         self.block_extra.clear();
     }
 
-    /// 가장 넓은 "줄"(한 블록의 한 층에 나란히 놓인 자식들)의 맨 오른쪽 자식을 아래로 내린다.
-    /// 노드면 한 층 아래로, 하위 그룹이면 통째로 나머지 자식들 아래로 옮긴다. 나눌 줄이 없으면 false.
+    /// 가장 넓은 줄의 맨 오른쪽 자식을 아래로 내린다. 나눌 줄이 없으면 false.
     fn fold_widest_row(&mut self) -> bool {
-        let mut widest: Option<(usize, usize, usize)> = None; // (폭, 블록, 층)
+        let Some(candidate) = self.fold_candidates().into_iter().next() else { return false };
+        self.apply_fold(candidate);
+        true
+    }
+
+    /// 접기 후보: 넓은 "줄"(한 블록의 한 층에 나란히 놓인 자식들)부터, 줄 안에서는 오른쪽 자식부터.
+    fn fold_candidates(&self) -> Vec<FoldCandidate> {
+        let mut rows: Vec<(usize, usize, usize)> = Vec::new(); // (폭, 블록, 층)
         for block in 0..self.blocks.len() {
             if !self.blocks[block].registered {
                 continue;
@@ -206,25 +256,34 @@ impl<'a> Layout<'a> {
                 }
                 let start = row.iter().map(|&c| self.child_span(c).0).min().unwrap_or(0);
                 let end = row.iter().map(|&c| self.child_span(c).1).max().unwrap_or(0);
-                if widest.is_none_or(|(w, _, _)| end - start > w) {
-                    widest = Some((end - start, block, layer));
-                }
+                rows.push((end - start, block, layer));
             }
         }
-        let Some((_, block, layer)) = widest else { return false };
-        let mut row = self.row_children(block, layer);
-        row.sort_by_key(|&c| self.child_span(c).0);
-        let Some(&target) = row.iter().rev().find(|&&c| self.is_movable(c)) else { return false };
-        match target {
-            Child::Node(i) => self.min_layer[i] = self.min_layer[i].max(layer + 1),
-            Child::Block(moved) => {
-                let others_max = row
-                    .iter()
-                    .filter(|&&c| self.is_movable(c) && !matches!(c, Child::Block(b) if b == moved))
+        rows.sort_by_key(|row| std::cmp::Reverse(row.0));
+        let mut candidates = Vec::new();
+        for (_, block, layer) in rows.into_iter().take(1) {
+            let mut row = self.row_children(block, layer);
+            row.sort_by_key(|&c| self.child_span(c).0);
+            let others_max = |target: Child| {
+                row.iter()
+                    .filter(|&&c| !same_child(c, target))
                     .map(|&c| self.child_layer_max(c))
                     .max()
-                    .unwrap_or(layer);
-                let offset = (others_max + 1).saturating_sub(self.blocks[moved].layer_min).max(1);
+                    .unwrap_or(layer)
+            };
+            for &target in row.iter().rev().filter(|&&c| self.is_movable(c)).take(1) {
+                candidates.push(FoldCandidate { target, layer, others_max: others_max(target) });
+            }
+        }
+        candidates
+    }
+
+    /// 후보를 적용한다: 노드면 한 층 아래로, 하위 그룹이면 통째로 나머지 자식들 아래로(최소 층 제약).
+    fn apply_fold(&mut self, candidate: FoldCandidate) {
+        match candidate.target {
+            Child::Node(i) => self.min_layer[i] = self.min_layer[i].max(candidate.layer + 1),
+            Child::Block(moved) => {
+                let offset = (candidate.others_max + 1).saturating_sub(self.blocks[moved].layer_min).max(1);
                 for member in self.child_members(Child::Block(moved)) {
                     if self.lnodes[member].node.is_some() {
                         self.min_layer[member] = self.min_layer[member].max(self.lnodes[member].layer + offset);
@@ -233,7 +292,6 @@ impl<'a> Layout<'a> {
             }
         }
         self.assign_layers();
-        true
     }
 
     /// 블록 `block`의 자식 가운데 층 `layer`에 걸친 것들.
@@ -357,7 +415,7 @@ impl<'a> Layout<'a> {
                         (w, if h >= 3 { h.max(needed) } else { h })
                     }
                 };
-                LayoutNode { node: Some(0), layer: 0, group: node.group, along_size, across_size, extra_across: 0, across: 0, sections }
+                LayoutNode { node: Some(0), edge: None, layer: 0, group: node.group, along_size, across_size, extra_across: 0, across: 0, sections }
             })
             .enumerate()
             .map(|(i, mut n)| {
@@ -478,6 +536,11 @@ impl<'a> Layout<'a> {
         for (node, &assigned) in self.lnodes.iter_mut().zip(&layer) {
             node.layer = assigned;
         }
+        // 접기·닻 제약으로 맨 위 층이 비면 전체를 끌어올린다.
+        let lowest = self.lnodes.iter().take(n).map(|node| node.layer).min().unwrap_or(0);
+        for node in self.lnodes.iter_mut().take(n) {
+            node.layer -= lowest;
+        }
         // 닻은 그룹의 첫 층(나가는 간선이 있으면 마지막 층)에 붙인다.
         for anchor in 0..n {
             if self.graph.nodes[anchor].shape != Shape::Anchor {
@@ -540,6 +603,7 @@ impl<'a> Layout<'a> {
                 let group = self.dummy_group(from, to, layer, &group_ranges);
                 self.lnodes.push(LayoutNode {
                     node: None,
+                    edge: Some(i),
                     layer,
                     group,
                     along_size: 0,
@@ -752,8 +816,99 @@ impl<'a> Layout<'a> {
                 })
                 .collect();
             keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            if self.debug {
+                let describe = |c: &Child| match c {
+                    Child::Node(i) => self.lnodes[*i].node.map_or(format!("dummy{i}(L{})", self.lnodes[*i].layer), |n| format!("{}(L{})", self.graph.nodes[n].id, self.lnodes[*i].layer)),
+                    Child::Block(b) => format!("block{b}"),
+                };
+                eprintln!("reorder block {block}: {}", keyed.iter().map(|(k, c)| format!("{}={k:.0}", describe(c))).collect::<Vec<_>>().join(" "));
+            }
             self.blocks[block].children = keyed.into_iter().map(|(_, c)| c).collect();
         }
+    }
+
+    /// 무게중심 정렬은 자리가 매번 바뀌어 흔들릴 수 있다. 최종 자리를 기준으로
+    /// 자식(가상 노드는 같은 간선의 사슬을 한 묶음으로)을 같은 층을 공유하는 앞 자식 앞으로
+    /// 옮겨 보고, 간선 길이 합이 줄면 받아들인다.
+    fn improve_by_swaps(&mut self) {
+        let mut current = self.total_edge_length();
+        for _ in 0..3 {
+            let mut improved = false;
+            for block in 0..self.blocks.len() {
+                let mut k = 1;
+                while k < self.blocks[block].children.len() {
+                    let unit = self.unit_of(block, k);
+                    let first = unit[0];
+                    let leader = self.blocks[block].children[first];
+                    let candidates: Vec<usize> = (0..first)
+                        .rev()
+                        .filter(|&j| {
+                            let other = self.blocks[block].children[j];
+                            unit.iter().any(|&u| self.children_share_layer(other, self.blocks[block].children[u]))
+                        })
+                        .take(4)
+                        .collect();
+                    let _ = leader;
+                    let mut accepted = false;
+                    for j in candidates {
+                        let before = self.blocks[block].children.clone();
+                        let moving: Vec<Child> = unit.iter().map(|&u| self.blocks[block].children[u]).collect();
+                        for &u in unit.iter().rev() {
+                            self.blocks[block].children.remove(u);
+                        }
+                        for (offset, child) in moving.into_iter().enumerate() {
+                            self.blocks[block].children.insert(j + offset, child);
+                        }
+                        self.place();
+                        let candidate = self.total_edge_length();
+                        if candidate < current {
+                            current = candidate;
+                            improved = true;
+                            accepted = true;
+                            break;
+                        }
+                        self.blocks[block].children = before;
+                    }
+                    if !accepted {
+                        k = unit.last().copied().unwrap_or(k) + 1;
+                    } else {
+                        k += 1;
+                    }
+                }
+            }
+            self.place();
+            if !improved {
+                break;
+            }
+        }
+    }
+
+    /// 자식 `k`가 가상 노드면 같은 간선의 가상 노드 자리들(오름차순), 아니면 `[k]`.
+    fn unit_of(&self, block: usize, k: usize) -> Vec<usize> {
+        let children = &self.blocks[block].children;
+        let edge = match children[k] {
+            Child::Node(i) => self.lnodes[i].edge,
+            Child::Block(_) => None,
+        };
+        let Some(edge) = edge else { return vec![k] };
+        (0..children.len())
+            .filter(|&j| matches!(children[j], Child::Node(i) if self.lnodes[i].edge == Some(edge)))
+            .collect()
+    }
+
+    fn children_share_layer(&self, a: Child, b: Child) -> bool {
+        let range = |child: Child| match child {
+            Child::Node(i) => (self.lnodes[i].layer, self.lnodes[i].layer),
+            Child::Block(b) => (self.blocks[b].layer_min, self.blocks[b].layer_max),
+        };
+        let (a_min, a_max) = range(a);
+        let (b_min, b_max) = range(b);
+        a_min <= b_max && b_min <= a_max
+    }
+
+    /// 모든 구간의 가로 이동량 합(중심 기준).
+    fn total_edge_length(&self) -> f64 {
+        self.segments.iter().map(|s| (self.lnodes[s.from].center() - self.lnodes[s.to].center()).abs()).sum()
     }
 
     // ── 5. 직선화 ──────────────────────────────────────────────────────

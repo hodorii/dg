@@ -1,21 +1,34 @@
 //! crossterm 기반 페이저: 스크롤·검색·창 크기 대응.
 
 use crate::line::Line;
+use crate::markdown::{self, DiagramBlock, Document};
 use crate::style::Theme;
 use crate::text::char_width;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use crossterm::{cursor, event, execute, queue, terminal};
 use std::io::{self, Write};
 
 const MOUSE_WHEEL_ON: &str = "\x1b[?1000h\x1b[?1006h";
 const MOUSE_WHEEL_OFF: &str = "\x1b[?1006l\x1b[?1000l";
 
-pub struct Pager<'a, F: Fn(usize) -> Vec<Line>> {
+/// 화면에 나오는 다이어그램 블록의 줄 범위(원문을 펼쳤으면 그것까지).
+struct ShownBlock {
+    start: usize,
+    end: usize,
+    index: usize,
+}
+
+pub struct Pager<'a, F: Fn(usize) -> Document> {
     title: String,
     theme: &'a Theme,
     max_width: usize,
     render: F,
+    document: Document,
+    /// 다이어그램마다 원문을 펼쳤는지.
+    expanded: Vec<bool>,
+    /// 실제로 보여 주는 줄(펼친 원문 포함).
     lines: Vec<Line>,
+    shown_blocks: Vec<ShownBlock>,
     rendered_width: usize,
     top: usize,
     query: String,
@@ -24,14 +37,17 @@ pub struct Pager<'a, F: Fn(usize) -> Vec<Line>> {
     message: String,
 }
 
-impl<'a, F: Fn(usize) -> Vec<Line>> Pager<'a, F> {
+impl<'a, F: Fn(usize) -> Document> Pager<'a, F> {
     pub fn new(title: &str, theme: &'a Theme, max_width: usize, render: F) -> Self {
         Pager {
             title: title.to_string(),
             theme,
             max_width,
             render,
+            document: Document { lines: Vec::new(), diagrams: Vec::new() },
+            expanded: Vec::new(),
             lines: Vec::new(),
+            shown_blocks: Vec::new(),
             rendered_width: 0,
             top: 0,
             query: String::new(),
@@ -60,9 +76,10 @@ impl<'a, F: Fn(usize) -> Vec<Line>> Pager<'a, F> {
             let (columns, rows) = (columns as usize, rows as usize);
             let width = columns.min(self.max_width).max(10);
             if width != self.rendered_width {
-                self.lines = (self.render)(width);
+                self.document = (self.render)(width);
+                self.expanded.resize(self.document.diagrams.len(), false);
                 self.rendered_width = width;
-                self.refresh_matches();
+                self.rebuild_lines();
                 needs_redraw = true;
             }
             let page = rows.saturating_sub(1).max(1);
@@ -87,6 +104,7 @@ impl<'a, F: Fn(usize) -> Vec<Line>> Pager<'a, F> {
                         self.top = self.top.saturating_sub(3);
                         true
                     }
+                    MouseEventKind::Down(MouseButton::Left) => self.toggle_block_at(self.top + mouse.row as usize),
                     _ => false,
                 },
                 Event::Resize(_, _) => true,
@@ -150,9 +168,57 @@ impl<'a, F: Fn(usize) -> Vec<Line>> Pager<'a, F> {
             }
             KeyCode::Char('n') => self.jump_to_match(true, page),
             KeyCode::Char('N') => self.jump_to_match(false, page),
+            KeyCode::Char('o') => {
+                // 화면에 보이는 첫 다이어그램의 원문을 펼치거나 접는다.
+                let visible = self.top..self.top + page;
+                if let Some(block) = self.shown_blocks.iter().find(|b| b.start < visible.end && visible.start < b.end) {
+                    let start = block.start;
+                    self.toggle_block_at(start);
+                }
+            }
             _ => {}
         }
         false
+    }
+
+    /// 표시 줄 번호가 다이어그램 블록 안이면 그 블록의 원문을 펼치거나 접는다. 바뀌면 true.
+    fn toggle_block_at(&mut self, line: usize) -> bool {
+        let Some(block) = self.shown_blocks.iter().find(|b| b.start <= line && line < b.end) else { return false };
+        let index = block.index;
+        self.expanded[index] = !self.expanded[index];
+        self.rebuild_lines();
+        true
+    }
+
+    /// 문서 줄에 펼친 원문을 끼워 넣어 표시 줄을 만든다.
+    fn rebuild_lines(&mut self) {
+        let mut lines: Vec<Line> = Vec::with_capacity(self.document.lines.len());
+        let mut shown = Vec::new();
+        let mut cursor = 0;
+        for (index, block) in self.document.diagrams.iter().enumerate() {
+            lines.extend(self.document.lines[cursor..block.start].iter().cloned());
+            let start = lines.len();
+            let expanded = self.expanded[index];
+            let mut caption = self.document.lines[block.start].clone();
+            caption.push_str(if expanded { " ▾ 원문" } else { " ▸ 원문" }, self.theme.diagram_caption);
+            lines.push(caption);
+            lines.extend(self.document.lines[block.start + 1..block.end].iter().cloned());
+            if expanded {
+                lines.extend(self.source_lines(block));
+            }
+            shown.push(ShownBlock { start, end: lines.len(), index });
+            cursor = block.end;
+        }
+        lines.extend(self.document.lines[cursor..].iter().cloned());
+        self.lines = lines;
+        self.shown_blocks = shown;
+        self.refresh_matches();
+    }
+
+    fn source_lines(&self, block: &DiagramBlock) -> Vec<Line> {
+        let mut lines = markdown::render_source_block(&block.lang, &block.source, self.theme, self.rendered_width);
+        lines.insert(0, Line::empty());
+        lines
     }
 
     fn refresh_matches(&mut self) {
@@ -213,7 +279,8 @@ impl<'a, F: Fn(usize) -> Vec<Line>> Pager<'a, F> {
                 ((self.top + columns.min(1)).min(self.lines.len()) * 100 / self.lines.len().max(1)).min(100)
             };
             let extra = if self.message.is_empty() { String::new() } else { format!("  {}", self.message) };
-            format!(" {}  {}%{}  ·  j/k 이동  / 검색  q 종료", self.title, percent, extra)
+            let hint = if self.shown_blocks.is_empty() { "" } else { "  o/클릭 원문" };
+            format!(" {}  {}%{}  ·  j/k 이동  / 검색{}  q 종료", self.title, percent, extra, hint)
         };
         let mut padded = text;
         let mut used = crate::text::width_of(&padded);
