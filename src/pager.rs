@@ -7,6 +7,9 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use crossterm::{cursor, event, execute, queue, terminal};
 use std::io::{self, Write};
 
+const MOUSE_WHEEL_ON: &str = "\x1b[?1000h\x1b[?1006h";
+const MOUSE_WHEEL_OFF: &str = "\x1b[?1006l\x1b[?1000l";
+
 pub struct Pager<'a, F: Fn(usize) -> Vec<Line>> {
     title: String,
     theme: &'a Theme,
@@ -41,14 +44,17 @@ impl<'a, F: Fn(usize) -> Vec<Line>> Pager<'a, F> {
     pub fn run(mut self) -> io::Result<()> {
         let mut out = io::stdout();
         terminal::enable_raw_mode()?;
-        execute!(out, terminal::EnterAlternateScreen, event::EnableMouseCapture, cursor::Hide)?;
+        // 휠만 필요하므로 버튼 이벤트(1000)+SGR(1006)만 켠다. 이동 추적(1003)을 켜면
+        // 마우스가 움직일 때마다 이벤트가 쏟아져 화면이 깜빡인다.
+        execute!(out, terminal::EnterAlternateScreen, crossterm::style::Print(MOUSE_WHEEL_ON), cursor::Hide)?;
         let result = self.event_loop(&mut out);
-        execute!(out, cursor::Show, event::DisableMouseCapture, terminal::LeaveAlternateScreen)?;
+        execute!(out, cursor::Show, crossterm::style::Print(MOUSE_WHEEL_OFF), terminal::LeaveAlternateScreen)?;
         terminal::disable_raw_mode()?;
         result
     }
 
     fn event_loop(&mut self, out: &mut io::Stdout) -> io::Result<()> {
+        let mut needs_redraw = true;
         loop {
             let (columns, rows) = terminal::size()?;
             let (columns, rows) = (columns as usize, rows as usize);
@@ -57,24 +63,35 @@ impl<'a, F: Fn(usize) -> Vec<Line>> Pager<'a, F> {
                 self.lines = (self.render)(width);
                 self.rendered_width = width;
                 self.refresh_matches();
+                needs_redraw = true;
             }
             let page = rows.saturating_sub(1).max(1);
             self.clamp(page);
-            self.draw(out, columns, rows)?;
-            match event::read()? {
+            if needs_redraw {
+                self.draw(out, columns, rows)?;
+            }
+            // 상태가 바뀐 이벤트만 다시 그린다. 마우스 이동·버튼은 무시.
+            needs_redraw = match event::read()? {
                 Event::Key(key) => {
                     if self.handle_key(key, page) {
                         return Ok(());
                     }
+                    true
                 }
                 Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollDown => self.top += 3,
-                    MouseEventKind::ScrollUp => self.top = self.top.saturating_sub(3),
-                    _ => {}
+                    MouseEventKind::ScrollDown => {
+                        self.top += 3;
+                        true
+                    }
+                    MouseEventKind::ScrollUp => {
+                        self.top = self.top.saturating_sub(3);
+                        true
+                    }
+                    _ => false,
                 },
-                Event::Resize(_, _) => {}
-                _ => {}
-            }
+                Event::Resize(_, _) => true,
+                _ => false,
+            };
         }
     }
 
@@ -168,19 +185,21 @@ impl<'a, F: Fn(usize) -> Vec<Line>> Pager<'a, F> {
     }
 
     fn draw(&self, out: &mut io::Stdout, columns: usize, rows: usize) -> io::Result<()> {
-        queue!(out, cursor::MoveTo(0, 0))?;
+        // 동기화 갱신 안에서 줄을 쓴 뒤 남은 부분만 지워 깜빡임을 줄인다.
+        queue!(out, terminal::BeginSynchronizedUpdate, cursor::MoveTo(0, 0))?;
         let page = rows.saturating_sub(1);
         for row in 0..page {
-            queue!(out, cursor::MoveTo(0, row as u16), terminal::Clear(terminal::ClearType::CurrentLine))?;
+            queue!(out, cursor::MoveTo(0, row as u16))?;
             if let Some(line) = self.lines.get(self.top + row) {
                 let line = if self.query.is_empty() { line.clone() } else { line.highlight(&self.query, self.theme.search_hit) };
                 let truncated = truncate_line(&line, columns);
                 queue!(out, crossterm::style::Print(truncated.to_ansi(self.theme)))?;
             }
+            queue!(out, terminal::Clear(terminal::ClearType::UntilNewLine))?;
         }
-        queue!(out, cursor::MoveTo(0, page as u16), terminal::Clear(terminal::ClearType::CurrentLine))?;
+        queue!(out, cursor::MoveTo(0, page as u16))?;
         let status = self.status(columns);
-        queue!(out, crossterm::style::Print(status.to_ansi(self.theme)))?;
+        queue!(out, crossterm::style::Print(status.to_ansi(self.theme)), terminal::EndSynchronizedUpdate)?;
         out.flush()
     }
 
