@@ -68,7 +68,7 @@ pub fn render(rows: &[Vec<Vec<Span>>], has_header: bool, alignments: &[Alignment
         if is_header && rows.len() > 1 {
             lines.push(rule("├", "─", "┼", "┤", border));
         } else if row_index + 1 < rows.len() {
-            lines.push(rule("├", "╌", "┼", "┤", theme.table_row_rule));
+            lines.push(rule("├", "─", "┼", "┤", theme.table_row_rule));
         }
     }
     lines.push(rule("└", "─", "┴", "┘", border));
@@ -86,6 +86,6 @@ mod tests {
         assert_eq!(out, vec!["┌───┬────┐", "│ a │ bb │", "├───┼────┤", "│ 1 │  2 │", "└───┴────┘"]);
         let rows = vec![vec![vec![Span::plain("a")]], vec![vec![Span::plain("1")]], vec![vec![Span::plain("2")]]];
         let out: Vec<String> = render(&rows, true, &[Alignment::None], 40, &Theme::none()).iter().map(Line::plain).collect();
-        assert_eq!(out, vec!["┌───┐", "│ a │", "├───┤", "│ 1 │", "├╌╌╌┤", "│ 2 │", "└───┘"]);
+        assert_eq!(out, vec!["┌───┐", "│ a │", "├───┤", "│ 1 │", "├───┤", "│ 2 │", "└───┘"]);
     }
 }
