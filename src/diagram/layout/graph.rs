@@ -136,6 +136,10 @@ struct Layout<'a> {
 const GAP_ALONG_MIN: usize = 3;
 /// 층 접기 최대 횟수.
 const MAX_FOLDS: usize = 40;
+/// 이웃 교환에서 앞뒤로 몇 자식까지 옮겨 볼지.
+const SWAP_REACH: usize = 8;
+/// 교차 하나를 가로 이동 몇 칸으로 칠지.
+const CROSSING_PENALTY: f64 = 12.0;
 /// 폭이 줄지 않는 접기를 연속으로 참아 주는 횟수.
 const FOLD_PATIENCE: usize = 12;
 
@@ -831,6 +835,7 @@ impl<'a> Layout<'a> {
     /// 자식(가상 노드는 같은 간선의 사슬을 한 묶음으로)을 같은 층을 공유하는 앞 자식 앞으로
     /// 옮겨 보고, 간선 길이 합이 줄면 받아들인다.
     fn improve_by_swaps(&mut self) {
+        self.place_and_straighten();
         let mut current = self.total_edge_length();
         for _ in 0..3 {
             let mut improved = false;
@@ -839,16 +844,15 @@ impl<'a> Layout<'a> {
                 while k < self.blocks[block].children.len() {
                     let unit = self.unit_of(block, k);
                     let first = unit[0];
-                    let leader = self.blocks[block].children[first];
-                    let candidates: Vec<usize> = (0..first)
-                        .rev()
-                        .filter(|&j| {
-                            let other = self.blocks[block].children[j];
-                            unit.iter().any(|&u| self.children_share_layer(other, self.blocks[block].children[u]))
-                        })
-                        .take(4)
-                        .collect();
-                    let _ = leader;
+                    let last = *unit.last().unwrap_or(&first);
+                    let shares = |j: usize| {
+                        let other = self.blocks[block].children[j];
+                        unit.iter().any(|&u| self.children_share_layer(other, self.blocks[block].children[u]))
+                    };
+                    // 앞 자식 앞으로, 그리고 뒤 자식 뒤로 옮겨 보는 후보(가까운 것부터).
+                    let earlier: Vec<usize> = (0..first).rev().filter(|&j| shares(j)).take(SWAP_REACH).collect();
+                    let later: Vec<usize> = (last + 1..self.blocks[block].children.len()).filter(|&j| shares(j)).take(SWAP_REACH).collect();
+                    let candidates: Vec<usize> = earlier.into_iter().chain(later).collect();
                     let mut accepted = false;
                     for j in candidates {
                         let before = self.blocks[block].children.clone();
@@ -856,11 +860,20 @@ impl<'a> Layout<'a> {
                         for &u in unit.iter().rev() {
                             self.blocks[block].children.remove(u);
                         }
+                        // 뒤로 옮길 때는 빠진 만큼 자리가 당겨진다.
+                        let insert_at = if j > last { j + 1 - unit.len() } else { j };
                         for (offset, child) in moving.into_iter().enumerate() {
-                            self.blocks[block].children.insert(j + offset, child);
+                            self.blocks[block].children.insert(insert_at + offset, child);
                         }
-                        self.place();
+                        self.place_and_straighten();
                         let candidate = self.total_edge_length();
+                        if self.debug {
+                            let describe = |c: Child| match c {
+                                Child::Node(i) => self.lnodes[i].node.map_or(format!("dummy{i}"), |n| self.graph.nodes[n].id.clone()),
+                                Child::Block(b) => format!("block{b}"),
+                            };
+                            eprintln!("swap block {block}: {} -> before {} : cost {current:.0} -> {candidate:.0} crossings {}", describe(self.blocks[block].children[insert_at]), describe(before[j]), self.count_crossings());
+                        }
                         if candidate < current {
                             current = candidate;
                             improved = true;
@@ -881,6 +894,13 @@ impl<'a> Layout<'a> {
                 break;
             }
         }
+    }
+
+    /// 후보 평가용: 배치 뒤 직선화까지 해서 실제 그려질 자리에 가깝게 잰다.
+    fn place_and_straighten(&mut self) {
+        self.place();
+        self.assign_ports();
+        self.straighten();
     }
 
     /// 자식 `k`가 가상 노드면 같은 간선의 가상 노드 자리들(오름차순), 아니면 `[k]`.
@@ -906,9 +926,34 @@ impl<'a> Layout<'a> {
         a_min <= b_max && b_min <= a_max
     }
 
-    /// 모든 구간의 가로 이동량 합(중심 기준).
+    /// 배치 품질: 구간의 가로 이동량 합(중심 기준)에 교차 수를 무겁게 더한 값.
     fn total_edge_length(&self) -> f64 {
-        self.segments.iter().map(|s| (self.lnodes[s.from].center() - self.lnodes[s.to].center()).abs()).sum()
+        let length: f64 = self.segments.iter().map(|s| (self.lnodes[s.from].center() - self.lnodes[s.to].center()).abs()).sum();
+        length + CROSSING_PENALTY * self.count_crossings() as f64
+    }
+
+    /// 같은 통로를 지나는 구간 쌍 가운데 교차하는 것의 수(중심 기준 근사).
+    fn count_crossings(&self) -> usize {
+        let mut crossings = 0;
+        for (a_index, a) in self.segments.iter().enumerate() {
+            let layer = self.lnodes[a.from].layer;
+            let (ea, na) = (self.lnodes[a.from].center(), self.lnodes[a.to].center());
+            for b in self.segments.iter().skip(a_index + 1) {
+                if self.lnodes[b.from].layer != layer {
+                    continue;
+                }
+                let (eb, nb) = (self.lnodes[b.from].center(), self.lnodes[b.to].center());
+                let inverted = (ea < eb && na > nb) || (ea > eb && na < nb);
+                let (a_low, a_high) = (ea.min(na), ea.max(na));
+                let (b_low, b_high) = (eb.min(nb), eb.max(nb));
+                let a_contains_b = a_low < b_low && b_high < a_high;
+                let b_contains_a = b_low < a_low && a_high < b_high;
+                if inverted || a_contains_b || b_contains_a {
+                    crossings += 1;
+                }
+            }
+        }
+        crossings
     }
 
     // ── 5. 직선화 ──────────────────────────────────────────────────────
@@ -968,10 +1013,61 @@ impl<'a> Layout<'a> {
                 let gap = self.gap_between(Child::Node(i), Child::Node(members[k + 1]));
                 high = high.min(start.saturating_sub(gap + footprint));
             }
+            // 가상 노드는 선을 곧게 펴는 것이 우선이므로, 막고 있는 같은 블록의 이웃을 밀어내 자리를 만든다.
+            if self.lnodes[i].node.is_none() {
+                if desired > high {
+                    high += self.push_members(&members, k + 1, desired - high, container, true);
+                } else if desired < low {
+                    low -= self.push_members(&members, k, low - desired, container, false);
+                }
+            }
             if low > high {
                 continue;
             }
             self.lnodes[i].across = desired.clamp(low, high);
+        }
+    }
+
+    /// `members[from..]`(오른쪽으로) 또는 `members[..from]`(왼쪽으로)를 `delta`만큼 밀어 본다.
+    /// 같은 블록의 이웃만 밀고, 다른 블록이나 블록 경계는 벽으로 본다. 실제로 확보한 칸 수를 돌려준다.
+    fn push_members(&mut self, members: &[usize], from: usize, delta: usize, container: usize, rightward: bool) -> usize {
+        let index = if rightward { from } else { from.checked_sub(1).unwrap_or(usize::MAX) };
+        let Some(&j) = members.get(index) else { return delta };
+        if self.lnode_block[j] != container {
+            return 0;
+        }
+        let footprint = self.lnodes[j].footprint();
+        let pad = self.block_pad(container);
+        let (block_start, block_end) = (self.blocks[container].start, self.blocks[container].start + self.blocks[container].width);
+        if rightward {
+            let mut high = block_end.saturating_sub(pad + footprint);
+            if let Some(&next) = members.get(index + 1) {
+                let gap = self.gap_between(Child::Node(j), Child::Node(next));
+                if let Some((start, _)) = self.bound_of(container, next) {
+                    let wanted_end = self.lnodes[j].across + delta + footprint + gap;
+                    let gained = if wanted_end > start { self.push_members(members, index + 1, wanted_end - start, container, true) } else { 0 };
+                    high = high.min((start + gained).saturating_sub(gap + footprint));
+                }
+            }
+            let target = (self.lnodes[j].across + delta).min(high);
+            let achieved = target.saturating_sub(self.lnodes[j].across);
+            self.lnodes[j].across = target;
+            achieved
+        } else {
+            let mut low = block_start + pad;
+            if index > 0 {
+                let previous = members[index - 1];
+                let gap = self.gap_between(Child::Node(previous), Child::Node(j));
+                if let Some((_, end)) = self.bound_of(container, previous) {
+                    let wanted_start = self.lnodes[j].across.saturating_sub(delta);
+                    let gained = if end + gap > wanted_start { self.push_members(members, index, end + gap - wanted_start, container, false) } else { 0 };
+                    low = low.max((end - gained) + gap);
+                }
+            }
+            let target = self.lnodes[j].across.saturating_sub(delta).max(low);
+            let achieved = self.lnodes[j].across.saturating_sub(target);
+            self.lnodes[j].across = target;
+            achieved
         }
     }
 
