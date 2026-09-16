@@ -132,6 +132,14 @@ impl Renderer<'_> {
         }
     }
 
+    /// 문단이든 표 칸이든 지금 쓰고 있는 인라인 버퍼에 조각을 넣는다.
+    fn push_span(&mut self, span: Span) {
+        match &mut self.table {
+            Some(table) => table.current_cell.push(span),
+            None => self.inline.push(span),
+        }
+    }
+
     fn push_text(&mut self, text: &str) {
         if self.in_metadata {
             return;
@@ -168,13 +176,9 @@ impl Renderer<'_> {
             }
             Event::Code(text) => {
                 let style = self.style().merge(self.theme.code);
-                let shown = if self.theme.enabled { format!(" {text} ") } else { format!("`{text}`") };
-                let span = Span::new(shown, style);
-                if let Some(table) = &mut self.table {
-                    table.current_cell.push(span);
-                } else {
-                    self.inline.push(span);
-                }
+                // 줄바꿈 때 잘리지 않도록 여백은 NBSP로 붙인다.
+                let shown = if self.theme.enabled { format!("\u{a0}{text}\u{a0}") } else { format!("`{text}`") };
+                self.push_span(Span::new(shown, style));
             }
             Event::Html(html) => {
                 if let Some((_, buffer)) = &mut self.code {
@@ -193,7 +197,7 @@ impl Renderer<'_> {
                     self.push_text("\n");
                 } else {
                     let style = self.style().merge(self.theme.html);
-                    self.inline.push(Span::new(html.to_string(), style));
+                    self.push_span(Span::new(html.to_string(), style));
                 }
             }
             Event::SoftBreak => self.push_text(" "),
@@ -207,7 +211,7 @@ impl Renderer<'_> {
             }
             Event::FootnoteReference(name) => {
                 let style = self.style().merge(self.theme.link_url);
-                self.inline.push(Span::new(format!("[^{name}]"), style));
+                self.push_span(Span::new(format!("[^{name}]"), style));
             }
             Event::TaskListMarker(checked) => {
                 if let Some(indent) = self.indents.last_mut() {
@@ -401,10 +405,14 @@ impl Renderer<'_> {
             TagEnd::Link => {
                 self.pop_style();
                 if let Some(url) = self.link_url.take() {
-                    let shown: String = self.inline.iter().rev().take(1).map(|s| s.text.clone()).collect();
+                    let buffer = match &self.table {
+                        Some(table) => &table.current_cell,
+                        None => &self.inline,
+                    };
+                    let shown: String = buffer.iter().rev().take(1).map(|s| s.text.clone()).collect();
                     if shown.trim() != url && !url.starts_with('#') {
                         let style = self.style().merge(self.theme.link_url);
-                        self.inline.push(Span::new(format!(" ({url})"), style));
+                        self.push_span(Span::new(format!(" ({url})"), style));
                     }
                 }
             }
@@ -412,7 +420,7 @@ impl Renderer<'_> {
                 self.pop_style();
                 if let Some(url) = self.link_url.take() {
                     let style = self.style().merge(self.theme.link_url);
-                    self.inline.push(Span::new(format!(" ({url})"), style));
+                    self.push_span(Span::new(format!(" ({url})"), style));
                 }
             }
             TagEnd::FootnoteDefinition => {

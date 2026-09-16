@@ -56,7 +56,7 @@ pub fn wrap_spans(spans: &[Span], width: usize) -> Vec<Vec<Span>> {
     let finish = |current: &mut Vec<Span>, lines: &mut Vec<Vec<Span>>| {
         // 줄 끝 공백 제거
         while let Some(last) = current.last_mut() {
-            let trimmed = last.text.trim_end().to_string();
+            let trimmed = last.text.trim_end_matches(' ').to_string();
             if trimmed.is_empty() {
                 current.pop();
             } else {
