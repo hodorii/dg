@@ -738,12 +738,19 @@ impl<'a> Layout<'a> {
                     (w, self.blocks[b].layer_min, self.blocks[b].layer_max)
                 }
             };
-            let start = placed
+            let mut start = placed
                 .iter()
                 .filter(|&&(_, _, lo, hi, _)| lo <= layer_max && layer_min <= hi)
                 .map(|&(_, end, _, _, earlier)| end + self.gap_between(earlier, child))
                 .max()
                 .unwrap_or(0);
+            // 닻(그룹으로 드나드는 화살표 자리)은 테두리 제목 글자와 겹치지 않게 제목 오른쪽에 둔다.
+            if let Child::Node(i) = child
+                && self.lnodes[i].node.is_some_and(|n| self.graph.nodes[n].shape == Shape::Anchor)
+                && let Some(g) = self.blocks[block].group
+            {
+                start = start.max(width_of(&self.graph.groups[g].title) + 2);
+            }
             let end = start + child_width;
             placed.push((start, end, layer_min, layer_max, child));
             match child {
@@ -1238,7 +1245,29 @@ impl<'a> Layout<'a> {
                         continue;
                     }
                     let (a, b) = (&self.segments[i], &self.segments[j]);
-                    if a.exit != b.entry || b.exit != a.entry || a.exit == a.entry {
+                    let inverted = (a.exit < b.exit && a.entry > b.entry) || (a.exit > b.exit && a.entry < b.entry);
+                    let mutual = a.exit == b.entry && b.exit == a.entry && a.exit != a.entry;
+                    if !inverted && !mutual {
+                        continue;
+                    }
+                    // 뒤집힌 쌍의 두 도착점이 모두 가상 노드면 자리를 맞바꾸는 것으로 교차가 사라진다.
+                    let (a_to, b_to) = (a.to, b.to);
+                    let is_dummy = |l: usize| self.lnodes[l].node.is_none();
+                    if is_dummy(a_to) && is_dummy(b_to) && self.lnodes[a_to].layer == self.lnodes[b_to].layer {
+                        if self.debug {
+                            eprintln!("swap targets: seg {i} ({}->{}) x seg {j} ({}->{})", a.exit, a.entry, b.exit, b.entry);
+                        }
+                        let (x, y) = (self.lnodes[a_to].across, self.lnodes[b_to].across);
+                        self.lnodes[a_to].across = y;
+                        self.lnodes[b_to].across = x;
+                        // 같은 회차에서 반대 순서로 다시 만나 되돌리지 않도록 바로 갱신한다.
+                        self.refresh_ports();
+                        nudged = true;
+                        continue;
+                    }
+                    // 출발점 쪽은 바꾸지 않는다: 교차를 아래로만 밀어 실제 노드 앞에서 멈추게 해야
+                    // 위아래로 왕복하지 않는다. 남는 교차는 긴 가로선 위의 건너뛰기(◠)로 그려진다.
+                    if !mutual {
                         continue;
                     }
                     let candidates = [(j, false), (i, true), (i, false), (j, true)];
@@ -1600,11 +1629,14 @@ impl<'a> Layout<'a> {
         let segment = &self.segments[s];
         let layer = self.lnodes[segment.from].layer;
         let gap_start = self.layer_start[layer] + self.layer_total(layer);
+        // 그룹 닻으로 드나드는 선은 노드처럼 그룹 테두리에서 끝나고(시작하고), 표식도 테두리 위에 놓인다.
         let top = match self.lnodes[segment.from].node {
+            Some(n) if self.graph.nodes[n].shape == Shape::Anchor => self.group_bottom(self.lnode_block[segment.from]),
             Some(_) => self.node_along(segment.from) + self.lnodes[segment.from].along_size,
             None => gap_start,
         };
         let bottom = match self.lnodes[segment.to].node {
+            Some(n) if self.graph.nodes[n].shape == Shape::Anchor => self.group_top(self.lnode_block[segment.to]),
             Some(_) => self.node_along(segment.to) - 1,
             None => self.layer_start[layer + 1] - 1,
         };
