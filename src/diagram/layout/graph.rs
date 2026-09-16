@@ -902,20 +902,7 @@ impl<'a> Layout<'a> {
                     }
                 }
             }
-            intervals.sort();
-            let mut channel_ends: Vec<usize> = Vec::new();
-            for (low, high, s) in intervals {
-                let channel = match channel_ends.iter().position(|&end| end + 2 <= low) {
-                    Some(c) => c,
-                    None => {
-                        channel_ends.push(0);
-                        channel_ends.len() - 1
-                    }
-                };
-                channel_ends[channel] = high;
-                self.segments[s].channel = Some(channel);
-            }
-            let channels = channel_ends.len();
+            let channels = self.assign_channels(intervals);
             let room = |w: usize| if w > 0 { w + 1 } else { 0 };
             self.gap_label_room[layer] = room(label_room);
             self.gap_head_room[layer] = room(head_room);
@@ -926,6 +913,65 @@ impl<'a> Layout<'a> {
         for layer in 1..self.layer_count {
             self.layer_start[layer] = self.layer_start[layer - 1] + self.layer_total(layer - 1) + self.gap[layer - 1];
         }
+    }
+
+    /// 통로 줄 배정. 구간이 겹치지 않는 간선은 한 줄을 나눠 쓴다.
+    ///
+    /// 한 간선의 출발 접점과 다른 간선의 도착 접점이 같은 열이면 두 간선의 세로선이 그 열을
+    /// 나눠 쓰게 되므로, 출발 쪽 간선의 통로가 반드시 위에 오도록 순서를 강제한다
+    /// (출발 쪽은 통로까지 내려오고 도착 쪽은 통로부터 내려가니 줄이 다르면 겹치지 않는다).
+    /// 돌려주는 값은 쓴 줄 수.
+    fn assign_channels(&mut self, mut intervals: Vec<(usize, usize, usize)>) -> usize {
+        intervals.sort();
+        let count = intervals.len();
+        // must_precede[i]에 j가 있으면 i의 통로가 j보다 위여야 한다.
+        let mut must_precede: Vec<Vec<usize>> = vec![Vec::new(); count];
+        let mut pending: Vec<usize> = vec![0; count];
+        for i in 0..count {
+            for j in 0..count {
+                if i != j && self.segments[intervals[i].2].exit == self.segments[intervals[j].2].entry {
+                    must_precede[i].push(j);
+                    pending[j] += 1;
+                }
+            }
+        }
+        // 제약을 지키는 순서(위상 정렬). 순환이면 남은 것을 그냥 이어 붙인다.
+        let mut order: Vec<usize> = Vec::with_capacity(count);
+        let mut ready: Vec<usize> = (0..count).filter(|&i| pending[i] == 0).collect();
+        let mut placed = vec![false; count];
+        while let Some(i) = ready.first().copied() {
+            ready.remove(0);
+            order.push(i);
+            placed[i] = true;
+            for &j in &must_precede[i] {
+                pending[j] -= 1;
+                if pending[j] == 0 {
+                    ready.push(j);
+                    ready.sort_unstable();
+                }
+            }
+        }
+        order.extend((0..count).filter(|&i| !placed[i]));
+        let mut rows: Vec<Vec<(usize, usize)>> = Vec::new();
+        let mut assigned: Vec<Option<usize>> = vec![None; count];
+        for i in order {
+            let (low, high, s) = intervals[i];
+            let minimum = (0..count)
+                .filter(|&k| must_precede[k].contains(&i))
+                .filter_map(|k| assigned[k])
+                .map(|row| row + 1)
+                .max()
+                .unwrap_or(0);
+            let fits = |occupied: &Vec<(usize, usize)>| occupied.iter().all(|&(lo, hi)| hi + 2 <= low || high + 2 <= lo);
+            let row = (minimum..rows.len()).find(|&r| fits(&rows[r])).unwrap_or_else(|| {
+                rows.resize_with(minimum.max(rows.len()) + 1, Vec::new);
+                rows.len() - 1
+            });
+            rows[row].push((low, high));
+            assigned[i] = Some(row);
+            self.segments[s].channel = Some(row);
+        }
+        rows.len()
     }
 
     /// TB 라벨 자리: 가로 구간이 넉넉하면 그 가운데, 아니면 다른 간선의 세로줄과 안 붙는 쪽.
