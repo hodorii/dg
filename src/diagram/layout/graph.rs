@@ -1789,8 +1789,9 @@ fn marker_glyph(marker: Marker, direction: Direction, at_top: bool) -> Option<ch
         Marker::Arrow => ['▲', '▼', '◀', '▶'],
         Marker::OpenArrow => ['∧', '∨', '<', '>'],
         Marker::Triangle => ['△', '▽', '◁', '▷'],
-        Marker::DiamondFilled => ['◆'; 4],
-        Marker::DiamondOpen => ['◇'; 4],
+        // 합성·집합 표식은 작은 마름모: ♦(U+2666)·⋄(U+22C4)는 폭이 한 칸으로 고정이고 고정폭 글꼴에 있다.
+        Marker::DiamondFilled => ['♦'; 4],
+        Marker::DiamondOpen => ['⋄'; 4],
         Marker::Circle => ['○'; 4],
         Marker::Cross => ['✕'; 4],
     };
