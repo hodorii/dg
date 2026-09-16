@@ -1,4 +1,7 @@
-//! 스타일이 붙은 텍스트 조각과 줄.
+//! 스타일이 붙은 텍스트 줄.
+//!
+//! 줄 하나는 문자열 하나와 (길이, 스타일) 구간 목록으로 저장한다. 조각마다 문자열을 따로 갖는 것보다
+//! 할당이 훨씬 적어, 수십만 줄짜리 문서도 가볍게 들고 있을 수 있다. 만들 때는 `Span`을 밀어 넣는다.
 
 use crate::style::{Style, Theme};
 use crate::text::width_of;
@@ -21,9 +24,16 @@ impl Span {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Run {
+    len: u32,
+    style: Style,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Line {
-    pub spans: Vec<Span>,
+    text: String,
+    runs: Vec<Run>,
 }
 
 impl Line {
@@ -31,55 +41,97 @@ impl Line {
         Line::default()
     }
     pub fn from_spans(spans: Vec<Span>) -> Line {
-        Line { spans }
+        let mut line = Line::empty();
+        for span in spans {
+            line.push_str(&span.text, span.style);
+        }
+        line
     }
     pub fn single(text: impl Into<String>, style: Style) -> Line {
-        Line { spans: vec![Span::new(text, style)] }
+        let text = text.into();
+        let runs = if text.is_empty() { Vec::new() } else { vec![Run { len: text.len() as u32, style }] };
+        Line { text, runs }
     }
     pub fn push(&mut self, span: Span) {
-        if span.text.is_empty() {
+        self.push_str(&span.text, span.style);
+    }
+    pub fn push_str(&mut self, text: &str, style: Style) {
+        if text.is_empty() {
             return;
         }
-        if let Some(last) = self.spans.last_mut()
-            && last.style == span.style
-        {
-            last.text.push_str(&span.text);
-            return;
+        self.text.push_str(text);
+        match self.runs.last_mut() {
+            Some(last) if last.style == style => last.len += text.len() as u32,
+            _ => self.runs.push(Run { len: text.len() as u32, style }),
         }
-        self.spans.push(span);
+    }
+    pub fn append(&mut self, other: &Line) {
+        for (text, style) in other.runs() {
+            self.push_str(text, style);
+        }
+    }
+    /// (텍스트, 스타일) 구간을 차례로 돌려준다.
+    pub fn runs(&self) -> impl Iterator<Item = (&str, Style)> {
+        let mut offset = 0;
+        self.runs.iter().map(move |run| {
+            let start = offset;
+            offset += run.len as usize;
+            (&self.text[start..offset], run.style)
+        })
+    }
+    pub fn text(&self) -> &str {
+        &self.text
     }
     pub fn width(&self) -> usize {
-        self.spans.iter().map(Span::width).sum()
+        width_of(&self.text)
     }
+    #[cfg(test)]
     pub fn plain(&self) -> String {
-        self.spans.iter().map(|s| s.text.as_str()).collect()
+        self.text.clone()
     }
     pub fn is_blank(&self) -> bool {
-        self.spans.iter().all(|s| s.text.trim().is_empty())
+        self.text.trim().is_empty()
     }
+    /// 저장용으로 남는 용량을 줄인다.
+    pub fn shrink(&mut self) {
+        self.text.shrink_to_fit();
+        self.runs.shrink_to_fit();
+    }
+
     /// 대소문자 구분 없이 `needle`과 일치하는 부분을 `hit` 스타일로 바꾼 줄.
     pub fn highlight(&self, needle: &str, hit: Style) -> Line {
         if needle.is_empty() {
             return self.clone();
         }
-        let plain = self.plain();
-        let lower = plain.to_lowercase();
+        let lower = self.text.to_lowercase();
         let needle_lower = needle.to_lowercase();
+        // 소문자 변환으로 길이가 달라질 수 있으므로 원문 글자 경계로 되돌린다.
         let mut hit_ranges: Vec<(usize, usize)> = Vec::new();
-        let mut from = 0;
-        while let Some(pos) = lower[from..].find(&needle_lower) {
-            let start = from + pos;
-            // 소문자 변환으로 바이트 길이가 달라질 수 있으므로 원문 기준 끝을 다시 찾는다.
-            let end = plain[start..]
-                .char_indices()
-                .map(|(i, c)| i + c.len_utf8())
-                .find(|&e| plain[start..start + e].to_lowercase().len() >= needle_lower.len())
-                .map(|e| start + e)
-                .unwrap_or(plain.len());
-            hit_ranges.push((start, end));
-            from = end.max(start + 1);
-            if from >= lower.len() {
-                break;
+        if lower.len() == self.text.len() {
+            let mut from = 0;
+            while let Some(pos) = lower[from..].find(&needle_lower) {
+                let start = from + pos;
+                let end = start + needle_lower.len();
+                hit_ranges.push((start, end));
+                from = end.max(start + 1);
+                if from >= lower.len() {
+                    break;
+                }
+            }
+        } else {
+            let mut from = 0;
+            while let Some(pos) = lower[from..].find(&needle_lower) {
+                let start = from + pos;
+                let end = self.text[start..]
+                    .char_indices()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .find(|&e| self.text[start..start + e].to_lowercase().len() >= needle_lower.len())
+                    .map_or(self.text.len(), |e| start + e);
+                hit_ranges.push((start, end));
+                from = end.max(start + 1);
+                if from >= lower.len() {
+                    break;
+                }
             }
         }
         if hit_ranges.is_empty() {
@@ -87,36 +139,36 @@ impl Line {
         }
         let mut out = Line::empty();
         let mut offset = 0;
-        for span in &self.spans {
-            let span_start = offset;
-            let span_end = offset + span.text.len();
-            let mut cursor = span_start;
+        for (text, style) in self.runs() {
+            let run_start = offset;
+            let run_end = offset + text.len();
+            let mut cursor = run_start;
             for &(hit_start, hit_end) in &hit_ranges {
-                let start = hit_start.max(span_start);
-                let end = hit_end.min(span_end);
+                let start = hit_start.max(run_start);
+                let end = hit_end.min(run_end);
                 if start >= end {
                     continue;
                 }
                 if cursor < start {
-                    out.push(Span::new(&plain[cursor..start], span.style));
+                    out.push_str(&self.text[cursor..start], style);
                 }
-                out.push(Span::new(&plain[start..end], span.style.merge(hit)));
+                out.push_str(&self.text[start..end], style.merge(hit));
                 cursor = end;
             }
-            if cursor < span_end {
-                out.push(Span::new(&plain[cursor..span_end], span.style));
+            if cursor < run_end {
+                out.push_str(&self.text[cursor..run_end], style);
             }
-            offset = span_end;
+            offset = run_end;
         }
         out
     }
 
     /// ANSI 문자열로 만든다. 줄 끝에서 스타일을 되돌린다.
     pub fn to_ansi(&self, theme: &Theme) -> String {
-        let mut out = String::new();
+        let mut out = String::with_capacity(self.text.len() + self.runs.len() * 12);
         let mut styled = false;
-        for span in &self.spans {
-            let code = span.style.ansi(theme.enabled);
+        for (text, style) in self.runs() {
+            let code = style.ansi(theme.enabled);
             if styled {
                 out.push_str("\x1b[0m");
                 styled = false;
@@ -125,7 +177,7 @@ impl Line {
                 out.push_str(&code);
                 styled = true;
             }
-            out.push_str(&span.text);
+            out.push_str(text);
         }
         if styled {
             out.push_str("\x1b[0m");
@@ -143,16 +195,25 @@ mod tests {
         let mut line = Line::empty();
         line.push(Span::plain("a"));
         line.push(Span::plain("b"));
-        assert_eq!(line.spans.len(), 1);
+        assert_eq!(line.runs.len(), 1);
         assert_eq!(line.plain(), "ab");
     }
 
     #[test]
-    fn highlight_marks_matches_across_spans() {
+    fn highlight_marks_matches_across_runs() {
         let line = Line::from_spans(vec![Span::plain("Hel"), Span::new("lo world", Style::PLAIN.bold())]);
         let hit = line.highlight("LLO", Style::PLAIN.reverse());
         assert_eq!(hit.plain(), "Hello world");
-        assert!(hit.spans.iter().any(|s| s.style.reverse && s.text == "l"));
-        assert!(hit.spans.iter().any(|s| s.style.reverse && s.style.bold && s.text == "lo"));
+        let runs: Vec<(&str, Style)> = hit.runs().collect();
+        assert!(runs.iter().any(|(t, s)| s.reverse && *t == "l"));
+        assert!(runs.iter().any(|(t, s)| s.reverse && s.bold && *t == "lo"));
+    }
+
+    #[test]
+    fn highlight_handles_korean() {
+        let line = Line::single("가나다 ABC", Style::PLAIN);
+        let hit = line.highlight("abc", Style::PLAIN.reverse());
+        assert_eq!(hit.plain(), "가나다 ABC");
+        assert!(hit.runs().any(|(t, s)| s.reverse && t == "ABC"));
     }
 }

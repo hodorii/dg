@@ -160,7 +160,7 @@ impl<'a, F: Fn(usize) -> Vec<Line>> Pager<'a, F> {
         self.matches = if needle.is_empty() {
             Vec::new()
         } else {
-            self.lines.iter().enumerate().filter(|(_, l)| l.plain().to_lowercase().contains(&needle)).map(|(i, _)| i).collect()
+            self.lines.iter().enumerate().filter(|(_, l)| l.text().to_lowercase().contains(&needle)).map(|(i, _)| i).collect()
         };
     }
 
@@ -232,18 +232,18 @@ fn truncate_line(line: &Line, columns: usize) -> Line {
     }
     let mut out = Line::empty();
     let mut used = 0;
-    for span in &line.spans {
-        let mut text = String::new();
-        for c in span.text.chars() {
+    for (text, style) in line.runs() {
+        let mut end = 0;
+        for c in text.chars() {
             let w = char_width(c);
             if used + w > columns {
-                out.push(crate::line::Span::new(text, span.style));
+                out.push_str(&text[..end], style);
                 return out;
             }
-            text.push(c);
+            end += c.len_utf8();
             used += w;
         }
-        out.push(crate::line::Span::new(text, span.style));
+        out.push_str(text, style);
     }
     out
 }

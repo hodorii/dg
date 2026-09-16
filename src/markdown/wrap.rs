@@ -4,37 +4,35 @@ use crate::line::Span;
 use crate::style::Style;
 use crate::text::{char_width, width_of};
 
-struct Word {
-    text: String,
+struct Word<'a> {
+    text: &'a str,
     style: Style,
     is_space: bool,
     is_break: bool,
 }
 
-fn tokenize(spans: &[Span]) -> Vec<Word> {
+/// 조각들을 낱말·공백·강제 줄바꿈 토큰으로 나눈다. 원문을 빌려 쓰므로 할당이 없다.
+fn tokenize(spans: &[Span]) -> Vec<Word<'_>> {
     let mut words = Vec::new();
     for span in spans {
-        let mut current = String::new();
-        let mut current_is_space = false;
-        let flush = |current: &mut String, is_space: bool, words: &mut Vec<Word>| {
-            if !current.is_empty() {
-                words.push(Word { text: std::mem::take(current), style: span.style, is_space, is_break: false });
+        for (k, segment) in span.text.split('\n').enumerate() {
+            if k > 0 {
+                words.push(Word { text: "", style: span.style, is_space: false, is_break: true });
             }
-        };
-        for c in span.text.chars() {
-            if c == '\n' {
-                flush(&mut current, current_is_space, &mut words);
-                words.push(Word { text: String::new(), style: span.style, is_space: false, is_break: true });
-                continue;
+            let mut start = 0;
+            let mut current_is_space = false;
+            for (index, c) in segment.char_indices() {
+                let is_space = c == ' ';
+                if index > start && is_space != current_is_space {
+                    words.push(Word { text: &segment[start..index], style: span.style, is_space: current_is_space, is_break: false });
+                    start = index;
+                }
+                current_is_space = is_space;
             }
-            let is_space = c == ' ';
-            if !current.is_empty() && is_space != current_is_space {
-                flush(&mut current, current_is_space, &mut words);
+            if start < segment.len() {
+                words.push(Word { text: &segment[start..], style: span.style, is_space: current_is_space, is_break: false });
             }
-            current_is_space = is_space;
-            current.push(c);
         }
-        flush(&mut current, current_is_space, &mut words);
     }
     words
 }
@@ -79,13 +77,13 @@ pub fn wrap_spans(spans: &[Span], width: usize) -> Vec<Vec<Span>> {
             }
             continue;
         }
-        let word_width = width_of(&word.text);
+        let word_width = width_of(word.text);
         if current_width + word_width > width && current_width > 0 {
             finish(&mut current, &mut lines);
             current_width = 0;
         }
         if word_width <= width {
-            push_span(&mut current, &word.text, word.style);
+            push_span(&mut current, word.text, word.style);
             current_width += word_width;
             continue;
         }

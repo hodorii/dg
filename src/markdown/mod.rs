@@ -112,9 +112,8 @@ impl Renderer<'_> {
 
     fn emit(&mut self, content: Line) {
         let mut line = self.take_prefix();
-        for span in content.spans {
-            line.push(span);
-        }
+        line.append(&content);
+        line.shrink();
         self.lines.push(line);
     }
 
@@ -122,11 +121,11 @@ impl Renderer<'_> {
         if self.lines.last().is_some_and(|l| !l.is_blank()) {
             let prefix = self.take_prefix();
             let mut line = Line::empty();
-            for span in prefix.spans {
-                if span.text.trim().is_empty() {
+            for (text, style) in prefix.runs() {
+                if text.trim().is_empty() {
                     continue;
                 }
-                line.push(Span::new(span.text.trim_end().to_string(), span.style));
+                line.push_str(text.trim_end(), style);
             }
             self.lines.push(line);
         }
@@ -351,7 +350,7 @@ impl Renderer<'_> {
             TagEnd::BlockQuote(_) => {
                 self.flush_paragraph();
                 self.pop_style();
-                while self.lines.last().is_some_and(|l| !l.is_blank() && l.plain().trim().chars().all(|c| c == '│')) {
+                while self.lines.last().is_some_and(|l| !l.is_blank() && l.text().trim().chars().all(|c| c == '│')) {
                     self.lines.pop();
                 }
                 self.indents.pop();

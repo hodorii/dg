@@ -393,7 +393,8 @@ impl<'a> SequenceLayout<'a> {
         let footer_top = body_end + 1;
         let bottom = footer_top + header_height;
 
-        // 생명선
+        // 생명선·활성 막대·메시지는 간선 모드로 그려 서로 직교하면 건너뛰기로 표시한다.
+        canvas.set_edge_mode(true);
         for (p, &x) in self.centers.iter().enumerate() {
             canvas.vline(x, header_top + self.boxes[p].height.max(1) - 1 + (header_height - self.boxes[p].height), footer_top, LineKind::Solid, theme.diagram_line);
             for (start, end) in &active[p] {
@@ -447,6 +448,7 @@ impl<'a> SequenceLayout<'a> {
             }
         }
 
+        canvas.set_edge_mode(false);
         // 프레임(안쪽 것을 나중에 그려 테두리가 위에 남게 한다)
         let mut order: Vec<usize> = (0..self.fragments.len()).collect();
         order.sort_by_key(|&f| std::cmp::Reverse(self.fragments[f].inner_depth));

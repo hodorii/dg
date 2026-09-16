@@ -1061,6 +1061,7 @@ impl<'a> Layout<'a> {
         self.draw_groups(canvas);
         for (i, node) in self.lnodes.iter().enumerate() {
             let along = self.node_along(i);
+            canvas.set_edge_mode(node.node.is_none());
             match node.node {
                 Some(n) => {
                     let (x, y) = self.to_canvas(along, node.across);
@@ -1080,6 +1081,7 @@ impl<'a> Layout<'a> {
                 }
             }
         }
+        canvas.set_edge_mode(true);
         for s in 0..self.segments.len() {
             self.draw_segment(canvas, s);
         }
@@ -1087,6 +1089,7 @@ impl<'a> Layout<'a> {
             self.draw_segment_decorations(canvas, s);
         }
         self.draw_self_loops(canvas);
+        canvas.set_edge_mode(false);
         self.draw_group_titles(canvas);
     }
 

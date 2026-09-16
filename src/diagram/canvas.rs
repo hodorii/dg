@@ -1,6 +1,6 @@
 //! 문자 격자. 선을 그으면 이미 있는 선과 이음 문자로 합쳐진다.
 
-use crate::line::{Line, Span};
+use crate::line::Line;
 use crate::style::Style;
 use crate::text::{char_width, width_of};
 
@@ -8,6 +8,8 @@ pub const NORTH: u8 = 1;
 pub const SOUTH: u8 = 2;
 pub const WEST: u8 = 4;
 pub const EAST: u8 = 8;
+/// 간선이 다른 간선을 건너뛰는 칸의 글자(반원 돌출).
+const HOP: char = '◠';
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum LineKind {
@@ -28,6 +30,10 @@ struct Cell {
     round: bool,
     /// 넓은 글자(한글 등)의 오른쪽 절반.
     continuation: bool,
+    /// 간선 모드에서 그린 선(테두리·구분선이 아님).
+    is_edge: bool,
+    /// 간선끼리 직교하는 칸. `┼` 대신 건너뛰기 표시로 그린다.
+    is_hop: bool,
 }
 
 impl Cell {
@@ -39,6 +45,8 @@ impl Cell {
         heavy: false,
         round: false,
         continuation: false,
+        is_edge: false,
+        is_hop: false,
     };
     fn is_text(&self) -> bool {
         self.lines == 0 && self.ch != ' '
@@ -48,11 +56,18 @@ impl Cell {
 pub struct Canvas {
     width: usize,
     cells: Vec<Vec<Cell>>,
+    /// 켜져 있으면 지금 긋는 선은 간선이며, 다른 간선과 직교할 때 건너뛰기로 그린다.
+    edge_mode: bool,
 }
 
 impl Canvas {
     pub fn new(width: usize, height: usize) -> Canvas {
-        Canvas { width, cells: vec![vec![Cell::BLANK; width]; height] }
+        Canvas { width, cells: vec![vec![Cell::BLANK; width]; height], edge_mode: false }
+    }
+
+    /// 간선 모드 전환. 테두리·상자·구분선은 끄고, 간선·생명선은 켜고 긋는다.
+    pub fn set_edge_mode(&mut self, on: bool) {
+        self.edge_mode = on;
     }
 
     fn ensure(&mut self, x: usize, y: usize) -> bool {
@@ -112,6 +127,16 @@ impl Canvas {
         if cell.is_text() || cell.continuation {
             return;
         }
+        if self.edge_mode && cell.is_edge && bits != 0 {
+            let vertical = NORTH | SOUTH;
+            let horizontal = WEST | EAST;
+            if (cell.lines == vertical && bits == horizontal) || (cell.lines == horizontal && bits == vertical) {
+                cell.is_hop = true;
+            }
+        }
+        if self.edge_mode && bits != 0 {
+            cell.is_edge = true;
+        }
         cell.lines |= bits;
         cell.style = style;
         cell.round = cell.round || round;
@@ -120,7 +145,7 @@ impl Canvas {
             LineKind::Heavy => cell.heavy = true,
             LineKind::Solid => {}
         }
-        cell.ch = line_char(cell.lines, cell.dashed, cell.heavy, cell.round);
+        cell.ch = if cell.is_hop { HOP } else { line_char(cell.lines, cell.dashed, cell.heavy, cell.round) };
     }
 
     /// 가로선. 양 끝은 안쪽 방향 비트만 갖는다.
@@ -203,11 +228,12 @@ impl Canvas {
                 while end > 0 && row[end - 1].ch == ' ' && !row[end - 1].continuation {
                     end -= 1;
                 }
+                let mut buffer = [0u8; 4];
                 for cell in &row[..end] {
                     if cell.continuation {
                         continue;
                     }
-                    line.push(Span::new(cell.ch.to_string(), cell.style));
+                    line.push_str(cell.ch.encode_utf8(&mut buffer), cell.style);
                 }
                 line
             })
@@ -266,6 +292,17 @@ mod tests {
         c.hline(0, 4, 1, LineKind::Solid, Style::PLAIN);
         c.vline(2, 0, 2, LineKind::Solid, Style::PLAIN);
         assert_eq!(rows(c), vec!["  │", "──┼──", "  │"]);
+    }
+
+    #[test]
+    fn edges_hop_over_edges_but_cross_borders() {
+        let mut c = Canvas::new(5, 4);
+        c.set_edge_mode(true);
+        c.vline(2, 0, 3, LineKind::Solid, Style::PLAIN);
+        c.hline(0, 4, 1, LineKind::Solid, Style::PLAIN);
+        c.set_edge_mode(false);
+        c.hline(0, 4, 2, LineKind::Solid, Style::PLAIN);
+        assert_eq!(rows(c), vec!["  │", "──◠──", "──┼──", "  │"]);
     }
 
     #[test]

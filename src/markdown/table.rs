@@ -3,6 +3,7 @@
 use super::wrap::wrap_spans;
 use crate::line::{Line, Span};
 use crate::style::Theme;
+use crate::text::width_of;
 use pulldown_cmark::Alignment;
 
 pub fn render(rows: &[Vec<Vec<Span>>], has_header: bool, alignments: &[Alignment], width: usize, theme: &Theme) -> Vec<Line> {
@@ -13,8 +14,19 @@ pub fn render(rows: &[Vec<Vec<Span>>], has_header: bool, alignments: &[Alignment
     let mut natural: Vec<usize> = vec![1; column_count];
     for row in rows {
         for (index, cell) in row.iter().enumerate() {
-            let cell_width = wrap_spans(cell, usize::MAX / 4).iter().map(|l| l.iter().map(Span::width).sum::<usize>()).max().unwrap_or(0);
-            natural[index] = natural[index].max(cell_width);
+            // 강제 줄바꿈(`<br>`)만 나누고 자연 폭을 잰다.
+            let mut line_width = 0;
+            let mut cell_width = 0;
+            for span in cell {
+                for (k, piece) in span.text.split('\n').enumerate() {
+                    if k > 0 {
+                        cell_width = cell_width.max(line_width);
+                        line_width = 0;
+                    }
+                    line_width += width_of(piece);
+                }
+            }
+            natural[index] = natural[index].max(cell_width.max(line_width));
         }
     }
     let frame = column_count * 3 + 1;
@@ -36,11 +48,16 @@ pub fn render(rows: &[Vec<Vec<Span>>], has_header: bool, alignments: &[Alignment
     lines.push(rule("┌", "─", "┬", "┐", border));
     for (row_index, row) in rows.iter().enumerate() {
         let is_header = has_header && row_index == 0;
+        let empty: Vec<Span> = Vec::new();
         let cells: Vec<Vec<Vec<Span>>> = (0..column_count)
             .map(|c| {
-                let spans = row.get(c).cloned().unwrap_or_default();
-                let spans: Vec<Span> = if is_header { spans.into_iter().map(|s| Span::new(s.text, s.style.merge(theme.table_head))).collect() } else { spans };
-                wrap_spans(&spans, widths[c])
+                let spans = row.get(c).unwrap_or(&empty);
+                if is_header {
+                    let styled: Vec<Span> = spans.iter().map(|s| Span::new(s.text.clone(), s.style.merge(theme.table_head))).collect();
+                    wrap_spans(&styled, widths[c])
+                } else {
+                    wrap_spans(spans, widths[c])
+                }
             })
             .collect();
         let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
@@ -48,7 +65,7 @@ pub fn render(rows: &[Vec<Vec<Span>>], has_header: bool, alignments: &[Alignment
             let mut line = Line::empty();
             line.push(Span::new("│", border));
             for c in 0..column_count {
-                let content = cells[c].get(line_index).cloned().unwrap_or_default();
+                let content: &[Span] = cells[c].get(line_index).map_or(&empty, Vec::as_slice);
                 let content_width: usize = content.iter().map(Span::width).sum();
                 let slack = widths[c].saturating_sub(content_width);
                 let (left_pad, right_pad) = match alignments.get(c) {
@@ -58,7 +75,7 @@ pub fn render(rows: &[Vec<Vec<Span>>], has_header: bool, alignments: &[Alignment
                 };
                 line.push(Span::plain(" ".repeat(left_pad + 1)));
                 for span in content {
-                    line.push(span);
+                    line.push_str(&span.text, span.style);
                 }
                 line.push(Span::plain(" ".repeat(right_pad + 1)));
                 line.push(Span::new("│", border));
