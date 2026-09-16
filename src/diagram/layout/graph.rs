@@ -1629,14 +1629,15 @@ impl<'a> Layout<'a> {
         let segment = &self.segments[s];
         let layer = self.lnodes[segment.from].layer;
         let gap_start = self.layer_start[layer] + self.layer_total(layer);
-        // 그룹 닻으로 드나드는 선은 노드처럼 그룹 테두리에서 끝나고(시작하고), 표식도 테두리 위에 놓인다.
+        // 그룹 닻으로 드나드는 선은 노드와 같은 규칙으로 그룹 테두리 바로 바깥 칸에서 끝나고(시작하고),
+        // 표식도 그 칸에 놓인다.
         let top = match self.lnodes[segment.from].node {
-            Some(n) if self.graph.nodes[n].shape == Shape::Anchor => self.group_bottom(self.lnode_block[segment.from]),
+            Some(n) if self.graph.nodes[n].shape == Shape::Anchor => self.group_bottom(self.lnode_block[segment.from]) + 1,
             Some(_) => self.node_along(segment.from) + self.lnodes[segment.from].along_size,
             None => gap_start,
         };
         let bottom = match self.lnodes[segment.to].node {
-            Some(n) if self.graph.nodes[n].shape == Shape::Anchor => self.group_top(self.lnode_block[segment.to]),
+            Some(n) if self.graph.nodes[n].shape == Shape::Anchor => self.group_top(self.lnode_block[segment.to]).saturating_sub(1),
             Some(_) => self.node_along(segment.to) - 1,
             None => self.layer_start[layer + 1] - 1,
         };
