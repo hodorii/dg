@@ -477,8 +477,8 @@ impl<'a> SequenceLayout<'a> {
         for (p, participant_box) in self.boxes.iter().enumerate() {
             let x = self.centers[p].saturating_sub(participant_box.width / 2);
             let y = header_top + header_height - participant_box.height;
-            shape::draw(canvas, x, y, participant_box.shape, &participant_box.sections, theme, 0);
-            shape::draw(canvas, x, footer_top, participant_box.shape, &participant_box.sections, theme, 0);
+            shape::draw(canvas, x, y, participant_box.shape, &participant_box.sections, theme, 0, 0);
+            shape::draw(canvas, x, footer_top, participant_box.shape, &participant_box.sections, theme, 0, 0);
         }
         let _ = bottom;
     }

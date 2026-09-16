@@ -36,8 +36,10 @@ pub fn measure(shape: Shape, sections: &[Vec<String>]) -> (usize, usize) {
 }
 
 /// `min_height`보다 낮으면 위아래를 늘려 본문을 세로 가운데에 둔다.
-pub fn draw(canvas: &mut Canvas, x: usize, y: usize, shape: Shape, sections: &[Vec<String>], theme: &Theme, min_height: usize) {
-    let (w, measured) = measure(shape, sections);
+/// `min_width`·`min_height`보다 작으면 늘려 그린다(접점·라벨 자리 확보용). 본문은 가운데에 둔다.
+pub fn draw(canvas: &mut Canvas, x: usize, y: usize, shape: Shape, sections: &[Vec<String>], theme: &Theme, min_width: usize, min_height: usize) {
+    let (measured_width, measured) = measure(shape, sections);
+    let w = if matches!(shape, Shape::Start | Shape::End | Shape::Anchor) { measured_width } else { measured_width.max(min_width) };
     let h = measured.max(min_height);
     let extra_top = (h - measured) / 2;
     canvas.clear_rect(x, y, w, h);
@@ -140,7 +142,7 @@ mod tests {
     fn draw_rows(shape: Shape, sections: Vec<Vec<String>>) -> Vec<String> {
         let (w, h) = measure(shape, &sections);
         let mut canvas = Canvas::new(w, h);
-        draw(&mut canvas, 0, 0, shape, &sections, &Theme::none(), 0);
+        draw(&mut canvas, 0, 0, shape, &sections, &Theme::none(), 0, 0);
         canvas.into_lines().iter().map(Line::plain).collect()
     }
 

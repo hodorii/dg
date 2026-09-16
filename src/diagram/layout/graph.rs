@@ -389,10 +389,15 @@ impl<'a> Layout<'a> {
 
     fn new(graph: &'a Graph, theme: &'a Theme, direction: Direction, cap: usize) -> Layout<'a> {
         let mut degree = vec![(0usize, 0usize); graph.nodes.len()];
+        // 노드에 붙는 끝 라벨(다중성) 가운데 가장 넓은 것: 접점 간격을 정한다.
+        let mut widest_end_label = vec![0usize; graph.nodes.len()];
         for edge in &graph.edges {
             if edge.from != edge.to {
                 degree[edge.from].1 += 1;
                 degree[edge.to].0 += 1;
+                let widest = width_of(&edge.tail_label).max(width_of(&edge.head_label));
+                widest_end_label[edge.from] = widest_end_label[edge.from].max(widest);
+                widest_end_label[edge.to] = widest_end_label[edge.to].max(widest);
             }
         }
         let lnodes = graph
@@ -414,7 +419,14 @@ impl<'a> Layout<'a> {
                     (w, h)
                 };
                 let (along_size, across_size) = match direction {
-                    Direction::TopDown => (h, w),
+                    Direction::TopDown => {
+                        // 접점마다 라벨이 붙을 수 있으면 상자를 그만큼 넓혀 접점 사이를 벌린다.
+                        let (incoming, outgoing) = degree[index];
+                        let ports = incoming.max(outgoing);
+                        let spacing = port_spacing_for(widest_end_label[index]);
+                        let needed = if ports > 1 && w > 2 { (ports - 1) * spacing + 3 } else { 0 };
+                        (h, w.max(needed))
+                    }
                     Direction::LeftRight => {
                         // 왼쪽→오른쪽에서는 간선이 나가는 줄마다 라벨이 붙으므로 두 줄 간격이 필요하다.
                         let (incoming, outgoing) = degree[index];
@@ -1101,8 +1113,9 @@ impl<'a> Layout<'a> {
 
     // ── 6. 배선 ────────────────────────────────────────────────────────
 
-    /// 노드의 안쪽 칸에 `count`개 접점을 둘 때 `index`번째 위치. 가운데를 기준으로 두 칸씩 벌린다.
-    fn spread(&self, lnode: usize, index: usize, count: usize) -> usize {
+    /// 노드의 안쪽 칸에 `count`개 접점을 둘 때 `index`번째 위치. 가운데를 기준으로 `spacing`칸씩 벌리되,
+    /// 들어가지 않으면 두 칸, 그것도 안 되면 고르게 나눈다.
+    fn spread(&self, lnode: usize, index: usize, count: usize, spacing: usize) -> usize {
         let node = &self.lnodes[lnode];
         if node.across_size <= 2 {
             return node.across;
@@ -1112,10 +1125,25 @@ impl<'a> Layout<'a> {
         if count <= 1 {
             return center;
         }
-        if 2 * (count - 1) < usable {
-            return center + 2 * index - (count - 1);
+        for step in [spacing.max(2), 2] {
+            if step * (count - 1) < usable {
+                let start = center - (step * (count - 1)) / 2;
+                return start + step * index;
+            }
         }
         (node.across + 1 + ((index + 1) * usable) / (count + 1)).min(node.across + node.across_size - 2)
+    }
+
+    /// 끝 라벨(다중성)이 이웃 접점과 겹치지 않게 하려면 접점 사이가 얼마나 벌어져야 하는지.
+    fn port_spacing(&self, segments: &[usize], tail_side: bool) -> usize {
+        segments
+            .iter()
+            .map(|&s| {
+                let (_, tail, head) = self.segment_labels(s);
+                width_of(if tail_side { &tail } else { &head })
+            })
+            .max()
+            .map_or(2, port_spacing_for)
     }
 
     /// 노드마다 나가는/들어오는 접점을 이웃 위치 순서로 배정한다(노드 기준 상대 위치).
@@ -1130,8 +1158,9 @@ impl<'a> Layout<'a> {
                 ca.partial_cmp(&cb).unwrap_or(std::cmp::Ordering::Equal)
             });
             let total = outgoing.len();
+            let spacing = self.port_spacing(&outgoing, true);
             for (k, s) in outgoing.into_iter().enumerate() {
-                self.segments[s].exit_offset = self.spread(i, k, total) - base;
+                self.segments[s].exit_offset = self.spread(i, k, total, spacing) - base;
                 self.segments[s].exit_rank = (k, total);
             }
             let mut incoming: Vec<usize> = (0..self.segments.len()).filter(|&s| self.segments[s].to == i).collect();
@@ -1141,8 +1170,9 @@ impl<'a> Layout<'a> {
                 ca.partial_cmp(&cb).unwrap_or(std::cmp::Ordering::Equal)
             });
             let total = incoming.len();
+            let spacing = self.port_spacing(&incoming, false);
             for (k, s) in incoming.into_iter().enumerate() {
-                self.segments[s].entry_offset = self.spread(i, k, total) - base;
+                self.segments[s].entry_offset = self.spread(i, k, total, spacing) - base;
                 self.segments[s].entry_rank = (k, total);
             }
         }
@@ -1513,11 +1543,11 @@ impl<'a> Layout<'a> {
             match node.node {
                 Some(n) => {
                     let (x, y) = self.to_canvas(along, node.across);
-                    let min_height = match self.direction {
-                        Direction::TopDown => 0,
-                        Direction::LeftRight => node.across_size,
+                    let (min_width, min_height) = match self.direction {
+                        Direction::TopDown => (node.across_size, 0),
+                        Direction::LeftRight => (0, node.across_size),
                     };
-                    shape::draw(canvas, x, y, self.graph.nodes[n].shape, &node.sections, self.theme, min_height);
+                    shape::draw(canvas, x, y, self.graph.nodes[n].shape, &node.sections, self.theme, min_width, min_height);
                 }
                 None => {
                     // 층 양옆 통로까지 한 칸씩 물려 그려야 그룹 테두리와 만나는 칸이 `┼`가 된다.
@@ -1770,11 +1800,17 @@ impl<'a> Layout<'a> {
     }
 }
 
-/// 끝 라벨을 선의 어느 쪽에 둘지: 여러 간선이 한 노드에 모이면 왼쪽 절반은 선 왼쪽에 둔다.
+/// 끝 라벨을 선의 어느 쪽에 둘지: 접점이 둘이면 왼쪽 것은 선 왼쪽에, 그 밖에는 모두 오른쪽에 둔다
+/// (셋 이상은 접점 간격을 라벨 폭만큼 벌려 두었다).
 fn side_label_x(line_x: usize, rank: (usize, usize), label_width: usize) -> usize {
     let (index, count) = rank;
     // 선·표식과 라벨 사이에 한 칸을 띄운다.
-    if count > 1 && index * 2 < count { line_x.saturating_sub(label_width + 1) } else { line_x + 2 }
+    if count == 2 && index == 0 { line_x.saturating_sub(label_width + 1) } else { line_x + 2 }
+}
+
+/// 끝 라벨 폭에 따른 접점 간격: 표식, 한 칸, 라벨, 한 칸.
+fn port_spacing_for(label_width: usize) -> usize {
+    if label_width == 0 { 2 } else { label_width + 3 }
 }
 
 /// 끝 표식 글자. `at_top`이면 위(또는 왼쪽) 노드에 붙는 쪽이다.
