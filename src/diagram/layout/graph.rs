@@ -1241,6 +1241,14 @@ impl<'a> Layout<'a> {
                 let (label, tail_label, head_label) = self.segment_labels(s);
                 let label_width = width_of(&label);
                 let bent = segment.exit != segment.entry;
+                if self.direction == Direction::TopDown {
+                    // 끝 라벨은 선 오른쪽 두 칸부터 쓰므로 캔버스가 그만큼 넓어야 한다.
+                    for (across, text) in [(segment.exit, &tail_label), (segment.entry, &head_label)] {
+                        if !text.is_empty() {
+                            self.extra_across = self.extra_across.max(across + 2 + width_of(text));
+                        }
+                    }
+                }
                 match self.direction {
                     Direction::TopDown => {
                         if !bent && label.is_empty() {

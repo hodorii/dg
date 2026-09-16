@@ -4,11 +4,13 @@ pub mod canvas;
 pub mod ir;
 pub mod layout;
 pub mod mermaid;
+pub mod options;
 pub mod plantuml;
 
 use crate::line::{Line, Span};
 use crate::style::Theme;
 use crate::text::width_of;
+pub use options::{DiagramOptions, ErNotation};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
@@ -50,10 +52,11 @@ pub fn language_of_source(path: Option<&str>, source: &str) -> Option<Language> 
 }
 
 /// 다이어그램을 그린다. 지원하지 않거나 폭에 맞지 않으면 `None`.
-pub fn render(language: Language, source: &str, theme: &Theme, width: usize) -> Option<Vec<Line>> {
+pub fn render(language: Language, source: &str, theme: &Theme, width: usize, options: DiagramOptions) -> Option<Vec<Line>> {
+    let options = options.with_source(source);
     let (kind, body) = match language {
-        Language::Mermaid => mermaid::render(source, theme, width)?,
-        Language::PlantUml => plantuml::render(source, theme, width)?,
+        Language::Mermaid => mermaid::render(source, theme, width, options)?,
+        Language::PlantUml => plantuml::render(source, theme, width, options)?,
     };
     if body.iter().all(Line::is_blank) {
         return None;
@@ -121,13 +124,13 @@ mod robustness {
         ];
         for source in mermaid {
             for width in [8usize, 20, 40, 80, 200] {
-                let _ = render(Language::Mermaid, source, &Theme::none(), width);
-                let _ = render(Language::Mermaid, source, &Theme::dark(), width);
+                let _ = render(Language::Mermaid, source, &Theme::none(), width, DiagramOptions::default());
+                let _ = render(Language::Mermaid, source, &Theme::dark(), width, DiagramOptions::default());
             }
         }
         for source in plantuml {
             for width in [8usize, 20, 40, 80, 200] {
-                let _ = render(Language::PlantUml, source, &Theme::none(), width);
+                let _ = render(Language::PlantUml, source, &Theme::none(), width, DiagramOptions::default());
             }
         }
     }

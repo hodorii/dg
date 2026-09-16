@@ -247,7 +247,10 @@ pub fn parse_relation(graph: &mut Graph, line: &str, group: Option<usize>) -> bo
     }
     let a = intern(graph, &left_name, group);
     let b = intern(graph, &right_name, group);
-    // 까치발 카디널리티(`||--o{`)는 표식으로, 따옴표 다중성(`"1" -- "*"`)은 글자로 그린다.
+    // 까치발 카디널리티(`||--o{`)는 표식과 글자를 둘 다 만들어 두고 표기 옵션이 고른다.
+    // 따옴표 다중성(`"1" -- "*"`)은 글자로 남긴다.
+    let left_multiplicity = if left_multiplicity.is_empty() { relation.left_cardinality.to_string() } else { left_multiplicity };
+    let right_multiplicity = if right_multiplicity.is_empty() { relation.right_cardinality.to_string() } else { right_multiplicity };
     let (left_marker, right_marker) = (crow_marker(relation.left_cardinality), crow_marker(relation.right_cardinality));
     let tail = if relation.tail == Marker::None { left_marker } else { relation.tail };
     let head = if relation.head == Marker::None { right_marker } else { relation.head };

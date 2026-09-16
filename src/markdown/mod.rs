@@ -3,7 +3,7 @@
 pub mod table;
 pub mod wrap;
 
-use crate::diagram;
+use crate::diagram::{self, DiagramOptions};
 use crate::line::{Line, Span};
 use crate::style::{Style, Theme};
 use crate::text::{char_width, width_of};
@@ -43,6 +43,7 @@ pub struct DiagramBlock {
 
 pub struct Renderer<'a> {
     theme: &'a Theme,
+    diagram_options: DiagramOptions,
     /// 문단 줄바꿈 폭.
     width: usize,
     /// 다이어그램·표·코드블록에 허용하는 폭(보통 터미널 전체 폭).
@@ -62,18 +63,18 @@ pub struct Renderer<'a> {
 
 #[cfg(test)]
 pub fn render(source: &str, theme: &Theme, width: usize) -> Vec<Line> {
-    render_document(source, theme, width, width).lines
+    render_document(source, theme, width, width, DiagramOptions::default()).lines
 }
 
 /// 다이어그램 원문을 코드블록으로 그린다(펼쳐 보기용).
 pub fn render_source_block(lang: &str, source: &str, theme: &Theme, width: usize) -> Vec<Line> {
-    let mut renderer = Renderer::new(theme, width, width);
+    let mut renderer = Renderer::new(theme, width, width, DiagramOptions::default());
     renderer.emit_code_block(lang, source, false);
     renderer.lines
 }
 
 /// `width`는 문단 줄바꿈 폭, `block_width`는 다이어그램·표·코드블록이 쓸 수 있는 폭.
-pub fn render_document(source: &str, theme: &Theme, width: usize, block_width: usize) -> Document {
+pub fn render_document(source: &str, theme: &Theme, width: usize, block_width: usize, diagram_options: DiagramOptions) -> Document {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -82,7 +83,7 @@ pub fn render_document(source: &str, theme: &Theme, width: usize, block_width: u
     options.insert(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
     options.insert(Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS);
     let parser = Parser::new_ext(source, options);
-    let mut renderer = Renderer::new(theme, width, block_width);
+    let mut renderer = Renderer::new(theme, width, block_width, diagram_options);
     for event in parser {
         renderer.handle(event);
     }
@@ -94,9 +95,10 @@ pub fn render_document(source: &str, theme: &Theme, width: usize, block_width: u
 }
 
 impl<'a> Renderer<'a> {
-    fn new(theme: &'a Theme, width: usize, block_width: usize) -> Renderer<'a> {
+    fn new(theme: &'a Theme, width: usize, block_width: usize, diagram_options: DiagramOptions) -> Renderer<'a> {
         Renderer {
             theme,
+            diagram_options,
             width: width.max(10),
             block_width: block_width.max(width).max(10),
             lines: Vec::new(),
@@ -481,7 +483,7 @@ impl<'a> Renderer<'a> {
         let available = self.available_block();
         if allow_diagram
             && let Some(language) = diagram::language_of_fence(lang)
-            && let Some(lines) = diagram::render(language, buffer, self.theme, available.saturating_sub(2))
+            && let Some(lines) = diagram::render(language, buffer, self.theme, available.saturating_sub(2), self.diagram_options)
         {
             let start = self.lines.len();
             for line in lines {

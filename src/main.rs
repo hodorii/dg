@@ -9,7 +9,7 @@ mod text;
 
 use clap::Parser;
 use cli::{Cli, LangArg, StyleArg};
-use diagram::Language;
+use diagram::{DiagramOptions, ErNotation, Language};
 use markdown::{DiagramBlock, Document};
 use std::io::{self, IsTerminal, Read, Write};
 use style::Theme;
@@ -39,20 +39,23 @@ fn run() -> io::Result<()> {
     };
     // `-w`를 주면 문단·블록 모두 그 폭. 아니면 문단은 120까지, 블록은 터미널 폭.
     let explicit_width = cli.width;
+    let diagram_options = DiagramOptions {
+        er_notation: cli.er_notation.map(Into::into).or_else(|| std::env::var("DG_ER_NOTATION").ok().and_then(|v| ErNotation::parse(&v))).unwrap_or_default(),
+    };
     let render = move |width: usize, block_width: usize| -> Document {
         let block_width = explicit_width.unwrap_or(block_width);
         match diagram_language {
             Some(language) => {
                 let lang = if language == Language::Mermaid { "mermaid" } else { "plantuml" };
-                match diagram::render(language, &source, &theme, block_width) {
+                match diagram::render(language, &source, &theme, block_width, diagram_options) {
                     Some(lines) => {
                         let block = DiagramBlock { start: 0, end: lines.len(), lang: lang.to_string(), source: source.clone() };
                         Document { lines, diagrams: vec![block] }
                     }
-                    None => markdown::render_document(&format!("```{lang}\n{}\n```\n", source.trim_end()), &theme, width, block_width),
+                    None => markdown::render_document(&format!("```{lang}\n{}\n```\n", source.trim_end()), &theme, width, block_width, diagram_options),
                 }
             }
-            None => markdown::render_document(&source, &theme, width, block_width),
+            None => markdown::render_document(&source, &theme, width, block_width, diagram_options),
         }
     };
     let use_pager = stdout_is_tty && !cli.print;

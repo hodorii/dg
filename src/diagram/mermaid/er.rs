@@ -88,8 +88,9 @@ fn parse_relation(graph: &mut Graph, line: &str) {
         from: a,
         to: b,
         label: text,
-        tail_label: String::new(),
-        head_label: String::new(),
+        // 표식과 글자를 둘 다 만들어 두고, 표기 옵션이 하나를 고른다.
+        tail_label: cardinality(left).to_string(),
+        head_label: cardinality(right).to_string(),
         kind: if dashed { LineKind::Dashed } else { LineKind::Solid },
         tail: crow_marker(cardinality(left)),
         head: crow_marker(cardinality(right)),

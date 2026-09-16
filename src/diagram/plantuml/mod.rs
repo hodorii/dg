@@ -7,6 +7,7 @@ pub mod sequence;
 pub mod text;
 
 use crate::diagram::layout;
+use crate::diagram::options::DiagramOptions;
 use crate::line::Line;
 use crate::style::Theme;
 
@@ -84,12 +85,16 @@ pub fn kind_of(source: &str) -> Option<&'static str> {
     Some(if entity_count > 0 && class_count == 0 { "er" } else { "class" })
 }
 
-pub fn render(source: &str, theme: &Theme, width: usize) -> Option<(&'static str, Vec<Line>)> {
+pub fn render(source: &str, theme: &Theme, width: usize, options: DiagramOptions) -> Option<(&'static str, Vec<Line>)> {
     let kind = kind_of(source)?;
     let body = match kind {
         "sequence" => layout::sequence::render(&sequence::parse(source), theme, width)?,
         "component" => layout::graph::render(&component::parse(source), theme, width)?,
-        _ => layout::graph::render(&class::parse(source), theme, width)?,
+        _ => {
+            let mut graph = class::parse(source);
+            options.apply_to_graph(&mut graph);
+            layout::graph::render(&graph, theme, width)?
+        }
     };
     Some((kind, body))
 }

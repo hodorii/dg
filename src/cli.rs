@@ -25,6 +25,27 @@ pub struct Cli {
     /// 다이어그램 언어를 지정 (자동 판별 대신)
     #[arg(short, long, value_enum)]
     pub lang: Option<LangArg>,
+
+    /// ERD 카디널리티 표기: 까치발(crow, 기본)·글자(text)·둘 다(both). 소스 안 지시자가 우선
+    #[arg(long, value_enum)]
+    pub er_notation: Option<ErNotationArg>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ErNotationArg {
+    Crow,
+    Text,
+    Both,
+}
+
+impl From<ErNotationArg> for crate::diagram::ErNotation {
+    fn from(value: ErNotationArg) -> Self {
+        match value {
+            ErNotationArg::Crow => Self::Crow,
+            ErNotationArg::Text => Self::Text,
+            ErNotationArg::Both => Self::Both,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
