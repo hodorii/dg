@@ -36,16 +36,17 @@ dg -s light -w 80 doc.md      # 밝은 테마, 폭 80
 | `-d, --diagram` | 입력을 다이어그램 소스로 취급 |
 | `-l, --lang mermaid\|plantuml` | 다이어그램 언어 지정 (기본 자동 판별) |
 | `--er-notation crow\|text\|both` | ERD 카디널리티 표기: 까치발(기본)·글자(`1`, `0..N`)·둘 다. 환경변수 `DG_ER_NOTATION` |
+| `--direction tb\|lr` | 그래프(흐름도·클래스·ER·상태·컴포넌트) 배치 방향 강제. 폭에 안 들어가면 반대 방향으로 재시도. 환경변수 `DG_DIRECTION` |
 
-환경변수: `DG_STYLE=dark|light|none|auto`, `DG_ER_NOTATION=crow|text|both`, `NO_COLOR`.
+환경변수: `DG_STYLE=dark|light|none|auto`, `DG_ER_NOTATION=crow|text|both`, `DG_DIRECTION=tb|lr`, `NO_COLOR`.
 
 ### 소스 안 지시자
 
-문서마다 표기를 바꾸고 싶으면 각 언어의 관례대로 지시자를 넣는다(명령줄 옵션보다 우선). 지원 키: `erNotation`(`er_notation`, `er-notation`도 같음).
+문서마다 표기를 바꾸고 싶으면 각 언어의 관례대로 지시자를 넣는다(명령줄 옵션보다 우선). 지원 키: `erNotation`(crow·text·both), `direction`(tb·lr). 키는 `er_notation`, `er-notation`처럼 써도 같다.
 
 ```
 %%{init: {"dg": {"erNotation": "text"}}}%%     mermaid init 지시자 (다른 항목과 함께 써도 됨)
-%% dg: erNotation=both                          mermaid 주석 꼴
+%% dg: erNotation=both direction=lr             mermaid 주석 꼴 (여러 키를 한 줄에)
 !pragma dg erNotation=text                      PlantUML pragma
 ' dg: erNotation=both                           PlantUML 주석 꼴
 ```

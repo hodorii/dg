@@ -4,7 +4,7 @@
 //! - mermaid: `%%{init: {"dg": {"erNotation": "text"}}}%%` 또는 `%% dg: erNotation=text`
 //! - PlantUML: `!pragma dg erNotation=text` 또는 `' dg: erNotation=text`
 
-use crate::diagram::ir::{Graph, Marker};
+use crate::diagram::ir::{Direction, Graph, Marker};
 
 /// ER 관계의 카디널리티 표기.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -32,6 +32,17 @@ impl ErNotation {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DiagramOptions {
     pub er_notation: ErNotation,
+    /// 그래프 계열의 배치 방향 강제. 소스의 `flowchart LR`·`left to right direction`보다 우선한다.
+    /// 다만 폭에 들어가지 않으면 반대 방향으로 다시 시도하는 것은 그대로다.
+    pub direction: Option<Direction>,
+}
+
+pub fn parse_direction(value: &str) -> Option<Direction> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "tb" | "td" | "bt" | "topdown" | "top-down" | "vertical" => Some(Direction::TopDown),
+        "lr" | "rl" | "leftright" | "left-right" | "horizontal" => Some(Direction::LeftRight),
+        _ => None,
+    }
 }
 
 impl DiagramOptions {
@@ -63,15 +74,26 @@ impl DiagramOptions {
     }
 
     fn apply(&mut self, key: &str, value: &str) {
-        if normalize(key) == "ernotation"
-            && let Some(notation) = ErNotation::parse(value)
-        {
-            self.er_notation = notation;
+        match normalize(key).as_str() {
+            "ernotation" => {
+                if let Some(notation) = ErNotation::parse(value) {
+                    self.er_notation = notation;
+                }
+            }
+            "direction" | "dir" | "layout" => {
+                if let Some(direction) = parse_direction(value) {
+                    self.direction = Some(direction);
+                }
+            }
+            _ => {}
         }
     }
 
     /// 파서가 만든 그래프에 표기 옵션을 적용한다. 파서는 까치발 표식과 글자를 둘 다 만들어 둔다.
     pub fn apply_to_graph(&self, graph: &mut Graph) {
+        if let Some(direction) = self.direction {
+            graph.direction = Some(direction);
+        }
         let is_crow = |m: Marker| matches!(m, Marker::CrowOne | Marker::CrowZeroOne | Marker::CrowMany | Marker::CrowZeroMany);
         for edge in &mut graph.edges {
             match self.er_notation {
@@ -148,5 +170,7 @@ mod tests {
         assert_eq!(base.with_source("@startuml\n!pragma dg erNotation=text\n@enduml").er_notation, ErNotation::Text);
         assert_eq!(base.with_source("' dg: er-notation=crow").er_notation, ErNotation::Crow);
         assert_eq!(base.with_source("erDiagram\nA ||--o{ B : x").er_notation, ErNotation::Crow);
+        assert_eq!(base.with_source("%% dg: direction=lr erNotation=text").direction, Some(Direction::LeftRight));
+        assert_eq!(base.with_source("!pragma dg direction=TB").direction, Some(Direction::TopDown));
     }
 }

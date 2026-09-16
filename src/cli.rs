@@ -29,6 +29,16 @@ pub struct Cli {
     /// ERD 카디널리티 표기: 까치발(crow, 기본)·글자(text)·둘 다(both). 소스 안 지시자가 우선
     #[arg(long, value_enum)]
     pub er_notation: Option<ErNotationArg>,
+
+    /// 그래프 배치 방향 강제(tb: 위→아래, lr: 왼쪽→오른쪽). 폭에 안 들어가면 반대 방향으로 재시도
+    #[arg(long, value_enum)]
+    pub direction: Option<DirectionArg>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum DirectionArg {
+    Tb,
+    Lr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

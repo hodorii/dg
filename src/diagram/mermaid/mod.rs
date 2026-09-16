@@ -40,8 +40,8 @@ pub fn render(source: &str, theme: &Theme, width: usize, options: DiagramOptions
         graph
     };
     let body = match kind {
-        "flowchart" => layout::graph::render(&flow::parse(source), theme, width)?,
-        "state" => layout::graph::render(&state::parse(source), theme, width)?,
+        "flowchart" => layout::graph::render(&graph_with_options(flow::parse(source)), theme, width)?,
+        "state" => layout::graph::render(&graph_with_options(state::parse(source)), theme, width)?,
         "er" => layout::graph::render(&graph_with_options(er::parse(source)), theme, width)?,
         "class" => layout::graph::render(&graph_with_options(class::parse(source)), theme, width)?,
         "sequence" => layout::sequence::render(&sequence::parse(source), theme, width)?,

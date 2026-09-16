@@ -41,6 +41,13 @@ fn run() -> io::Result<()> {
     let explicit_width = cli.width;
     let diagram_options = DiagramOptions {
         er_notation: cli.er_notation.map(Into::into).or_else(|| std::env::var("DG_ER_NOTATION").ok().and_then(|v| ErNotation::parse(&v))).unwrap_or_default(),
+        direction: cli
+            .direction
+            .map(|d| match d {
+                cli::DirectionArg::Tb => diagram::ir::Direction::TopDown,
+                cli::DirectionArg::Lr => diagram::ir::Direction::LeftRight,
+            })
+            .or_else(|| std::env::var("DG_DIRECTION").ok().and_then(|v| diagram::options::parse_direction(&v))),
     };
     let render = move |width: usize, block_width: usize| -> Document {
         let block_width = explicit_width.unwrap_or(block_width);

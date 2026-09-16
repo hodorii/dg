@@ -89,7 +89,11 @@ pub fn render(source: &str, theme: &Theme, width: usize, options: DiagramOptions
     let kind = kind_of(source)?;
     let body = match kind {
         "sequence" => layout::sequence::render(&sequence::parse(source), theme, width)?,
-        "component" => layout::graph::render(&component::parse(source), theme, width)?,
+        "component" => {
+            let mut graph = component::parse(source);
+            options.apply_to_graph(&mut graph);
+            layout::graph::render(&graph, theme, width)?
+        }
         _ => {
             let mut graph = class::parse(source);
             options.apply_to_graph(&mut graph);
