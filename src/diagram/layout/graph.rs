@@ -1773,7 +1773,8 @@ impl<'a> Layout<'a> {
 /// 끝 라벨을 선의 어느 쪽에 둘지: 여러 간선이 한 노드에 모이면 왼쪽 절반은 선 왼쪽에 둔다.
 fn side_label_x(line_x: usize, rank: (usize, usize), label_width: usize) -> usize {
     let (index, count) = rank;
-    if count > 1 && index * 2 < count { line_x.saturating_sub(label_width) } else { line_x + 1 }
+    // 선·표식과 라벨 사이에 한 칸을 띄운다.
+    if count > 1 && index * 2 < count { line_x.saturating_sub(label_width + 1) } else { line_x + 2 }
 }
 
 /// 끝 표식 글자. `at_top`이면 위(또는 왼쪽) 노드에 붙는 쪽이다.
@@ -1789,9 +1790,9 @@ fn marker_glyph(marker: Marker, direction: Direction, at_top: bool) -> Option<ch
         Marker::Arrow => ['▲', '▼', '◀', '▶'],
         Marker::OpenArrow => ['∧', '∨', '<', '>'],
         Marker::Triangle => ['△', '▽', '◁', '▷'],
-        // 합성·집합 표식은 작은 마름모: ♦(U+2666)·⋄(U+22C4)는 폭이 한 칸으로 고정이고 고정폭 글꼴에 있다.
+        // 합성·집합 표식은 같은 크기의 카드 무늬 마름모 ♦(U+2666)·♢(U+2662): 폭이 한 칸으로 고정이고 고정폭 글꼴에 있다.
         Marker::DiamondFilled => ['♦'; 4],
-        Marker::DiamondOpen => ['⋄'; 4],
+        Marker::DiamondOpen => ['♢'; 4],
         Marker::Circle => ['○'; 4],
         Marker::Cross => ['✕'; 4],
     };
