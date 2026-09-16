@@ -203,13 +203,12 @@ impl<'a, F: Fn(usize, usize) -> Document> Pager<'a, F> {
             lines.extend(self.document.lines[cursor..block.start].iter().cloned());
             let start = lines.len();
             let expanded = self.expanded[index];
-            let mut caption = self.document.lines[block.start].clone();
-            caption.push_str(if expanded { " ▾ 원문" } else { " ▸ 원문" }, self.theme.diagram_caption);
-            lines.push(caption);
-            lines.extend(self.document.lines[block.start + 1..block.end].iter().cloned());
+            lines.push(self.document.lines[block.start].clone());
+            // 원문은 캡션 줄 바로 아래 펼친다(그린 다이어그램 뒤가 아니라).
             if expanded {
                 lines.extend(self.source_lines(block));
             }
+            lines.extend(self.document.lines[block.start + 1..block.end].iter().cloned());
             shown.push(ShownBlock { start, end: lines.len(), index });
             cursor = block.end;
         }
@@ -317,4 +316,53 @@ fn truncate_line(line: &Line, columns: usize) -> Line {
         out.push_str(text, style);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::style::Style;
+
+    /// 캡션 1줄 + 그린 다이어그램 2줄짜리 문서 하나를 만든다.
+    fn fixture() -> (Document, DiagramBlock) {
+        let block = DiagramBlock { start: 1, end: 4, lang: "mermaid".to_string(), source: "flowchart TB\n A --> B".to_string() };
+        let lines = vec![
+            Line::single("본문", Style::PLAIN),
+            Line::single("◈ mermaid · flowchart ─", Style::PLAIN),
+            Line::single("그림 줄 1", Style::PLAIN),
+            Line::single("그림 줄 2", Style::PLAIN),
+            Line::single("이후 본문", Style::PLAIN),
+        ];
+        (Document { lines, diagrams: vec![block.clone()] }, block)
+    }
+
+    fn pager(document: Document, theme: &Theme) -> Pager<'_, fn(usize, usize) -> Document> {
+        let mut pager = Pager::new("t", theme, 80, (|_, _| Document { lines: Vec::new(), diagrams: Vec::new() }) as fn(usize, usize) -> Document);
+        pager.expanded = vec![false; document.diagrams.len()];
+        pager.document = document;
+        pager.rendered_columns = 80;
+        pager.rebuild_lines();
+        pager
+    }
+
+    /// 캡션 줄을 클릭(토글)하면 원문이 다이어그램 뒤가 아니라 캡션 바로 아래 펼쳐진다.
+    #[test]
+    fn expanding_a_block_inserts_source_right_after_its_caption_not_after_its_body() {
+        let theme = Theme::none();
+        let (document, block) = fixture();
+        let mut pager = pager(document, &theme);
+        assert!(pager.toggle_block_at(block.start));
+
+        let plain: Vec<String> = pager.lines.iter().map(Line::plain).collect();
+        let caption_row = plain.iter().position(|line| line.contains('◈')).expect("캡션이 있어야 한다");
+        // 캡션 바로 다음 줄부터 원문(flowchart TB 등)이 나오고, 그린 다이어그램 줄("그림 줄")은 원문 뒤에 와야 한다.
+        let source_row = plain.iter().position(|line| line.contains("flowchart TB")).expect("펼친 원문이 있어야 한다");
+        let body_row = plain.iter().position(|line| line.contains("그림 줄 1")).expect("그린 다이어그램 줄이 남아 있어야 한다");
+        assert!(source_row > caption_row, "원문은 캡션 뒤에 와야 한다");
+        assert!(source_row < body_row, "원문은 그린 다이어그램보다 앞, 즉 캡션 바로 아래여야 한다");
+
+        assert!(pager.toggle_block_at(block.start));
+        let collapsed: Vec<String> = pager.lines.iter().map(Line::plain).collect();
+        assert!(!collapsed.iter().any(|line| line.contains("flowchart TB")), "접으면 원문이 사라져야 한다");
+    }
 }
