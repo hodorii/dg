@@ -6,9 +6,23 @@ rust-version = "1.88"
 license = "MIT"
 description = "Lightweight terminal markdown viewer with mermaid/PlantUML text diagrams"
 
+[lib]
+name = "dg"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dg"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+# 명령줄 도구와 페이저. 라이브러리로만 쓰면 끄면 된다(clap·crossterm이 빠진다).
+cli = ["dep:clap", "dep:crossterm"]
+
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
-crossterm = "0.29"
+clap = { version = "4.5", features = ["derive"], optional = true }
+crossterm = { version = "0.29", optional = true }
 pulldown-cmark = { version = "0.13", default-features = false }
 unicode-width = "0.2"
 

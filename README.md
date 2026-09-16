@@ -97,6 +97,30 @@ dg -s light -w 80 doc.md      # 밝은 테마, 폭 80
 
 `skinparam`, `hide/show`, `!전처리`, `'주석`, `/' 블록 '/`, `legend`, `header/footer`는 무시한다.
 
+## 라이브러리로 쓰기
+
+렌더링 부분은 라이브러리 크레이트(`dg`)로도 쓸 수 있다. 페이저·명령줄은 `cli` 피처 뒤에 있으므로
+끄면 clap·crossterm 없이 pulldown-cmark와 unicode-width만 딸려온다.
+
+```toml
+[dependencies]
+dg = { path = "../dg", default-features = false }   # 또는 git = "..."
+```
+
+```rust
+use dg::{render_markdown, render_diagram, to_ansi, to_text, Language, RenderOptions, Theme};
+
+let options = RenderOptions { width: 80, theme: Theme::dark(), ..RenderOptions::default() };
+let lines = render_markdown(source, &options);        // Vec<Line>
+print!("{}", to_ansi(&lines, &options.theme));         // ANSI 문자열
+let plain = to_text(&lines);                           // 색 없는 평문
+
+let diagram = render_diagram(puml_source, Some(Language::PlantUml), &options); // Option<Vec<Line>>
+```
+
+`Line`은 문자열 하나와 (길이, 스타일) 구간 목록이라 `runs()`로 구간을 돌며 다른 렌더러(예: ratatui 스팬)로 옮길 수 있다.
+다이어그램 블록의 줄 범위와 원문이 필요하면 `dg::markdown::render_document`를 쓴다. 예제: `cargo run --example lib_usage`.
+
 ## 배치 방식
 
 그래프 계열(흐름도·클래스·ER·상태·컴포넌트)은 `src/diagram/layout/graph.rs` 하나가 그린다.

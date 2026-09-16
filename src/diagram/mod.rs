@@ -51,10 +51,22 @@ pub fn language_of_source(path: Option<&str>, source: &str) -> Option<Language> 
     None
 }
 
-/// 다이어그램을 그린다. 지원하지 않거나 폭에 맞지 않으면 `None`.
+/// 다이어그램을 캡션(`◈ mermaid · flowchart ───`)과 함께 그린다. 지원하지 않거나 폭에 맞지 않으면 `None`.
 pub fn render(language: Language, source: &str, theme: &Theme, width: usize, options: DiagramOptions) -> Option<Vec<Line>> {
+    let (kind, body) = render_body(language, source, theme, width, options)?;
+    let name = match language {
+        Language::Mermaid => "mermaid",
+        Language::PlantUml => "plantuml",
+    };
+    let mut out = vec![caption(name, kind, theme, width)];
+    out.extend(body);
+    Some(out)
+}
+
+/// 캡션 없이 그림 줄만 돌려준다: (종류 이름, 줄들). 다른 뷰어에 엔진으로 끼울 때 쓴다.
+pub fn render_body(language: Language, source: &str, theme: &Theme, width: usize, options: DiagramOptions) -> Option<(&'static str, Vec<Line>)> {
     let options = options.with_source(source);
-    let (kind, body) = match language {
+    let (kind, mut body) = match language {
         Language::Mermaid => mermaid::render(source, theme, width, options)?,
         Language::PlantUml => plantuml::render(source, theme, width, options)?,
     };
@@ -64,16 +76,18 @@ pub fn render(language: Language, source: &str, theme: &Theme, width: usize, opt
     if body.iter().map(Line::width).max().unwrap_or(0) > width {
         return None;
     }
-    let name = match language {
-        Language::Mermaid => "mermaid",
-        Language::PlantUml => "plantuml",
-    };
-    let mut out = vec![caption(name, kind, theme, width)];
-    out.extend(body);
-    while out.last().is_some_and(Line::is_blank) {
-        out.pop();
+    while body.last().is_some_and(Line::is_blank) {
+        body.pop();
     }
-    Some(out)
+    Some((kind, body))
+}
+
+/// 소스만 보고 종류 이름(`flowchart`, `sequence`, `class`, `er`, `state`, `component`)을 알려준다.
+pub fn kind_of(language: Language, source: &str) -> Option<&'static str> {
+    match language {
+        Language::Mermaid => mermaid::kind_of(source),
+        Language::PlantUml => plantuml::kind_of(source),
+    }
 }
 
 fn caption(language: &str, kind: &str, theme: &Theme, width: usize) -> Line {

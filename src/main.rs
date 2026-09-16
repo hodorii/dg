@@ -1,18 +1,12 @@
-#![allow(clippy::too_many_arguments)]
 mod cli;
-mod diagram;
-mod line;
-mod markdown;
-mod pager;
-mod style;
-mod text;
 
 use clap::Parser;
 use cli::{Cli, LangArg, StyleArg};
-use diagram::{DiagramOptions, ErNotation, Language};
-use markdown::{DiagramBlock, Document};
+use dg::diagram::{self, DiagramOptions, ErNotation, Language};
+use dg::markdown::{self, DiagramBlock, Document};
+use dg::pager;
+use dg::style::Theme;
 use std::io::{self, IsTerminal, Read, Write};
-use style::Theme;
 
 const MAX_WIDTH: usize = 120;
 

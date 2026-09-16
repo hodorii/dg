@@ -48,7 +48,7 @@ pub enum ErNotationArg {
     Both,
 }
 
-impl From<ErNotationArg> for crate::diagram::ErNotation {
+impl From<ErNotationArg> for dg::diagram::ErNotation {
     fn from(value: ErNotationArg) -> Self {
         match value {
             ErNotationArg::Crow => Self::Crow,
