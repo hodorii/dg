@@ -37,19 +37,22 @@ fn run() -> io::Result<()> {
     } else {
         None
     };
-    let render = move |width: usize| -> Document {
+    // `-w`를 주면 문단·블록 모두 그 폭. 아니면 문단은 120까지, 블록은 터미널 폭.
+    let explicit_width = cli.width;
+    let render = move |width: usize, block_width: usize| -> Document {
+        let block_width = explicit_width.unwrap_or(block_width);
         match diagram_language {
             Some(language) => {
                 let lang = if language == Language::Mermaid { "mermaid" } else { "plantuml" };
-                match diagram::render(language, &source, &theme, width) {
+                match diagram::render(language, &source, &theme, block_width) {
                     Some(lines) => {
                         let block = DiagramBlock { start: 0, end: lines.len(), lang: lang.to_string(), source: source.clone() };
                         Document { lines, diagrams: vec![block] }
                     }
-                    None => markdown::render_document(&format!("```{lang}\n{}\n```\n", source.trim_end()), &theme, width),
+                    None => markdown::render_document(&format!("```{lang}\n{}\n```\n", source.trim_end()), &theme, width, block_width),
                 }
             }
-            None => markdown::render_document(&source, &theme, width),
+            None => markdown::render_document(&source, &theme, width, block_width),
         }
     };
     let use_pager = stdout_is_tty && !cli.print;
@@ -57,12 +60,10 @@ fn run() -> io::Result<()> {
         let max_width = cli.width.unwrap_or(MAX_WIDTH);
         return pager::Pager::new(&title, &theme, max_width, render).run();
     }
-    let width = cli.width.unwrap_or_else(|| {
-        let columns = crossterm::terminal::size().map(|(c, _)| c as usize).unwrap_or(80);
-        columns.min(MAX_WIDTH)
-    });
+    let columns = crossterm::terminal::size().map(|(c, _)| c as usize).unwrap_or(80);
+    let width = cli.width.unwrap_or(columns.min(MAX_WIDTH));
     let mut out = io::BufWriter::new(io::stdout().lock());
-    for line in render(width).lines {
+    for line in render(width, columns).lines {
         writeln!(out, "{}", line.to_ansi(&theme))?;
     }
     out.flush()

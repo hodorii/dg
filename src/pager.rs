@@ -18,7 +18,7 @@ struct ShownBlock {
     index: usize,
 }
 
-pub struct Pager<'a, F: Fn(usize) -> Document> {
+pub struct Pager<'a, F: Fn(usize, usize) -> Document> {
     title: String,
     theme: &'a Theme,
     max_width: usize,
@@ -30,6 +30,7 @@ pub struct Pager<'a, F: Fn(usize) -> Document> {
     lines: Vec<Line>,
     shown_blocks: Vec<ShownBlock>,
     rendered_width: usize,
+    rendered_columns: usize,
     top: usize,
     query: String,
     typing: bool,
@@ -37,7 +38,7 @@ pub struct Pager<'a, F: Fn(usize) -> Document> {
     message: String,
 }
 
-impl<'a, F: Fn(usize) -> Document> Pager<'a, F> {
+impl<'a, F: Fn(usize, usize) -> Document> Pager<'a, F> {
     pub fn new(title: &str, theme: &'a Theme, max_width: usize, render: F) -> Self {
         Pager {
             title: title.to_string(),
@@ -49,6 +50,7 @@ impl<'a, F: Fn(usize) -> Document> Pager<'a, F> {
             lines: Vec::new(),
             shown_blocks: Vec::new(),
             rendered_width: 0,
+            rendered_columns: 0,
             top: 0,
             query: String::new(),
             typing: false,
@@ -74,11 +76,13 @@ impl<'a, F: Fn(usize) -> Document> Pager<'a, F> {
         loop {
             let (columns, rows) = terminal::size()?;
             let (columns, rows) = (columns as usize, rows as usize);
+            // 문단은 읽기 좋은 폭까지만 접고, 다이어그램·표·코드는 터미널 폭을 다 쓴다.
             let width = columns.min(self.max_width).max(10);
-            if width != self.rendered_width {
-                self.document = (self.render)(width);
+            if width != self.rendered_width || columns != self.rendered_columns {
+                self.document = (self.render)(width, columns.max(10));
                 self.expanded.resize(self.document.diagrams.len(), false);
                 self.rendered_width = width;
+                self.rendered_columns = columns;
                 self.rebuild_lines();
                 needs_redraw = true;
             }
@@ -216,7 +220,7 @@ impl<'a, F: Fn(usize) -> Document> Pager<'a, F> {
     }
 
     fn source_lines(&self, block: &DiagramBlock) -> Vec<Line> {
-        let mut lines = markdown::render_source_block(&block.lang, &block.source, self.theme, self.rendered_width);
+        let mut lines = markdown::render_source_block(&block.lang, &block.source, self.theme, self.rendered_columns.max(10));
         lines.insert(0, Line::empty());
         lines
     }

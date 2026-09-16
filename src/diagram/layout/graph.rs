@@ -1173,11 +1173,30 @@ impl<'a> Layout<'a> {
         // must_precede[i]에 j가 있으면 i의 통로가 j보다 위여야 한다.
         let mut must_precede: Vec<Vec<usize>> = vec![Vec::new(); count];
         let mut pending: Vec<usize> = vec![0; count];
+        let span_of = |k: usize| {
+            let segment = &self.segments[intervals[k].2];
+            (segment.exit.min(segment.entry), segment.exit.max(segment.entry))
+        };
         for i in 0..count {
             for j in 0..count {
-                if i != j && self.segments[intervals[i].2].exit == self.segments[intervals[j].2].entry {
+                if i == j {
+                    continue;
+                }
+                let (a, b) = (&self.segments[intervals[i].2], &self.segments[intervals[j].2]);
+                let (low, high) = span_of(i);
+                let strictly_inside = |x: usize| low < x && x < high;
+                // i의 가로 구간 안에서 j가 내려오면(출발 접점) j의 통로가 위여야 교차하지 않고,
+                // j가 그 안으로 내려가면(도착 접점) j의 통로가 아래여야 한다.
+                // 출발 열 = 도착 열이면 세로선을 나눠 쓰므로 출발 쪽이 반드시 위.
+                let j_above_i = strictly_inside(b.exit) && !strictly_inside(b.entry);
+                let j_below_i = strictly_inside(b.entry) && !strictly_inside(b.exit);
+                let shares_column = a.exit == b.entry;
+                if shares_column || j_below_i {
                     must_precede[i].push(j);
                     pending[j] += 1;
+                } else if j_above_i && a.entry != b.exit {
+                    must_precede[j].push(i);
+                    pending[i] += 1;
                 }
             }
         }

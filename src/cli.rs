@@ -6,7 +6,7 @@ pub struct Cli {
     /// 마크다운 파일 (없거나 `-`이면 표준입력)
     pub file: Option<String>,
 
-    /// 줄바꿈 폭 (기본: 터미널 폭, 최대 120)
+    /// 폭. 기본은 문단 줄바꿈 120까지·다이어그램/표/코드는 터미널 폭이며, 주면 둘 다 이 값
     #[arg(short, long)]
     pub width: Option<usize>,
 
