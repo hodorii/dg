@@ -15,7 +15,9 @@ make install                  # ~/.local/bin/dg (PREFIX=... 로 변경, rustc 1.
 cargo install --path .        # 또는 ~/.cargo/bin
 ```
 
-`make test`, `make lint`, `make uninstall`도 있다.
+`make test`, `make lint`, `make uninstall`도 있다. `make deploy-mac`은 소스를 ssh 호스트 `mac`(`MAC_HOST=...`로 변경)으로
+보내 그쪽 cargo로 빌드·설치한다(`~/.cargo/bin/dg`). macOS Terminal.app·iTerm2는 `COLORFGBG`를 내보내지 않으므로
+밝은 배경이면 `export DG_STYLE=light`를 셸 설정에 넣는다.
 
 ## 사용법
 
