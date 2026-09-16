@@ -131,6 +131,8 @@ struct Layout<'a> {
     block_extra: Vec<usize>,
     /// `DG_DEBUG`가 켜져 있으면 배선 정보를 stderr에 적는다.
     debug: bool,
+    /// 캔버스 가로 한도. 이웃 교환은 이 폭을 넘기는 후보를 받지 않는다.
+    width_limit: usize,
 }
 
 const GAP_ALONG_MIN: usize = 3;
@@ -146,6 +148,7 @@ const FOLD_PATIENCE: usize = 12;
 impl<'a> Layout<'a> {
     fn build(graph: &'a Graph, theme: &'a Theme, direction: Direction, cap: usize, width: usize, allow_fold: bool) -> Option<Canvas> {
         let mut layout = Layout::new(graph, theme, direction, cap);
+        layout.width_limit = width;
         layout.assign_layers();
         layout.push_outputs_below_groups();
         layout.arrange(false);
@@ -450,6 +453,7 @@ impl<'a> Layout<'a> {
             extra_across: 0,
             block_extra: Vec::new(),
             debug: std::env::var_os("DG_DEBUG").is_some(),
+            width_limit: usize::MAX,
         };
         for edge in &graph.edges {
             if edge.from == edge.to {
@@ -866,7 +870,8 @@ impl<'a> Layout<'a> {
                             self.blocks[block].children.insert(insert_at + offset, child);
                         }
                         self.place_and_straighten();
-                        let candidate = self.total_edge_length();
+                        let fits = self.canvas_size().0 <= self.width_limit;
+                        let candidate = if fits { self.total_edge_length() } else { f64::INFINITY };
                         if self.debug {
                             let describe = |c: Child| match c {
                                 Child::Node(i) => self.lnodes[i].node.map_or(format!("dummy{i}"), |n| self.graph.nodes[n].id.clone()),
