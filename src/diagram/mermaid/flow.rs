@@ -1,6 +1,6 @@
 //! `flowchart` / `graph` 파서.
 
-use super::text::{clean_lines, keyword, label};
+use super::text::{clean_lines, keyword, label, shape_delimited};
 use crate::diagram::ir::{Direction, Edge, Graph, LineKind, Marker, Shape};
 
 struct NodeRef {
@@ -131,23 +131,6 @@ fn read_node_list(chars: &[char], cursor: &mut usize, graph: &mut Graph, group: 
     }
 }
 
-const SHAPE_DELIMITERS: &[(&str, &str, Shape)] = &[
-    ("(((", ")))", Shape::Circle),
-    ("([", "])", Shape::Stadium),
-    ("[[", "]]", Shape::Subroutine),
-    ("[(", ")]", Shape::Cylinder),
-    ("((", "))", Shape::Circle),
-    ("{{", "}}", Shape::Hexagon),
-    ("[/", "/]", Shape::Rect),
-    ("[\\", "\\]", Shape::Rect),
-    ("[/", "\\]", Shape::Rect),
-    ("[\\", "/]", Shape::Rect),
-    ("[", "]", Shape::Rect),
-    ("(", ")", Shape::Round),
-    ("{", "}", Shape::Diamond),
-    (">", "]", Shape::Rect),
-];
-
 fn read_node(chars: &[char], cursor: &mut usize) -> Option<NodeRef> {
     skip_spaces(chars, cursor);
     let start = *cursor;
@@ -167,19 +150,10 @@ fn read_node(chars: &[char], cursor: &mut usize) -> Option<NodeRef> {
     let id: String = chars[start..*cursor].iter().collect();
     let mut node = NodeRef { id, label: None, shape: None };
     let rest: String = chars[*cursor..].iter().collect();
-    for &(open, close, shape) in SHAPE_DELIMITERS {
-        if !rest.starts_with(open) {
-            continue;
-        }
-        let Some(body_end) = find_closing(&rest[open.len()..], close) else { continue };
-        let body = &rest[open.len()..open.len() + body_end];
-        node.label = Some(label(body));
+    if let Some((shape, text, consumed)) = shape_delimited(&rest) {
+        node.label = Some(text);
         node.shape = Some(shape);
-        *cursor += (open.len() + body_end + close.len()).min(rest.len());
-        // 문자 수와 바이트 수가 다를 수 있으므로 다시 계산한다.
-        let consumed = open.chars().count() + body.chars().count() + close.chars().count();
-        *cursor = start + node.id.chars().count() + consumed;
-        break;
+        *cursor += consumed;
     }
     // `:::class` 꾸밈은 버린다.
     let after: String = chars[*cursor..].iter().collect();
@@ -188,22 +162,6 @@ fn read_node(chars: &[char], cursor: &mut usize) -> Option<NodeRef> {
         *cursor += 3 + consumed;
     }
     Some(node)
-}
-
-/// 따옴표 안을 건너뛰고 닫는 구분자를 찾는다(바이트 위치).
-fn find_closing(text: &str, close: &str) -> Option<usize> {
-    let mut in_quote = false;
-    let mut index = 0;
-    while index < text.len() {
-        let c = text[index..].chars().next()?;
-        if c == '"' {
-            in_quote = !in_quote;
-        } else if !in_quote && text[index..].starts_with(close) {
-            return Some(index);
-        }
-        index += c.len_utf8();
-    }
-    None
 }
 
 fn read_link(chars: &[char], cursor: &mut usize) -> Option<Link> {

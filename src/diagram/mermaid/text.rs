@@ -1,4 +1,6 @@
-//! mermaid 원문 다루기: 주석 제거, 라벨 정리.
+//! mermaid 원문 다루기: 주석 제거, 라벨 정리, 노드 모양 괄호.
+
+use crate::diagram::ir::Shape;
 
 /// 주석(`%%`)과 빈 줄을 걷어낸다.
 pub fn clean_lines(source: &str) -> Vec<String> {
@@ -46,6 +48,7 @@ pub fn label(raw: &str) -> String {
         .replace("<br />", "\n")
         .replace("<br>", "\n")
         .replace("\\n", "\n")
+        .replace("\\\"", "\"")
         .replace("#quot;", "\"")
         .replace("&quot;", "\"")
         .replace("#35;", "#")
@@ -58,6 +61,54 @@ pub fn label(raw: &str) -> String {
 
 pub fn keyword(line: &str) -> &str {
     line.trim().split(char::is_whitespace).next().unwrap_or("")
+}
+
+/// 노드 모양을 여는 괄호와 닫는 괄호. 긴 것부터 살펴야 `([`가 `(`로 먼저 걸리지 않는다.
+const SHAPE_DELIMITERS: &[(&str, &str, Shape)] = &[
+    ("(((", ")))", Shape::Circle),
+    ("([", "])", Shape::Stadium),
+    ("[[", "]]", Shape::Subroutine),
+    ("[(", ")]", Shape::Cylinder),
+    ("((", "))", Shape::Circle),
+    ("{{", "}}", Shape::Hexagon),
+    ("[/", "/]", Shape::Rect),
+    ("[\\", "\\]", Shape::Rect),
+    ("[/", "\\]", Shape::Rect),
+    ("[\\", "/]", Shape::Rect),
+    ("[", "]", Shape::Rect),
+    ("(", ")", Shape::Round),
+    ("{", "}", Shape::Diamond),
+    (">", "]", Shape::Rect),
+];
+
+/// 아이디 뒤에 붙은 모양 괄호를 읽어 (모양, 라벨, 먹은 글자 수)를 돌려준다.
+pub fn shape_delimited(rest: &str) -> Option<(Shape, String, usize)> {
+    for &(open, close, shape) in SHAPE_DELIMITERS {
+        if !rest.starts_with(open) {
+            continue;
+        }
+        let Some(body_end) = find_closing(&rest[open.len()..], close) else { continue };
+        let body = &rest[open.len()..open.len() + body_end];
+        let consumed = open.chars().count() + body.chars().count() + close.chars().count();
+        return Some((shape, label(body), consumed));
+    }
+    None
+}
+
+/// 따옴표 안을 건너뛰고 닫는 구분자를 찾는다(바이트 위치).
+fn find_closing(text: &str, close: &str) -> Option<usize> {
+    let mut in_quote = false;
+    let mut index = 0;
+    while index < text.len() {
+        let c = text[index..].chars().next()?;
+        if c == '"' {
+            in_quote = !in_quote;
+        } else if !in_quote && text[index..].starts_with(close) {
+            return Some(index);
+        }
+        index += c.len_utf8();
+    }
+    None
 }
 
 

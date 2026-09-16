@@ -1,3 +1,10 @@
+pub mod block;
+pub mod chart;
+pub mod gantt;
+pub mod gitgraph;
 pub mod graph;
+pub mod pie;
+pub mod quadrant;
 pub mod sequence;
 pub mod shape;
+pub mod xychart;

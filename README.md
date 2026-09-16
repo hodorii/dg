@@ -83,16 +83,23 @@ dg -s light -w 80 doc.md      # 밝은 테마, 폭 80
 | `classDiagram` | `class X { }`, `X : 멤버`, `<<interface>>`, 제네릭 `~T~`, `<\|--` `--\|>` `<\|..` `..\|>` `*--` `o--` `-->` `..>` `--`, 다중성 `"1" --> "*"`, 라벨 `: 글`, `namespace`, `direction` |
 | `erDiagram` | 엔터티 속성(`type name PK "설명"` → `name : type [PK]`), `\|\|--o{` 계열 카디널리티를 까치발 표식으로(`╪` 하나, `○` 없음, `⋏`/`⋎` 여럿), 식별(실선)/비식별(점선) |
 | `stateDiagram(-v2)` | `[*]` 시작(●)/끝(◉), `-->` 전이 라벨, `state "설명" as X`, 합성 상태 `state X { }`, `<<choice>>` |
+| `block-beta` | `columns N` 격자(없으면 한 줄), 블록 `id`·`id["라벨"]`과 모양 `[ ]` `( )` `([ ])` `[[ ]]` `[( )]` `(( ))` `{ }` `{{ }}`, 열 먹기 `b:2`, 빈 칸 `space`/`space:N`, `-->` `<--` `-- 글 -->`, `block:아이디 … end` 중첩(깊이마다 실선→점선→굵은선) |
+| `gitGraph` | 브랜치마다 가로 트랙 한 줄(이름은 왼쪽), `commit`(`id: "글"`을 점 옆에, `type:`/`tag:`는 무시), `branch 이름`, `checkout`/`switch 이름`, `merge 이름`(트랙 사이 연결선 + 병합 커밋 ◉), 선언 안 된 이름은 오류 대신 새 트랙(`checkout`)·연결선 생략(`merge`) |
+| `pie` | `pie [showData] [title 글]`, `"이름" : 값` 목록을 합 기준 가로 막대로(길이=몫), `showData`면 값과 백분율을 함께, 아니면 백분율만 |
+| `xychart-beta`/`xychart` | `title`, `x-axis "제목" [카테고리…]`(숫자 범위 꼴은 제목만 쓰고 번호로 대신), `y-axis "제목" 최소 --> 최대`(없으면 값에서 자동 눈금), 여러 `bar`/`line` 계열을 같은 축에(계열마다 다른 칠감 `█▓▒░`·점 `●◆▲■`, 이름을 주면 범례), 음수는 0 기준선 아래로, 점 라벨(`1.2 "글"`)은 값만 읽음 |
+| `quadrantChart` | `title`, `x-axis 왼쪽 --> 오른쪽`(한쪽만도 됨), `y-axis 아래 --> 위`, `quadrant-1`~`quadrant-4` 구역 라벨, `이름: [x, y]` 점(0~1 밖은 안쪽으로 보정), 겹치는 점은 같은 사분면 안에서 줄을 옮겨 표시. `radius:`·`color:`·`:::클래스` 꾸밈은 읽고 무시 |
+| `gantt` | `title`, `dateFormat`(`YYYY-MM-DD` 등 `Y`/`M`/`D` 차례를 따름), `section` 묶음, 작업 줄 `이름 :[상태,] [아이디,] 시작, 끝-또는-기간`, 시작은 날짜나 `after 아이디`(없는 아이디는 기준일부터), 기간 단위 `d`/`w`/`h`/`M`/`y` 등, `done`은 다른 글자 막대(`▓`)로, `excludes`·`tickInterval`·`todayMarker`·`click` 등은 무시 |
 
 ### PlantUML (` ```plantuml `, ` ```puml `)
 
-종류는 본문에서 자동 판별한다(`participant`·`->`면 시퀀스, `class`/`<|--`면 클래스, `entity`만 있으면 ER, `[컴포넌트]`·`package`면 컴포넌트).
+종류는 여는 태그를 먼저 보고(`@startgantt`면 간트), 일반 태그(`@startuml`)면 본문에서 자동 판별한다(`participant`·`->`면 시퀀스, `class`/`<|--`면 클래스, `entity`만 있으면 ER, `[컴포넌트]`·`package`면 컴포넌트).
 
 | 종류 | 지원 |
 |------|------|
 | 시퀀스 | `participant`/`actor`/`boundary`/`control`/`entity`/`database`/`collections`/`queue`(`"긴 이름" as X`, `X as "긴 이름"`), `->` `-->` `->>` `->x` `->o` `<-` `<--`, `++`/`--` 활성화, `activate`/`deactivate`/`return`, `note left/right of/over` (한 줄·`end note`), `alt`/`else`/`opt`/`loop`/`par`/`break`/`critical`/`group`/`end`, `== 구분 ==`, `...지연...`, `box`, `autonumber`, `title` |
 | 클래스 | `class`/`abstract`/`interface`/`enum`/`annotation`/`object`(`{ }` 본문, `--`·`..`·`==` 칸 구분, `{static}` 등 제거), `extends`/`implements`, `X : 멤버`, `<\|--` `..\|>` `*--` `o--` `-->` `..>` `--`, `-down->` 같은 방향 힌트와 `[hidden]`·`[#색]` 무시, 다중성 `"1" -- "*"`, `package`/`namespace`, `left to right direction`, `title` |
 | ER | `entity X { *id : int <<PK>> \n -- \n name }`, `\|\|--o{` `}o--\|\|` `\|o--o\|` `}\|--\|{` 카디널리티(까치발 표식) |
+| 간트(`@startgantt`) | `title`, `Project starts <날짜>`(기준일), `[작업] requires N days/weeks`(`1 week and 4 days`처럼 `and` 결합), `[작업] starts <날짜>`·`starts D+N`·`starts at [다른작업]'s end`/`'s start`, `then`으로 한 줄 잇기, `[A] -> [B]` 의존, `is colored in`·`on {자원}`·`is NN% completed`·`<style>`·`note … end note`·`--` 구분선은 무시 |
 | 컴포넌트·배치·유스케이스 | `[이름]`, `[이름] as 별칭`, `component`/`interface`/`()`/`database`/`node`/`cloud`/`folder`/`frame`/`rectangle`/`storage`/`queue`/`actor`/`:액터:`/`usecase`/`(유스케이스)` 등, `package … { }` 중첩 그룹, `-->` `..>` `--` 와 `: 라벨`, `left to right direction`, `title` |
 
 `skinparam`, `hide/show`, `!전처리`, `'주석`, `/' 블록 '/`, `legend`, `header/footer`는 무시한다.
