@@ -25,15 +25,15 @@ pub fn render(rows: &[Vec<Vec<Span>>], has_header: bool, alignments: &[Alignment
     }
     let border = theme.table_border;
     let mut lines = Vec::new();
-    let rule = |left: &str, middle: &str, right: &str| -> Line {
+    let rule = |left: &str, fill: &str, middle: &str, right: &str, style| -> Line {
         let mut text = String::from(left);
         for (index, w) in widths.iter().enumerate() {
-            text.push_str(&"─".repeat(w + 2));
+            text.push_str(&fill.repeat(w + 2));
             text.push_str(if index + 1 == widths.len() { right } else { middle });
         }
-        Line::single(text, border)
+        Line::single(text, style)
     };
-    lines.push(rule("┌", "┬", "┐"));
+    lines.push(rule("┌", "─", "┬", "┐", border));
     for (row_index, row) in rows.iter().enumerate() {
         let is_header = has_header && row_index == 0;
         let cells: Vec<Vec<Vec<Span>>> = (0..column_count)
@@ -66,10 +66,12 @@ pub fn render(rows: &[Vec<Vec<Span>>], has_header: bool, alignments: &[Alignment
             lines.push(line);
         }
         if is_header && rows.len() > 1 {
-            lines.push(rule("├", "┼", "┤"));
+            lines.push(rule("├", "─", "┼", "┤", border));
+        } else if row_index + 1 < rows.len() {
+            lines.push(rule("├", "╌", "┼", "┤", theme.table_row_rule));
         }
     }
-    lines.push(rule("└", "┴", "┘"));
+    lines.push(rule("└", "─", "┴", "┘", border));
     lines
 }
 
@@ -82,5 +84,8 @@ mod tests {
         let rows = vec![vec![vec![Span::plain("a")], vec![Span::plain("bb")]], vec![vec![Span::plain("1")], vec![Span::plain("2")]]];
         let out: Vec<String> = render(&rows, true, &[Alignment::None, Alignment::Right], 40, &Theme::none()).iter().map(Line::plain).collect();
         assert_eq!(out, vec!["┌───┬────┐", "│ a │ bb │", "├───┼────┤", "│ 1 │  2 │", "└───┴────┘"]);
+        let rows = vec![vec![vec![Span::plain("a")]], vec![vec![Span::plain("1")]], vec![vec![Span::plain("2")]]];
+        let out: Vec<String> = render(&rows, true, &[Alignment::None], 40, &Theme::none()).iter().map(Line::plain).collect();
+        assert_eq!(out, vec!["┌───┐", "│ a │", "├───┤", "│ 1 │", "├╌╌╌┤", "│ 2 │", "└───┘"]);
     }
 }
