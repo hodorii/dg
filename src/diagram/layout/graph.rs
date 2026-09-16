@@ -143,6 +143,11 @@ const GAP_ALONG_MIN: usize = 3;
 const MAX_FOLDS: usize = 40;
 /// 이웃 교환에서 앞뒤로 몇 자식까지 옮겨 볼지.
 const SWAP_REACH: usize = 8;
+/// 노드가 이보다 많은 그래프(자동 생성된 대형 그래프 등)는 이웃 교환 탐색 폭·되풀이 횟수를 줄인다.
+/// 보통 손으로 쓰는 다이어그램은 이 문턱을 넘지 않으므로 동작이 그대로다.
+const LARGE_GRAPH_NODES: usize = 80;
+/// 큰 그래프에서 쓰는 좁힌 탐색 폭.
+const SWAP_REACH_LARGE: usize = 2;
 /// 교차 하나를 가로 이동 몇 칸으로 칠지.
 const CROSSING_PENALTY: f64 = 12.0;
 /// 폭이 줄지 않는 접기를 연속으로 참아 주는 횟수.
@@ -865,7 +870,12 @@ impl<'a> Layout<'a> {
     fn improve_by_swaps(&mut self) {
         self.place_and_straighten();
         let mut current = self.total_edge_length();
-        for _ in 0..3 {
+        // 노드가 많으면 후보 하나 평가할 때마다 드는 재배치·교차 계산 비용이 커진다. 탐색 폭·되풀이
+        // 횟수를 줄여 전체 시간을 억제한다 — 문턱 아래(보통 손으로 쓰는 다이어그램)는 원래 그대로다.
+        let large = self.lnodes.len() > LARGE_GRAPH_NODES;
+        let swap_reach = if large { SWAP_REACH_LARGE } else { SWAP_REACH };
+        let outer_iterations = if large { 1 } else { 3 };
+        for _ in 0..outer_iterations {
             let mut improved = false;
             for block in 0..self.blocks.len() {
                 let mut k = 1;
@@ -878,8 +888,8 @@ impl<'a> Layout<'a> {
                         unit.iter().any(|&u| self.children_share_layer(other, self.blocks[block].children[u]))
                     };
                     // 앞 자식 앞으로, 그리고 뒤 자식 뒤로 옮겨 보는 후보(가까운 것부터).
-                    let earlier: Vec<usize> = (0..first).rev().filter(|&j| shares(j)).take(SWAP_REACH).collect();
-                    let later: Vec<usize> = (last + 1..self.blocks[block].children.len()).filter(|&j| shares(j)).take(SWAP_REACH).collect();
+                    let earlier: Vec<usize> = (0..first).rev().filter(|&j| shares(j)).take(swap_reach).collect();
+                    let later: Vec<usize> = (last + 1..self.blocks[block].children.len()).filter(|&j| shares(j)).take(swap_reach).collect();
                     let candidates: Vec<usize> = earlier.into_iter().chain(later).collect();
                     let mut accepted = false;
                     for j in candidates {
@@ -962,23 +972,35 @@ impl<'a> Layout<'a> {
     }
 
     /// 같은 통로를 지나는 구간 쌍 가운데 교차하는 것의 수(중심 기준 근사).
+    ///
+    /// 같은 층(`layer`)에서 출발하는 구간끼리만 겨루므로, 먼저 층별로 묶고 그 안에서만 짝을 짓는다.
+    /// 원래는 전체 구간을 두 겹으로 훑으며 층이 다르면 건너뛰었는데(구간 수의 제곱), 이 함수가 이웃
+    /// 교환 탐색의 후보 하나마다 다시 불리다 보니 층 수가 많은 큰 그래프에서 비용이 크게 불었다.
+    /// 층별로 나누면 훑는 범위가 총 구간 수가 아니라 각 층 구간 수의 제곱들의 합으로 줄어든다.
     fn count_crossings(&self) -> usize {
+        // `self.layer_count`에 기대지 않고 지금 구간들의 실제 층 범위로 크기를 정한다 — 이 함수는
+        // 배치가 계속 바뀌는 도중에도 불리므로, 어긋난 캐시값으로 색인이 벗어나는 일을 원천적으로 막는다.
+        let layers = self.segments.iter().map(|s| self.lnodes[s.from].layer).max().map_or(0, |max| max + 1);
+        let mut by_layer: Vec<Vec<usize>> = vec![Vec::new(); layers];
+        for (index, segment) in self.segments.iter().enumerate() {
+            by_layer[self.lnodes[segment.from].layer].push(index);
+        }
         let mut crossings = 0;
-        for (a_index, a) in self.segments.iter().enumerate() {
-            let layer = self.lnodes[a.from].layer;
-            let (ea, na) = (self.lnodes[a.from].center(), self.lnodes[a.to].center());
-            for b in self.segments.iter().skip(a_index + 1) {
-                if self.lnodes[b.from].layer != layer {
-                    continue;
-                }
-                let (eb, nb) = (self.lnodes[b.from].center(), self.lnodes[b.to].center());
-                let inverted = (ea < eb && na > nb) || (ea > eb && na < nb);
-                let (a_low, a_high) = (ea.min(na), ea.max(na));
-                let (b_low, b_high) = (eb.min(nb), eb.max(nb));
-                let a_contains_b = a_low < b_low && b_high < a_high;
-                let b_contains_a = b_low < a_low && a_high < b_high;
-                if inverted || a_contains_b || b_contains_a {
-                    crossings += 1;
+        for indices in &by_layer {
+            for (position, &a_index) in indices.iter().enumerate() {
+                let a = &self.segments[a_index];
+                let (ea, na) = (self.lnodes[a.from].center(), self.lnodes[a.to].center());
+                for &b_index in &indices[position + 1..] {
+                    let b = &self.segments[b_index];
+                    let (eb, nb) = (self.lnodes[b.from].center(), self.lnodes[b.to].center());
+                    let inverted = (ea < eb && na > nb) || (ea > eb && na < nb);
+                    let (a_low, a_high) = (ea.min(na), ea.max(na));
+                    let (b_low, b_high) = (eb.min(nb), eb.max(nb));
+                    let a_contains_b = a_low < b_low && b_high < a_high;
+                    let b_contains_a = b_low < a_low && a_high < b_high;
+                    if inverted || a_contains_b || b_contains_a {
+                        crossings += 1;
+                    }
                 }
             }
         }
@@ -1947,5 +1969,34 @@ mod tests {
             g.intern(&format!("N{i}"), "wide node label here", Shape::Rect, None);
         }
         assert!(render(&g, &Theme::none(), 8).is_none());
+    }
+
+    /// 자동 생성된 대형 그래프(모듈 의존성 덤프 등)를 그릴 때 이웃 교환 탐색이 노드 수에 비례해
+    /// 느려지지 않아야 한다. 한때 100여 개 노드짜리 그래프 하나를 접어 넣는 데 2초 넘게 걸렸는데
+    /// (`improve_by_swaps`가 후보마다 전체 재배치+교차 계산을 반복), `LARGE_GRAPH_NODES` 문턱
+    /// 위에서는 탐색 폭·되풀이 횟수를 줄이도록 고쳤다. 이 테스트는 그 회귀를 막는다.
+    #[test]
+    fn large_graph_renders_within_a_bounded_time() {
+        // 실제 모듈 의존성 그래프처럼: 모듈 대부분이 몇 안 되는 공통 유틸로 모이고(폭이 넓은 층 하나),
+        // 층 사이를 멀리 건너뛰는 간선은 없게 한다(그런 간선은 이 테스트가 아니라 층 매김 쪽 문제라
+        // 여기서 같이 재현하면 원인이 섞인다).
+        let mut g = Graph::default();
+        let utils: Vec<usize> = (0..5).map(|i| g.intern(&format!("util{i}"), &format!("유틸 {i}"), Shape::Rect, None)).collect();
+        for i in 0..100 {
+            let module = g.intern(&format!("mod{i}"), &format!("module {i}"), Shape::Rect, None);
+            g.add_edge(Edge { from: module, to: utils[i % utils.len()], head: Marker::Arrow, ..Edge::default() });
+            if i % 7 == 0 && i > 0 {
+                let sibling = g.find(&format!("mod{}", i - 1)).unwrap();
+                g.add_edge(Edge { from: module, to: sibling, head: Marker::Arrow, ..Edge::default() });
+            }
+        }
+        let start = std::time::Instant::now();
+        let out = render(&g, &Theme::none(), 140);
+        // 실사용 환경보다 넉넉한 상한(개발/디버그 빌드 기준). 대형 그래프라 아예 못 그릴(`None`) 수도
+        // 있지만, 어느 쪽이든 이 시간 안에 끝나야 한다 — 패닉도, 무한정 느려지는 것도 없어야 한다.
+        assert!(start.elapsed().as_secs() < 10, "대형 그래프 렌더링이 {:?}나 걸림", start.elapsed());
+        if let Some(lines) = out {
+            assert!(!lines.is_empty());
+        }
     }
 }
