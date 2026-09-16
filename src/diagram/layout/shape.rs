@@ -26,7 +26,7 @@ fn text_size(sections: &[Vec<String>]) -> (usize, usize) {
 pub fn measure(shape: Shape, sections: &[Vec<String>]) -> (usize, usize) {
     let (tw, th) = text_size(sections);
     match shape {
-        Shape::Start | Shape::End => (1, 1),
+        Shape::Start | Shape::End | Shape::Anchor => (1, 1),
         Shape::Rect | Shape::Round | Shape::Note | Shape::Circle => (tw + 4, th + 2),
         Shape::Stadium | Shape::Diamond | Shape::Hexagon | Shape::Subroutine => (tw + 6, th + 2),
         Shape::Cylinder => (tw + 4, th + 3),
@@ -43,6 +43,7 @@ pub fn draw(canvas: &mut Canvas, x: usize, y: usize, shape: Shape, sections: &[V
     canvas.clear_rect(x, y, w, h);
     let border = theme.diagram_box;
     match shape {
+        Shape::Anchor => {}
         Shape::Start => canvas.put(x, y, '●', theme.diagram_accent),
         Shape::End => canvas.put(x, y, '◉', theme.diagram_accent),
         Shape::Rect | Shape::Round | Shape::Circle | Shape::Note => {

@@ -36,6 +36,8 @@ pub enum Shape {
     Start,
     /// 상태도의 끝점 `◉`.
     End,
+    /// 그룹을 가리키는 간선이 닿는 보이지 않는 점.
+    Anchor,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -75,6 +77,8 @@ pub struct Edge {
 
 #[derive(Clone, Debug)]
 pub struct Group {
+    /// 원문에서 그룹을 가리키는 아이디(간선의 끝으로 쓰일 수 있다).
+    pub id: String,
     pub title: String,
     pub parent: Option<usize>,
 }
@@ -117,8 +121,20 @@ impl Graph {
     }
 
     pub fn add_group(&mut self, title: &str, parent: Option<usize>) -> usize {
-        self.groups.push(Group { title: title.to_string(), parent });
+        self.add_group_with_id(title, title, parent)
+    }
+
+    pub fn add_group_with_id(&mut self, id: &str, title: &str, parent: Option<usize>) -> usize {
+        self.groups.push(Group { id: id.to_string(), title: title.to_string(), parent });
         self.groups.len() - 1
+    }
+
+    /// 그룹 자체를 가리키는 간선 끝. 그룹 안에 보이지 않는 닻 노드를 두고 거기에 잇는다.
+    pub fn group_anchor(&mut self, group: usize) -> usize {
+        let id = format!("@group-anchor:{group}");
+        let index = self.intern(&id, "", Shape::Anchor, Some(group));
+        self.nodes[index].sections = vec![Vec::new()];
+        index
     }
 
     /// 자기 자신을 포함한 조상 목록(안쪽부터).

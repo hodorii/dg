@@ -33,8 +33,8 @@ pub fn parse(source: &str) -> Graph {
         }
         if first == "subgraph" {
             let rest = trimmed[first.len()..].trim();
-            let title = subgraph_title(rest);
-            let group = graph.add_group(&title, group_stack.last().copied());
+            let (id, title) = subgraph_id_and_title(rest);
+            let group = graph.add_group_with_id(&id, &title, group_stack.last().copied());
             group_stack.push(group);
             continue;
         }
@@ -52,14 +52,16 @@ pub fn parse(source: &str) -> Graph {
     graph
 }
 
-fn subgraph_title(rest: &str) -> String {
+/// `Id["제목"]` → (Id, 제목), `제목` → (제목, 제목)
+fn subgraph_id_and_title(rest: &str) -> (String, String) {
     if let Some(open) = rest.find('[') {
         let close = rest.rfind(']').unwrap_or(rest.len());
         if close > open {
-            return label(&rest[open + 1..close]);
+            return (rest[..open].trim().to_string(), label(&rest[open + 1..close]));
         }
     }
-    label(rest)
+    let title = label(rest);
+    (title.clone(), title)
 }
 
 /// `A --> B & C --> D` 같은 문장 하나.
@@ -96,6 +98,19 @@ fn read_node_list(chars: &[char], cursor: &mut usize, graph: &mut Graph, group: 
     let mut nodes = Vec::new();
     loop {
         let node = read_node(chars, cursor)?;
+        // 서브그래프 아이디를 간선 끝으로 쓰면 그 그룹의 닻에 잇는다.
+        if node.label.is_none()
+            && graph.find(&node.id).is_none()
+            && let Some(target_group) = graph.groups.iter().position(|g| g.id == node.id)
+        {
+            nodes.push(graph.group_anchor(target_group));
+            skip_spaces(chars, cursor);
+            if *cursor < chars.len() && chars[*cursor] == '&' {
+                *cursor += 1;
+                continue;
+            }
+            return Some(nodes);
+        }
         let index = graph.intern(&node.id, node.label.as_deref().unwrap_or(""), node.shape.unwrap_or_default(), group);
         if let Some(text) = &node.label {
             graph.set_label(index, text);
@@ -312,6 +327,15 @@ mod tests {
         assert_eq!(g.edges[1].label, "yes");
         assert_eq!(g.edges[2].label, "no");
         assert_eq!(g.edges[2].kind, LineKind::Dashed);
+    }
+
+    #[test]
+    fn edge_to_subgraph_id_uses_anchor() {
+        let g = parse("graph TB\n subgraph NET[\"망\"]\n  A\n end\n X --> NET\n");
+        assert_eq!(g.groups[0].id, "NET");
+        let anchor = g.nodes.iter().position(|n| n.shape == Shape::Anchor).unwrap();
+        assert_eq!(g.nodes[anchor].group, Some(0));
+        assert_eq!(g.edges[0].to, anchor);
     }
 
     #[test]

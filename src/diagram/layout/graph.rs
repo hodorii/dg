@@ -7,7 +7,7 @@
 //! 4. 방향(TB/LR)은 배치 좌표계(along/across)를 캔버스 좌표로 옮길 때만 관여한다.
 
 use crate::diagram::canvas::{Canvas, EAST, LineKind, NORTH, SOUTH, WEST};
-use crate::diagram::ir::{Direction, Graph, Marker};
+use crate::diagram::ir::{Direction, Graph, Marker, Shape};
 use crate::diagram::layout::shape;
 use crate::line::Line;
 use crate::style::{Style, Theme};
@@ -118,6 +118,8 @@ struct Layout<'a> {
     extra_across: usize,
     /// 라벨이 그룹 밖으로 나가지 않도록 블록마다 더 주는 폭.
     block_extra: Vec<usize>,
+    /// `DG_DEBUG`가 켜져 있으면 배선 정보를 stderr에 적는다.
+    debug: bool,
 }
 
 const GAP_ALONG_MIN: usize = 3;
@@ -218,7 +220,7 @@ impl<'a> Layout<'a> {
             Child::Block(moved) => {
                 let others_max = row
                     .iter()
-                    .filter(|&&c| !matches!(c, Child::Block(b) if b == moved))
+                    .filter(|&&c| self.is_movable(c) && !matches!(c, Child::Block(b) if b == moved))
                     .map(|&c| self.child_layer_max(c))
                     .max()
                     .unwrap_or(layer);
@@ -249,7 +251,8 @@ impl<'a> Layout<'a> {
 
     fn is_movable(&self, child: Child) -> bool {
         match child {
-            Child::Node(i) => self.lnodes[i].node.is_some(),
+            // 가상 노드는 배선의 산물이고, 닻은 그룹 첫 층에 붙어 있어야 한다.
+            Child::Node(i) => self.lnodes[i].node.is_some_and(|n| self.graph.nodes[n].shape != Shape::Anchor),
             Child::Block(_) => true,
         }
     }
@@ -334,6 +337,17 @@ impl<'a> Layout<'a> {
             .map(|(index, node)| {
                 let sections = shape::wrapped_sections(node, cap);
                 let (w, h) = shape::measure(node.shape, &sections);
+                let (w, h) = if node.shape == Shape::Anchor {
+                    // 보이지 않는 닻: 간선마다 접점이 두 칸씩 떨어지도록 폭만 확보한다.
+                    let (incoming, outgoing) = degree[index];
+                    let span = 2 * incoming.max(outgoing).max(1) + 1;
+                    match direction {
+                        Direction::TopDown => (span, 1),
+                        Direction::LeftRight => (1, span),
+                    }
+                } else {
+                    (w, h)
+                };
                 let (along_size, across_size) = match direction {
                     Direction::TopDown => (h, w),
                     Direction::LeftRight => {
@@ -373,6 +387,7 @@ impl<'a> Layout<'a> {
             gap_head_room: Vec::new(),
             extra_across: 0,
             block_extra: Vec::new(),
+            debug: std::env::var_os("DG_DEBUG").is_some(),
         };
         for edge in &graph.edges {
             if edge.from == edge.to {
@@ -423,13 +438,28 @@ impl<'a> Layout<'a> {
         }
         let mut incoming_count = vec![0usize; n];
         let mut directed: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut add = |from: usize, to: usize| {
+            directed[from].push(to);
+            incoming_count[to] += 1;
+        };
         for (i, edge) in self.graph.edges.iter().enumerate() {
             if edge.from == edge.to {
                 continue;
             }
             let (from, to) = if self.reversed[i] { (edge.to, edge.from) } else { (edge.from, edge.to) };
-            directed[from].push(to);
-            incoming_count[to] += 1;
+            add(from, to);
+            // 그룹 닻으로 드나드는 간선은 층 계산에서 그룹 구성원 전체와 잇는 것으로 본다:
+            // 그룹으로 들어오는 화살표는 상자 위에서, 나가는 화살표는 상자 아래에서 나온다.
+            if self.graph.nodes[to].shape == Shape::Anchor {
+                for member in self.group_members(to) {
+                    add(from, member);
+                }
+            }
+            if self.graph.nodes[from].shape == Shape::Anchor {
+                for member in self.group_members(from) {
+                    add(member, to);
+                }
+            }
         }
         let mut queue: Vec<usize> = (0..n).filter(|&i| incoming_count[i] == 0).collect();
         let mut layer = self.min_layer.clone();
@@ -448,7 +478,28 @@ impl<'a> Layout<'a> {
         for (node, &assigned) in self.lnodes.iter_mut().zip(&layer) {
             node.layer = assigned;
         }
-        self.layer_count = layer.iter().max().map_or(0, |m| m + 1);
+        // 닻은 그룹의 첫 층(나가는 간선이 있으면 마지막 층)에 붙인다.
+        for anchor in 0..n {
+            if self.graph.nodes[anchor].shape != Shape::Anchor {
+                continue;
+            }
+            let members = self.group_members(anchor);
+            let has_outgoing = self.graph.edges.iter().any(|e| e.from == anchor && e.to != anchor);
+            let layers = members.iter().map(|&m| self.lnodes[m].layer);
+            let target = if has_outgoing { layers.max() } else { layers.min() };
+            if let Some(target) = target {
+                self.lnodes[anchor].layer = target;
+            }
+        }
+        self.layer_count = self.lnodes.iter().take(n).map(|node| node.layer + 1).max().unwrap_or(0);
+    }
+
+    /// 닻이 속한 그룹(하위 그룹 포함)의 실제 구성원.
+    fn group_members(&self, anchor: usize) -> Vec<usize> {
+        let Some(group) = self.graph.nodes[anchor].group else { return Vec::new() };
+        (0..self.graph.nodes.len())
+            .filter(|&i| i != anchor && self.graph.nodes[i].shape != Shape::Anchor && self.graph.ancestors(self.graph.nodes[i].group).contains(&group))
+            .collect()
     }
 
     fn mark_back_edges(&mut self, start: usize, outgoing: &[Vec<(usize, usize)>], state: &mut [u8]) {
@@ -835,11 +886,8 @@ impl<'a> Layout<'a> {
     }
 
     fn route(&mut self) {
-        for s in 0..self.segments.len() {
-            let (from, to) = (self.segments[s].from, self.segments[s].to);
-            self.segments[s].exit = self.lnodes[from].across + self.segments[s].exit_offset;
-            self.segments[s].entry = self.lnodes[to].across + self.segments[s].entry_offset;
-        }
+        self.refresh_ports();
+        self.resolve_port_swaps();
 
         self.layer_content = vec![0; self.layer_count];
         self.top_levels = vec![0; self.layer_count];
@@ -912,6 +960,49 @@ impl<'a> Layout<'a> {
         self.layer_start = vec![0; self.layer_count];
         for layer in 1..self.layer_count {
             self.layer_start[layer] = self.layer_start[layer - 1] + self.layer_total(layer - 1) + self.gap[layer - 1];
+        }
+    }
+
+    fn refresh_ports(&mut self) {
+        for s in 0..self.segments.len() {
+            let (from, to) = (self.segments[s].from, self.segments[s].to);
+            self.segments[s].exit = self.lnodes[from].across + self.segments[s].exit_offset;
+            self.segments[s].entry = self.lnodes[to].across + self.segments[s].entry_offset;
+        }
+    }
+
+    /// 같은 통로에서 두 간선이 서로의 열을 맞바꾸는 X자 교차(i.exit == j.entry, j.exit == i.entry)는
+    /// 줄 순서로는 풀 수 없다. 실제 노드에 붙은 접점을 한 칸 옮겨 열을 어긋나게 한다.
+    fn resolve_port_swaps(&mut self) {
+        for _ in 0..8 {
+            let mut nudged = false;
+            for i in 0..self.segments.len() {
+                for j in 0..self.segments.len() {
+                    if i == j || self.lnodes[self.segments[i].from].layer != self.lnodes[self.segments[j].from].layer {
+                        continue;
+                    }
+                    let (a, b) = (&self.segments[i], &self.segments[j]);
+                    if a.exit != b.entry || b.exit != a.entry || a.exit == a.entry {
+                        continue;
+                    }
+                    let candidates = [(j, false), (i, true), (i, false), (j, true)];
+                    let Some(&(s, is_exit)) = candidates.iter().find(|&&(s, is_exit)| {
+                        let node = if is_exit { self.segments[s].from } else { self.segments[s].to };
+                        self.lnodes[node].node.is_some() && self.lnodes[node].across_size >= 4
+                    }) else {
+                        continue;
+                    };
+                    let node = if is_exit { self.segments[s].from } else { self.segments[s].to };
+                    let limit = self.lnodes[node].across_size - 2;
+                    let offset = if is_exit { &mut self.segments[s].exit_offset } else { &mut self.segments[s].entry_offset };
+                    *offset = if *offset < limit { *offset + 1 } else { offset.saturating_sub(1).max(1) };
+                    nudged = true;
+                }
+            }
+            if !nudged {
+                return;
+            }
+            self.refresh_ports();
         }
     }
 
@@ -1104,6 +1195,13 @@ impl<'a> Layout<'a> {
     }
 
     fn draw(&self, canvas: &mut Canvas) {
+        if self.debug {
+            for (i, node) in self.lnodes.iter().enumerate() {
+                if let Some(n) = node.node {
+                    eprintln!("node {} layer {} across {} group {:?} min_layer {}", self.graph.nodes[n].id, node.layer, node.across, node.group, self.min_layer[i]);
+                }
+            }
+        }
         self.draw_groups(canvas);
         for (i, node) in self.lnodes.iter().enumerate() {
             let along = self.node_along(i);
@@ -1246,6 +1344,15 @@ impl<'a> Layout<'a> {
 
     fn draw_segment(&self, canvas: &mut Canvas, s: usize) {
         let segment = &self.segments[s];
+        if self.debug {
+            // 배선 디버깅: DG_DEBUG=1 이면 구간마다 접점·통로를 stderr에 적는다.
+            let name = |l: usize| self.lnodes[l].node.map_or(format!("dummy{l}@{}", self.lnodes[l].across), |n| self.graph.nodes[n].id.clone());
+            let (top, bottom, gap_start) = self.segment_span(s);
+            eprintln!(
+                "seg {s} edge {} {} -> {} exit {} entry {} channel {:?} rows {top}..{bottom} gap {gap_start} layer {}",
+                segment.edge, name(segment.from), name(segment.to), segment.exit, segment.entry, segment.channel, self.lnodes[segment.from].layer
+            );
+        }
         let kind = self.graph.edges[segment.edge].kind;
         let style = self.theme.diagram_line;
         let (top, bottom, gap_start) = self.segment_span(s);
