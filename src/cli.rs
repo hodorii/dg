@@ -30,7 +30,8 @@ pub struct Cli {
     #[arg(long, value_enum)]
     pub er_notation: Option<ErNotationArg>,
 
-    /// 그래프 배치 방향 강제(tb: 위→아래, lr: 왼쪽→오른쪽). 폭에 안 들어가면 반대 방향으로 재시도
+    /// 그래프 배치 방향 강제(tb: 위→아래, bt: 아래→위, lr: 왼쪽→오른쪽, rl: 오른쪽→왼쪽).
+    /// 폭에 안 들어가면 반대 축으로 재시도
     #[arg(long, value_enum)]
     pub direction: Option<DirectionArg>,
 }
@@ -38,7 +39,9 @@ pub struct Cli {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum DirectionArg {
     Tb,
+    Bt,
     Lr,
+    Rl,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

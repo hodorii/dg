@@ -2,6 +2,7 @@
 
 use super::text::{clean_lines, keyword, label, shape_delimited};
 use crate::diagram::ir::{Direction, Edge, Graph, LineKind, Marker, Shape};
+use crate::diagram::options::parse_direction;
 
 struct NodeRef {
     id: String,
@@ -24,11 +25,19 @@ pub fn parse(source: &str) -> Graph {
         let lower = trimmed.to_ascii_lowercase();
         let first = keyword(&lower);
         if first == "flowchart" || first == "flowchart-v2" || first == "graph" {
-            let direction = lower[first.len()..].trim();
-            graph.direction = Some(match direction {
-                "lr" | "rl" => Direction::LeftRight,
-                _ => Direction::TopDown,
-            });
+            let (direction, reversed) = parse_direction(&lower[first.len()..]).unwrap_or((Direction::TopDown, false));
+            graph.direction = Some(direction);
+            graph.direction_reversed = reversed;
+            continue;
+        }
+        if first == "direction" {
+            // 최상위(서브그래프 밖)에서만 전체 방향을 바꾼다. 서브그래프별 방향은 지원하지 않는다.
+            if group_stack.is_empty()
+                && let Some((direction, reversed)) = parse_direction(&lower[first.len()..])
+            {
+                graph.direction = Some(direction);
+                graph.direction_reversed = reversed;
+            }
             continue;
         }
         if first == "subgraph" {
@@ -42,7 +51,7 @@ pub fn parse(source: &str) -> Graph {
             group_stack.pop();
             continue;
         }
-        if matches!(first, "direction" | "classdef" | "class" | "style" | "linkstyle" | "click" | "acctitle:" | "accdescr:" | "title") {
+        if matches!(first, "classdef" | "class" | "style" | "linkstyle" | "click" | "acctitle:" | "accdescr:" | "title") {
             continue;
         }
         for statement in trimmed.split(';').map(str::trim).filter(|s| !s.is_empty()) {
@@ -302,5 +311,35 @@ mod tests {
         assert_eq!(g.groups[0].title, "Backend");
         assert_eq!(g.nodes[0].group, Some(0));
         assert_eq!(g.edges.len(), 3);
+    }
+
+    #[test]
+    fn header_direction_covers_all_five_tokens() {
+        let cases = [
+            ("flowchart TB", Direction::TopDown, false),
+            ("flowchart TD", Direction::TopDown, false),
+            ("flowchart BT", Direction::TopDown, true),
+            ("flowchart LR", Direction::LeftRight, false),
+            ("flowchart RL", Direction::LeftRight, true),
+        ];
+        for (header, direction, reversed) in cases {
+            let g = parse(&format!("{header}\nA --> B\n"));
+            assert_eq!(g.direction, Some(direction), "{header}");
+            assert_eq!(g.direction_reversed, reversed, "{header}");
+        }
+    }
+
+    #[test]
+    fn top_level_direction_statement_overrides_header() {
+        let g = parse("flowchart TB\ndirection RL\nA --> B\n");
+        assert_eq!(g.direction, Some(Direction::LeftRight));
+        assert!(g.direction_reversed);
+    }
+
+    #[test]
+    fn direction_statement_inside_subgraph_is_ignored() {
+        let g = parse("flowchart TB\nsubgraph S\ndirection LR\nA --> B\nend\n");
+        assert_eq!(g.direction, Some(Direction::TopDown));
+        assert!(!g.direction_reversed);
     }
 }

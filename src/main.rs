@@ -38,8 +38,10 @@ fn run() -> io::Result<()> {
         direction: cli
             .direction
             .map(|d| match d {
-                cli::DirectionArg::Tb => diagram::ir::Direction::TopDown,
-                cli::DirectionArg::Lr => diagram::ir::Direction::LeftRight,
+                cli::DirectionArg::Tb => (diagram::ir::Direction::TopDown, false),
+                cli::DirectionArg::Bt => (diagram::ir::Direction::TopDown, true),
+                cli::DirectionArg::Lr => (diagram::ir::Direction::LeftRight, false),
+                cli::DirectionArg::Rl => (diagram::ir::Direction::LeftRight, true),
             })
             .or_else(|| std::env::var("DG_DIRECTION").ok().and_then(|v| diagram::options::parse_direction(&v))),
     };

@@ -34,13 +34,17 @@ pub struct DiagramOptions {
     pub er_notation: ErNotation,
     /// 그래프 계열의 배치 방향 강제. 소스의 `flowchart LR`·`left to right direction`보다 우선한다.
     /// 다만 폭에 들어가지 않으면 반대 방향으로 다시 시도하는 것은 그대로다.
-    pub direction: Option<Direction>,
+    /// `(축, 뒤집힘)` — 뒤집힘은 BT(TopDown 축)·RL(LeftRight 축)일 때 켠다.
+    pub direction: Option<(Direction, bool)>,
 }
 
-pub fn parse_direction(value: &str) -> Option<Direction> {
+/// `tb`·`td`·`bt`·`lr`·`rl`과 그 별칭을 (축, 뒤집힘)으로 판별한다.
+pub fn parse_direction(value: &str) -> Option<(Direction, bool)> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "tb" | "td" | "bt" | "topdown" | "top-down" | "vertical" => Some(Direction::TopDown),
-        "lr" | "rl" | "leftright" | "left-right" | "horizontal" => Some(Direction::LeftRight),
+        "tb" | "td" | "topdown" | "top-down" | "vertical" => Some((Direction::TopDown, false)),
+        "bt" | "bottomup" | "bottom-up" => Some((Direction::TopDown, true)),
+        "lr" | "leftright" | "left-right" | "horizontal" => Some((Direction::LeftRight, false)),
+        "rl" | "rightleft" | "right-left" => Some((Direction::LeftRight, true)),
         _ => None,
     }
 }
@@ -91,8 +95,9 @@ impl DiagramOptions {
 
     /// 파서가 만든 그래프에 표기 옵션을 적용한다. 파서는 까치발 표식과 글자를 둘 다 만들어 둔다.
     pub fn apply_to_graph(&self, graph: &mut Graph) {
-        if let Some(direction) = self.direction {
+        if let Some((direction, reversed)) = self.direction {
             graph.direction = Some(direction);
+            graph.direction_reversed = reversed;
         }
         let is_crow = |m: Marker| matches!(m, Marker::CrowOne | Marker::CrowZeroOne | Marker::CrowMany | Marker::CrowZeroMany);
         for edge in &mut graph.edges {
@@ -170,7 +175,9 @@ mod tests {
         assert_eq!(base.with_source("@startuml\n!pragma dg erNotation=text\n@enduml").er_notation, ErNotation::Text);
         assert_eq!(base.with_source("' dg: er-notation=crow").er_notation, ErNotation::Crow);
         assert_eq!(base.with_source("erDiagram\nA ||--o{ B : x").er_notation, ErNotation::Crow);
-        assert_eq!(base.with_source("%% dg: direction=lr erNotation=text").direction, Some(Direction::LeftRight));
-        assert_eq!(base.with_source("!pragma dg direction=TB").direction, Some(Direction::TopDown));
+        assert_eq!(base.with_source("%% dg: direction=lr erNotation=text").direction, Some((Direction::LeftRight, false)));
+        assert_eq!(base.with_source("!pragma dg direction=TB").direction, Some((Direction::TopDown, false)));
+        assert_eq!(base.with_source("%% dg: direction=bt").direction, Some((Direction::TopDown, true)));
+        assert_eq!(base.with_source("%% dg: direction=rl").direction, Some((Direction::LeftRight, true)));
     }
 }

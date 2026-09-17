@@ -113,6 +113,9 @@ struct Layout<'a> {
     /// 층 접기로 정해진 노드별 최소 층.
     min_layer: Vec<usize>,
     reversed: Vec<bool>,
+    /// BT·RL처럼 흐름 방향을 뒤집는지: 켜지면 모든 간선을 `effective_reversed`로 본다(층 계산·배선이
+    /// 원천을 마지막 층에, 도착을 첫 층에 두게 되어 그 뒤로는 보통 TB/LR과 똑같이 그려진다).
+    reverse_along: bool,
     segments: Vec<Segment>,
     adjacency: Vec<Vec<usize>>,
     blocks: Vec<Block>,
@@ -358,7 +361,7 @@ impl<'a> Layout<'a> {
                 if edge.from == edge.to {
                     continue;
                 }
-                let (from, to) = if self.reversed[e] { (edge.to, edge.from) } else { (edge.from, edge.to) };
+                let (from, to) = if self.effective_reversed(e) { (edge.to, edge.from) } else { (edge.from, edge.to) };
                 if to == node {
                     // from이 속한 그룹 가운데 node를 품지 않는 가장 바깥 것
                     let outer = self
@@ -458,6 +461,7 @@ impl<'a> Layout<'a> {
             lnodes,
             min_layer: vec![0; graph.nodes.len()],
             reversed: vec![false; graph.edges.len()],
+            reverse_along: graph.direction_reversed,
             segments: Vec::new(),
             adjacency: Vec::new(),
             blocks: Vec::new(),
@@ -534,7 +538,7 @@ impl<'a> Layout<'a> {
             if edge.from == edge.to {
                 continue;
             }
-            let (from, to) = if self.reversed[i] { (edge.to, edge.from) } else { (edge.from, edge.to) };
+            let (from, to) = if self.effective_reversed(i) { (edge.to, edge.from) } else { (edge.from, edge.to) };
             add(from, to);
             // 그룹 닻으로 드나드는 간선은 층 계산에서 그룹 구성원 전체와 잇는 것으로 본다:
             // 그룹으로 들어오는 화살표는 상자 위에서, 나가는 화살표는 상자 아래에서 나온다.
@@ -577,7 +581,10 @@ impl<'a> Layout<'a> {
                 continue;
             }
             let members = self.group_members(anchor);
-            let has_outgoing = self.graph.edges.iter().any(|e| e.from == anchor && e.to != anchor);
+            let has_outgoing = self.graph.edges.iter().enumerate().any(|(i, e)| {
+                let (from, to) = if self.effective_reversed(i) { (e.to, e.from) } else { (e.from, e.to) };
+                from == anchor && to != anchor
+            });
             let layers = members.iter().map(|&m| self.lnodes[m].layer);
             let target = if has_outgoing { layers.max() } else { layers.min() };
             if let Some(target) = target {
@@ -593,6 +600,13 @@ impl<'a> Layout<'a> {
         (0..self.graph.nodes.len())
             .filter(|&i| i != anchor && self.graph.nodes[i].shape != Shape::Anchor && self.graph.ancestors(self.graph.nodes[i].group).contains(&group))
             .collect()
+    }
+
+    /// 층 계산·배선에서 실제로 쓸 방향: 되돌아가는 간선 뒤집기(`reversed`)에 전체 흐름 뒤집기
+    /// (`reverse_along`, BT·RL)를 더한다. 사이클을 끊는 것과 방향을 뒤집는 것은 서로 다른
+    /// 문제라 각각 독립적으로 계산되지만, 둘 다 "이 간선을 층 계산에서 뒤집어 볼지"로 합쳐진다.
+    fn effective_reversed(&self, edge: usize) -> bool {
+        self.reversed[edge] != self.reverse_along
     }
 
     fn mark_back_edges(&mut self, start: usize, outgoing: &[Vec<(usize, usize)>], state: &mut [u8]) {
@@ -626,7 +640,7 @@ impl<'a> Layout<'a> {
             if edge.from == edge.to {
                 continue;
             }
-            let (from, to) = if self.reversed[i] { (edge.to, edge.from) } else { (edge.from, edge.to) };
+            let (from, to) = if self.effective_reversed(i) { (edge.to, edge.from) } else { (edge.from, edge.to) };
             let (layer_from, layer_to) = (self.lnodes[from].layer, self.lnodes[to].layer);
             let mut chain = vec![from];
             for layer in layer_from + 1..layer_to {
@@ -1243,7 +1257,7 @@ impl<'a> Layout<'a> {
                 continue;
             }
             let edge = &self.graph.edges[segment.edge];
-            let (top_marker, bottom_marker) = if self.reversed[segment.edge] { (edge.head, edge.tail) } else { (edge.tail, edge.head) };
+            let (top_marker, bottom_marker) = if self.effective_reversed(segment.edge) { (edge.head, edge.tail) } else { (edge.tail, edge.head) };
             if segment.is_first {
                 self.gap_tail_rows[layer] = self.gap_tail_rows[layer].max(marker_glyphs(top_marker, self.direction, true).len());
             }
@@ -1538,7 +1552,7 @@ impl<'a> Layout<'a> {
     fn segment_labels(&self, s: usize) -> (String, String, String) {
         let segment = &self.segments[s];
         let edge = &self.graph.edges[segment.edge];
-        let reversed = self.reversed[segment.edge];
+        let reversed = self.effective_reversed(segment.edge);
         let label = if segment.is_first && self.shows_label(segment.edge) { edge.label.replace('\n', " ") } else { String::new() };
         let (top_label, bottom_label) = if reversed { (&edge.head_label, &edge.tail_label) } else { (&edge.tail_label, &edge.head_label) };
         let tail = if segment.is_first { top_label.clone() } else { String::new() };
@@ -1764,7 +1778,7 @@ impl<'a> Layout<'a> {
     fn draw_segment_decorations(&self, canvas: &mut Canvas, s: usize) {
         let segment = &self.segments[s];
         let edge = &self.graph.edges[segment.edge];
-        let reversed = self.reversed[segment.edge];
+        let reversed = self.effective_reversed(segment.edge);
         let (top, bottom, gap_start) = self.segment_span(s);
         let (label, tail_label, head_label) = self.segment_labels(s);
         let (top_marker, bottom_marker) = if reversed { (edge.head, edge.tail) } else { (edge.tail, edge.head) };
@@ -1946,6 +1960,53 @@ mod tests {
         let text = out.join("\n");
         assert!(text.contains("▶"), "{text}");
         assert!(out.len() < 12, "{text}");
+    }
+
+    /// 되돌아가는 간선 없는 사슬: BT·RL 검증에서 순수하게 방향만 본다.
+    fn chain_graph() -> Graph {
+        let mut g = Graph::default();
+        let a = g.intern("A", "Start", Shape::Rect, None);
+        let b = g.intern("B", "Middle", Shape::Rect, None);
+        let c = g.intern("C", "End", Shape::Rect, None);
+        g.add_edge(Edge { from: a, to: b, head: Marker::Arrow, ..Edge::default() });
+        g.add_edge(Edge { from: b, to: c, head: Marker::Arrow, ..Edge::default() });
+        g
+    }
+
+    /// 텍스트가 나오는 줄 번호(첫 매치).
+    fn row_of(lines: &[String], needle: &str) -> usize {
+        lines.iter().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("{needle} not found in {lines:?}"))
+    }
+
+    #[test]
+    fn bottom_up_flips_top_down_without_mirroring_text() {
+        let mut g = chain_graph();
+        g.direction = Some(Direction::TopDown);
+        g.direction_reversed = true;
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        // 시작(A)이 물리적으로 아래, 끝(C)이 위 — 일반 TD와 반대.
+        assert!(row_of(&out, "End") < row_of(&out, "Start"), "{text}");
+        assert!(text.contains("▲"), "{text}");
+        assert!(!text.contains("▼"), "{text}");
+        // 텍스트 자체는 뒤집히지 않는다(글자 순서 보존).
+        assert!(text.contains("Start"), "{text}");
+        assert!(text.contains("Middle"), "{text}");
+        assert!(text.contains("End"), "{text}");
+    }
+
+    #[test]
+    fn right_left_flips_left_right_without_mirroring_text() {
+        let mut g = chain_graph();
+        g.direction = Some(Direction::LeftRight);
+        g.direction_reversed = true;
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        let row = out.iter().find(|line| line.contains("Start")).unwrap();
+        // 시작(A)이 오른쪽, 끝(C)이 왼쪽 — 일반 LR과 반대.
+        assert!(row.find("End").unwrap() < row.find("Start").unwrap(), "{text}");
+        assert!(text.contains("◀"), "{text}");
+        assert!(!text.contains("▶"), "{text}");
     }
 
     #[test]

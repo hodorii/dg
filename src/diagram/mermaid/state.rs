@@ -1,7 +1,8 @@
 //! mermaid `stateDiagram` 파서. 그래프 IR로 만든다.
 
 use super::text::{clean_lines, label};
-use crate::diagram::ir::{Direction, Edge, Graph, Marker, Shape};
+use crate::diagram::ir::{Edge, Graph, Marker, Shape};
+use crate::diagram::options::parse_direction;
 
 pub fn parse(source: &str) -> Graph {
     let mut graph = Graph::default();
@@ -19,9 +20,11 @@ pub fn parse(source: &str) -> Graph {
         if lower.starts_with("statediagram") {
             continue;
         }
-        if let Some(direction) = lower.strip_prefix("direction") {
-            let d = direction.trim();
-            graph.direction = Some(if d.starts_with('l') || d.starts_with('r') { Direction::LeftRight } else { Direction::TopDown });
+        if let Some(rest) = lower.strip_prefix("direction") {
+            if let Some((direction, reversed)) = parse_direction(rest) {
+                graph.direction = Some(direction);
+                graph.direction_reversed = reversed;
+            }
             continue;
         }
         if lower.starts_with("note") {

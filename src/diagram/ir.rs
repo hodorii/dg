@@ -108,6 +108,9 @@ pub struct Graph {
     pub edges: Vec<Edge>,
     pub groups: Vec<Group>,
     pub direction: Option<Direction>,
+    /// `direction`이 가리키는 축(TB·LR)을 따라 층 순서를 뒤집는다: BT는 TopDown 축을, RL은
+    /// LeftRight 축을 뒤집어 만든다(`layout::graph`가 실제로 소비한다).
+    pub direction_reversed: bool,
     pub title: String,
 }
 
