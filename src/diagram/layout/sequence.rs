@@ -557,21 +557,22 @@ impl<'a> SequenceLayout<'a> {
     fn draw_self_message(&self, canvas: &mut Canvas, index: usize, participant: usize, start_row: usize, kind: LineKind, head: Marker) {
         let theme = self.theme;
         let x = self.centers[participant];
-        // 루프 폭 3칸(x+1..x+3): 돌아오는 줄(start_row+2)도 나가는 줄과 대칭으로 실선을 그려서
-        // 화살촉(x+2)과 생명선(x) 사이에 실제 선 한 칸(x+1)이 남도록 한다 — 화살촉이 생명선에 바로
-        // 붙어 `<|`처럼 보이던 것을 `<-`처럼 여백이 있게 고친다.
+        // 루프 폭 3칸(x+1..x+3). 화살촉은 도착 지점인 생명선(x)에 바로 붙어야 한다(다른 메시지가
+        // 상대 생명선에 바로 닿는 것과 같은 관례). 여백이 필요한 곳은 화살촉과 루프의 세로
+        // 연결선(x+3, 모서리) 사이(x+2)다 — 화살촉과 연결선이 붙어 `<|`처럼 보이던 것을
+        // `<-|`처럼 여백이 있게 고친다.
         canvas.join(x, start_row, EAST, LineKind::Solid, theme.diagram_line, false);
         canvas.hline(x + 1, x + 3, start_row, kind, theme.diagram_line);
         canvas.vline(x + 3, start_row, start_row + 2, kind, theme.diagram_line);
         canvas.join(x + 3, start_row, 0, kind, theme.diagram_line, true);
-        canvas.hline(x + 1, x + 3, start_row + 2, kind, theme.diagram_line);
+        canvas.hline(x + 2, x + 3, start_row + 2, kind, theme.diagram_line);
         canvas.join(x + 3, start_row + 2, 0, kind, theme.diagram_line, true);
         let glyph = match head {
             Marker::OpenArrow => '<',
             Marker::Cross => '×',
             _ => '◀',
         };
-        canvas.put(x + 2, start_row + 2, glyph, theme.diagram_line);
+        canvas.put(x + 1, start_row + 2, glyph, theme.diagram_line);
         for (k, line) in self.labels[index].iter().enumerate() {
             canvas.text(x + 5, start_row + k, line, theme.diagram_text);
         }
@@ -615,12 +616,13 @@ mod tests {
         assert!(render(&sample(), &Theme::none(), 10).is_none());
     }
 
-    /// self-message(재귀)의 화살촉이 생명선에 바로 붙지 않고, 사이에 실선 한 칸이 있어야 한다
-    /// (`<|`처럼 보이던 것을 `<-`처럼 여백 있게 고친 회귀). 교차 메시지의 도착 화살촉(정상적으로
-    /// 상대 생명선에 바로 닿아야 함)과 헷갈리지 않도록 참가자 하나에 self-message 하나만 있는
-    /// 최소 픽스처를 쓴다.
+    /// self-message(재귀)의 화살촉은 도착 지점인 생명선에 바로 붙어야 하고(다른 메시지가 상대
+    /// 생명선에 바로 닿는 것과 같은 관례), 대신 화살촉과 루프의 세로 연결선(모서리) 사이에 최소
+    /// 한 칸의 여백이 있어야 굽은 모서리 모양이 화살촉에 눌리지 않고 드러난다(`<|`처럼 붙어
+    /// 보이던 것을 `<-|`처럼 고친 회귀). 교차 메시지의 도착 화살촉과 헷갈리지 않도록 참가자
+    /// 하나에 self-message 하나만 있는 최소 픽스처를 쓴다.
     #[test]
-    fn self_message_arrowhead_does_not_touch_lifeline() {
+    fn self_message_arrowhead_touches_lifeline_but_not_the_corner() {
         let mut s = Sequence::default();
         let a = s.intern("A", "A", ParticipantKind::Box);
         s.items.push(SequenceItem::Message { from: a, to: a, label: "retry".into(), kind: LineKind::Solid, head: Marker::Arrow, activate_target: false, deactivate_source: false });
@@ -630,9 +632,11 @@ mod tests {
         let chars: Vec<char> = arrow_row.chars().collect();
         let arrow_col = chars.iter().position(|&c| c == '◀').expect("화살촉 문자가 있어야 한다");
         let lifeline_col = chars[..arrow_col].iter().rposition(|&c| c == '│').expect("생명선 문자가 있어야 한다");
-        assert!(arrow_col > lifeline_col + 1, "화살촉과 생명선 사이에 최소 한 칸이 있어야 한다: {arrow_row}");
-        let between = &chars[lifeline_col + 1..arrow_col];
-        assert!(between.iter().all(|&c| c == '─' || c == '╌'), "화살촉 앞은 실선/점선이어야 한다: {arrow_row}");
+        assert_eq!(arrow_col, lifeline_col + 1, "화살촉은 생명선에 바로 붙어야 한다: {arrow_row}");
+        let corner_col = chars[arrow_col + 1..].iter().position(|&c| c == '╯' || c == '┘').map(|i| arrow_col + 1 + i).expect("모서리 문자가 있어야 한다");
+        assert!(corner_col > arrow_col + 1, "화살촉과 모서리 사이에 최소 한 칸이 있어야 한다: {arrow_row}");
+        let between = &chars[arrow_col + 1..corner_col];
+        assert!(between.iter().all(|&c| c == '─' || c == '╌'), "화살촉과 모서리 사이는 실선/점선이어야 한다: {arrow_row}");
     }
 
     /// 프레임 조건이 참여자 간격보다 훨씬 길면, 잘려서 대괄호가 닫히지 않은 채 테두리를 뚫고
