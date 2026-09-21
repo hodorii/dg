@@ -58,7 +58,13 @@ pub fn render(source: &str, theme: &Theme, width: usize, options: DiagramOptions
         "er" => layout::graph::render(&graph_with_options(er::parse(source)), theme, width)?,
         "class" => layout::graph::render(&graph_with_options(class::parse(source)), theme, width)?,
         "sequence" => layout::sequence::render(&sequence::parse(source), theme, width)?,
-        "gitgraph" => layout::gitgraph::render(&gitgraph::parse(source), theme, width)?,
+        "gitgraph" => {
+            let mut graph = gitgraph::parse(source);
+            if let Some(direction) = options.direction {
+                graph.direction = Some(direction);
+            }
+            layout::gitgraph::render(&graph, theme, width)?
+        }
         "block" => layout::block::render(&block::parse(source), theme, width)?,
         "pie" => layout::pie::render(&pie::parse(source), theme, width)?,
         "xychart" => layout::xychart::render(&xychart::parse(source), theme, width)?,

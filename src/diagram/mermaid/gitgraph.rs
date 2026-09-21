@@ -1,6 +1,8 @@
 //! mermaid `gitGraph` 파서.
 
 use super::text::{clean_lines, keyword, label};
+use crate::diagram::ir::Direction;
+use crate::diagram::options::parse_direction;
 
 /// 선언 없이 처음부터 열려 있는 브랜치.
 const DEFAULT_BRANCH: &str = "main";
@@ -10,6 +12,9 @@ pub struct GitGraph {
     /// 브랜치(트랙) 이름. 등장 순서대로이며 0번은 언제나 `main`이다.
     pub tracks: Vec<String>,
     pub events: Vec<GitEvent>,
+    /// `gitGraph TB:`/`gitGraph LR:` 같은 헤더가 지정한 배치 방향. 없으면 가로(LR) 기본값을 쓴다.
+    /// `DiagramOptions.direction`(CLI·소스 지시자)이 있으면 dispatch 쪽에서 이 값을 덮어쓴다.
+    pub direction: Option<(Direction, bool)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,7 +29,7 @@ pub enum GitEvent {
 
 impl Default for GitGraph {
     fn default() -> GitGraph {
-        GitGraph { tracks: vec![DEFAULT_BRANCH.to_string()], events: Vec::new() }
+        GitGraph { tracks: vec![DEFAULT_BRANCH.to_string()], events: Vec::new(), direction: None }
     }
 }
 
@@ -37,6 +42,11 @@ pub fn parse(source: &str) -> GitGraph {
         let rest = trimmed[first.len()..].trim();
         let lower = first.to_ascii_lowercase();
         match lower.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-') {
+            "gitgraph" => {
+                if let Some(direction) = parse_direction(rest.trim_end_matches(':')) {
+                    graph.direction = Some(direction);
+                }
+            }
             "commit" => graph.events.push(GitEvent::Commit { track: active, id: attribute(rest, "id") }),
             "branch" | "checkout" | "switch" => {
                 let name = first_value(rest);

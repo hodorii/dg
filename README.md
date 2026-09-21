@@ -38,7 +38,7 @@ dg -s light -w 80 doc.md      # 밝은 테마, 폭 80
 | `-d, --diagram` | 입력을 다이어그램 소스로 취급 |
 | `-l, --lang mermaid\|plantuml` | 다이어그램 언어 지정 (기본 자동 판별) |
 | `--er-notation crow\|text\|both` | ERD 카디널리티 표기: 까치발(기본)·글자(`1`, `0..N`)·둘 다. 환경변수 `DG_ER_NOTATION` |
-| `--direction tb\|lr` | 그래프(흐름도·클래스·ER·상태·컴포넌트) 배치 방향 강제. 폭에 안 들어가면 반대 방향으로 재시도. 환경변수 `DG_DIRECTION` |
+| `--direction tb\|lr` | 그래프(흐름도·클래스·ER·상태·컴포넌트)·gitGraph 배치 방향 강제. 폭에 안 들어가면 반대 방향으로 재시도. 환경변수 `DG_DIRECTION` |
 
 환경변수: `DG_STYLE=dark|light|none|auto`, `DG_ER_NOTATION=crow|text|both`, `DG_DIRECTION=tb|lr`, `NO_COLOR`.
 
@@ -84,7 +84,7 @@ dg -s light -w 80 doc.md      # 밝은 테마, 폭 80
 | `erDiagram` | 엔터티 속성(`type name PK "설명"` → `name : type [PK]`), `\|\|--o{` 계열 카디널리티를 까치발 표식으로(`╪` 하나, `○` 없음, `⋏`/`⋎` 여럿), 식별(실선)/비식별(점선) |
 | `stateDiagram(-v2)` | `[*]` 시작(●)/끝(◉), `-->` 전이 라벨, `state "설명" as X`, 합성 상태 `state X { }`, `<<choice>>` |
 | `block-beta` | `columns N` 격자(없으면 한 줄), 블록 `id`·`id["라벨"]`과 모양 `[ ]` `( )` `([ ])` `[[ ]]` `[( )]` `(( ))` `{ }` `{{ }}`, 열 먹기 `b:2`, 빈 칸 `space`/`space:N`, `-->` `<--` `-- 글 -->`, `block:아이디 … end` 중첩(깊이마다 실선→점선→굵은선) |
-| `gitGraph` | 브랜치마다 가로 트랙 한 줄(이름은 왼쪽), `commit`(`id: "글"`을 점 옆에, `type:`/`tag:`는 무시), `branch 이름`, `checkout`/`switch 이름`, `merge 이름`(트랙 사이 연결선 + 병합 커밋 ◉), 선언 안 된 이름은 오류 대신 새 트랙(`checkout`)·연결선 생략(`merge`) |
+| `gitGraph` | 가로 모드(기본, 브랜치마다 가로 트랙 한 줄, 이름은 왼쪽) 또는 세로 모드(`gitGraph TB:`/`--direction tb`, 브랜치마다 세로 열 하나, 이름은 위쪽), `commit`(`id: "글"`을 점 옆에, `type:`/`tag:`는 무시), `branch 이름`, `checkout`/`switch 이름`, `merge 이름`(트랙 사이 연결선 + 병합 커밋 ◉), 선언 안 된 이름은 오류 대신 새 트랙(`checkout`)·연결선 생략(`merge`) |
 | `pie` | `pie [showData] [title 글]`, `"이름" : 값` 목록을 합 기준 가로 막대로(길이=몫), `showData`면 값과 백분율을 함께, 아니면 백분율만 |
 | `xychart-beta`/`xychart` | `title`, `x-axis "제목" [카테고리…]`(숫자 범위 꼴은 제목만 쓰고 번호로 대신), `y-axis "제목" 최소 --> 최대`(없으면 값에서 자동 눈금), 여러 `bar`/`line` 계열을 같은 축에(계열마다 다른 칠감 `█▓▒░`·점 `●◆▲■`, 이름을 주면 범례), 음수는 0 기준선 아래로, 점 라벨(`1.2 "글"`)은 값만 읽음 |
 | `quadrantChart` | `title`, `x-axis 왼쪽 --> 오른쪽`(한쪽만도 됨), `y-axis 아래 --> 위`, `quadrant-1`~`quadrant-4` 구역 라벨, `이름: [x, y]` 점(0~1 밖은 안쪽으로 보정), 겹치는 점은 같은 사분면 안에서 줄을 옮겨 표시. `radius:`·`color:`·`:::클래스` 꾸밈은 읽고 무시 |
