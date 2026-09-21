@@ -271,18 +271,28 @@ stateDiagram-v2
 
 ## Git 그래프 (mermaid)
 
-dg 저장소 자신의 실제 커밋 로그(`git log --oneline -8 --reverse`)를 그대로 그린 것이다.
+dg 저장소 자신의 실제 커밋 로그다. `.kiro/steering/git-workflow.md`가 생기기 전엔 전부 `main`에
+직접 커밋해 완전히 일렬이었다 — 그 뒤로 다녀간 두 기능(`sequence-self-message-clearance`,
+`gitgraph-vertical-mode`)은 히스토리를 다시 쓰는 대신, 완료 시점 커밋을 가리키는 라벨 브랜치로
+표시해 뒀다. 앞으로의 기능은 실제로 갈라졌다 `--no-ff`로 합쳐지는 모양이 된다. 브랜치 이름이 길어서
+가로로는 이 폭에 안 들어가면 dg가 자동으로 세로 모드로 재시도한다(`gitgraph-vertical-mode`
+스펙 그 자체가 실제로 작동하는 모습이다).
 
 ```mermaid
 gitGraph
-  commit id: "b168c69"
-  commit id: "d2dab9f"
-  commit id: "418dd41"
-  commit id: "0d33f46"
-  commit id: "fdc044c"
-  commit id: "67957e6"
-  commit id: "7005413"
-  commit id: "ac6d870"
+  commit id: "22b4de4"
+  commit id: "b55463e"
+  commit id: "03144eb"
+  branch feat/gitgraph-vertical-mode
+  checkout main
+  commit id: "88e5c4e"
+  branch feat/sequence-self-message-clearance
+  checkout main
+  commit id: "956d96f"
+  commit id: "2910db3"
+  commit id: "2c341d9"
+  commit id: "6755c9e"
+  commit id: "896b073"
 ```
 
 ## 블록 다이어그램 (mermaid)

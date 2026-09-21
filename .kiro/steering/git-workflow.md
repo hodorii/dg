@@ -18,3 +18,7 @@ inclusion: always
 
 ## 적용 범위
 - 이 규칙은 dg 리포지토리에 한정된다.
+- 이 규칙이 생기기 전(`main`에 직접 커밋된) `sequence-self-message-clearance`·`gitgraph-vertical-mode` 두 기능은
+  히스토리를 다시 쓰지 않고, 완료 시점 커밋을 가리키는 라벨 브랜치(`feat/sequence-self-message-clearance`,
+  `feat/gitgraph-vertical-mode`)만 만들어 origin에 남겼다. 이 두 라벨 브랜치는 병합 커밋이 없어 "기록"을
+  브랜치 ref 자체가 대신하므로, 위 "merge 후 삭제" 규칙과 달리 지우지 않는다.
