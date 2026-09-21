@@ -538,7 +538,8 @@ impl<'a> SequenceLayout<'a> {
         let glyph = match (head, rightward) {
             (Marker::OpenArrow, true) => '>',
             (Marker::OpenArrow, false) => '<',
-            (Marker::Cross, _) => '✕',
+            // graph.rs의 CrowMany 폰트 폴백 수정과 같은 이유로 ×(U+00D7)로.
+            (Marker::Cross, _) => '×',
             (Marker::Circle, _) => '○',
             (Marker::None, _) => ' ',
             (_, true) => '▶',
@@ -562,7 +563,7 @@ impl<'a> SequenceLayout<'a> {
         canvas.join(x + 2, start_row + 2, WEST | NORTH, kind, theme.diagram_line, true);
         let glyph = match head {
             Marker::OpenArrow => '<',
-            Marker::Cross => '✕',
+            Marker::Cross => '×',
             _ => '◀',
         };
         canvas.put(x + 1, start_row + 2, glyph, theme.diagram_line);
