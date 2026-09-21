@@ -41,7 +41,8 @@ flowchart TB
 ```
 
 더 많은 예시(클래스·ERD·시퀀스·상태도·Git 그래프·차트 등, 전부 dg 자신의 실제 구조를 dg로 그린 것)는
-[`examples/architecture.md`](examples/architecture.md)에 있다.
+[`examples/architecture.md`](examples/architecture.md)(원문, mermaid/PlantUML 소스)와
+[`examples/architecture.txt`](examples/architecture.txt)(`dg -P -s none`으로 변환한 전체 렌더링 결과)에 있다.
 
 ## 설치
 
