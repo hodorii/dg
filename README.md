@@ -117,7 +117,7 @@ dg -s light -w 80 doc.md      # 밝은 테마, 폭 80
 | `flowchart`/`graph` | `TB`/`LR` 방향, 노드 모양 `[ ]` `( )` `([ ])` `[[ ]]` `[( )]` `(( ))` `{ }` `{{ }}`, `-->` `---` `-.->` `==>` `<-->` `--x` `--o`, `-- 글 -->`, `-->\|글\|`, `A & B --> C`, `subgraph`(중첩, `subgraph Id["제목"]`), 서브그래프 아이디로 향하는 간선(상자 위로 들어옴), 자기 간선, 되돌아가는 간선 |
 | `sequenceDiagram` | `participant`/`actor`(`as` 별칭), `->>` `-->>` `-x` `-)` `->`, `+`/`-` 활성화, `activate`/`deactivate`, `Note left/right of/over`, `alt`/`else`/`opt`/`loop`/`par`/`critical`/`break`/`rect`, `box`, `autonumber`, `title` |
 | `classDiagram` | `class X { }`, `X : 멤버`, `<<interface>>`, 제네릭 `~T~`, `<\|--` `--\|>` `<\|..` `..\|>` `*--` `o--` `-->` `..>` `--`, 다중성 `"1" --> "*"`, 라벨 `: 글`, `namespace`, `direction` |
-| `erDiagram` | 엔터티 속성(`type name PK "설명"` → `name : type [PK]`), `\|\|--o{` 계열 카디널리티를 까치발 표식으로(`╪` 하나, `○` 없음, `⋏`/`⋎` 여럿), 식별(실선)/비식별(점선) |
+| `erDiagram` | 엔터티 속성(`type name PK "설명"` → `name : type [PK]`), `\|\|--o{` 계열 카디널리티를 까치발 표식으로(`╪` 하나, `○` 없음, `∧`/`∨` 여럿), 식별(실선)/비식별(점선) |
 | `stateDiagram(-v2)` | `[*]` 시작(●)/끝(◉), `-->` 전이 라벨, `state "설명" as X`, 합성 상태 `state X { }`, `<<choice>>` |
 | `block-beta` | `columns N` 격자(없으면 한 줄), 블록 `id`·`id["라벨"]`과 모양 `[ ]` `( )` `([ ])` `[[ ]]` `[( )]` `(( ))` `{ }` `{{ }}`, 열 먹기 `b:2`, 빈 칸 `space`/`space:N`, `-->` `<--` `-- 글 -->`, `block:아이디 … end` 중첩(깊이마다 실선→점선→굵은선) |
 | `gitGraph` | 가로 모드(기본, 브랜치마다 가로 트랙 한 줄, 이름은 왼쪽) 또는 세로 모드(`gitGraph TB:`/`--direction tb`, 브랜치마다 세로 열 하나, 이름은 위쪽), `commit`(`id: "글"`을 점 옆에, `type:`/`tag:`는 무시), `branch 이름`, `checkout`/`switch 이름`, `merge 이름`(트랙 사이 연결선 + 병합 커밋 ◉), 선언 안 된 이름은 오류 대신 새 트랙(`checkout`)·연결선 생략(`merge`) |
