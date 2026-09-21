@@ -3,7 +3,7 @@
 //! 참여자는 위쪽 상자, 아래로 생명선. 메시지는 라벨 줄 + 화살표 줄을 차지한다.
 //! 참여자 사이 간격은 그 사이를 지나는 라벨·노트·프레임이 들어갈 만큼 벌린다.
 
-use crate::diagram::canvas::{Canvas, EAST, LineKind, NORTH, WEST};
+use crate::diagram::canvas::{Canvas, EAST, LineKind, WEST};
 use crate::diagram::ir::{Marker, NotePlacement, ParticipantKind, Sequence, SequenceItem, Shape};
 use crate::diagram::layout::shape;
 use crate::line::Line;
@@ -211,7 +211,8 @@ impl<'a> SequenceLayout<'a> {
         for (index, item) in self.sequence.items.iter().enumerate() {
             match item {
                 SequenceItem::Message { from, to, .. } if from == to => {
-                    let need = self.label_width(index) + 6;
+                    // 재귀 루프 폭(3칸) + 라벨 앞 여백만큼: draw_self_message의 x+5(라벨 시작)에 2칸 버퍼.
+                    let need = self.label_width(index) + 7;
                     if *from + 1 < count {
                         constraints.push((*from, from + 1, need));
                     } else {
@@ -556,19 +557,23 @@ impl<'a> SequenceLayout<'a> {
     fn draw_self_message(&self, canvas: &mut Canvas, index: usize, participant: usize, start_row: usize, kind: LineKind, head: Marker) {
         let theme = self.theme;
         let x = self.centers[participant];
+        // 루프 폭 3칸(x+1..x+3): 돌아오는 줄(start_row+2)도 나가는 줄과 대칭으로 실선을 그려서
+        // 화살촉(x+2)과 생명선(x) 사이에 실제 선 한 칸(x+1)이 남도록 한다 — 화살촉이 생명선에 바로
+        // 붙어 `<|`처럼 보이던 것을 `<-`처럼 여백이 있게 고친다.
         canvas.join(x, start_row, EAST, LineKind::Solid, theme.diagram_line, false);
-        canvas.hline(x + 1, x + 2, start_row, kind, theme.diagram_line);
-        canvas.vline(x + 2, start_row, start_row + 2, kind, theme.diagram_line);
-        canvas.join(x + 2, start_row, 0, kind, theme.diagram_line, true);
-        canvas.join(x + 2, start_row + 2, WEST | NORTH, kind, theme.diagram_line, true);
+        canvas.hline(x + 1, x + 3, start_row, kind, theme.diagram_line);
+        canvas.vline(x + 3, start_row, start_row + 2, kind, theme.diagram_line);
+        canvas.join(x + 3, start_row, 0, kind, theme.diagram_line, true);
+        canvas.hline(x + 1, x + 3, start_row + 2, kind, theme.diagram_line);
+        canvas.join(x + 3, start_row + 2, 0, kind, theme.diagram_line, true);
         let glyph = match head {
             Marker::OpenArrow => '<',
             Marker::Cross => '×',
             _ => '◀',
         };
-        canvas.put(x + 1, start_row + 2, glyph, theme.diagram_line);
+        canvas.put(x + 2, start_row + 2, glyph, theme.diagram_line);
         for (k, line) in self.labels[index].iter().enumerate() {
-            canvas.text(x + 4, start_row + k, line, theme.diagram_text);
+            canvas.text(x + 5, start_row + k, line, theme.diagram_text);
         }
     }
 }
@@ -608,6 +613,26 @@ mod tests {
     #[test]
     fn too_narrow_returns_none() {
         assert!(render(&sample(), &Theme::none(), 10).is_none());
+    }
+
+    /// self-message(재귀)의 화살촉이 생명선에 바로 붙지 않고, 사이에 실선 한 칸이 있어야 한다
+    /// (`<|`처럼 보이던 것을 `<-`처럼 여백 있게 고친 회귀). 교차 메시지의 도착 화살촉(정상적으로
+    /// 상대 생명선에 바로 닿아야 함)과 헷갈리지 않도록 참가자 하나에 self-message 하나만 있는
+    /// 최소 픽스처를 쓴다.
+    #[test]
+    fn self_message_arrowhead_does_not_touch_lifeline() {
+        let mut s = Sequence::default();
+        let a = s.intern("A", "A", ParticipantKind::Box);
+        s.items.push(SequenceItem::Message { from: a, to: a, label: "retry".into(), kind: LineKind::Solid, head: Marker::Arrow, activate_target: false, deactivate_source: false });
+        let out = render(&s, &Theme::none(), 80).unwrap();
+        let text: Vec<String> = out.iter().map(Line::plain).collect();
+        let arrow_row = text.iter().find(|l| l.contains('◀')).expect("화살촉 줄이 있어야 한다");
+        let chars: Vec<char> = arrow_row.chars().collect();
+        let arrow_col = chars.iter().position(|&c| c == '◀').expect("화살촉 문자가 있어야 한다");
+        let lifeline_col = chars[..arrow_col].iter().rposition(|&c| c == '│').expect("생명선 문자가 있어야 한다");
+        assert!(arrow_col > lifeline_col + 1, "화살촉과 생명선 사이에 최소 한 칸이 있어야 한다: {arrow_row}");
+        let between = &chars[lifeline_col + 1..arrow_col];
+        assert!(between.iter().all(|&c| c == '─' || c == '╌'), "화살촉 앞은 실선/점선이어야 한다: {arrow_row}");
     }
 
     /// 프레임 조건이 참여자 간격보다 훨씬 길면, 잘려서 대괄호가 닫히지 않은 채 테두리를 뚫고
