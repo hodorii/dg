@@ -1923,7 +1923,9 @@ fn marker_glyphs(marker: Marker, direction: Direction, at_top: bool) -> Vec<char
         Marker::Circle => vec!['○'],
         // ✕(U+2715)도 같은 이유로 폴백 대상이라 어디서나 커버되는 ×(U+00D7)로.
         Marker::Cross => vec!['×'],
-        Marker::CrowOne => vec![one, one],
+        // `one`(╪/╫) 자체가 이미 선을 가로지르는 두 짧은 표식(까치발 "1" 카디널리티) 모양이라
+        // 한 글자면 충분하다 — 예전엔 두 번 그려서 표식이 네 줄로 겹쳐 보였다.
+        Marker::CrowOne => vec![one],
         Marker::CrowZeroOne => vec!['○', one],
         Marker::CrowMany => vec![one, many],
         Marker::CrowZeroMany => vec!['○', many],
@@ -2068,5 +2070,20 @@ mod tests {
         if let Some(lines) = out {
             assert!(!lines.is_empty());
         }
+    }
+
+    /// ER "정확히 1" 카디널리티(`CrowOne`)는 `╪`/`╫` 한 글자만 찍는다 — 그 글자 자체가 이미 선을
+    /// 가로지르는 두 짧은 표식 모양이라, 두 번 찍으면 네 줄로 겹쳐 보였다(회귀).
+    #[test]
+    fn crow_one_marker_is_a_single_glyph_not_doubled() {
+        let mut g = Graph::default();
+        let a = g.intern("A", "A", Shape::Rect, None);
+        let b = g.intern("B", "B", Shape::Rect, None);
+        g.add_edge(Edge { from: a, to: b, tail: Marker::CrowOne, head: Marker::CrowOne, ..Edge::default() });
+        let lines = render(&g, &Theme::none(), 80).unwrap();
+        let text: Vec<String> = lines.iter().map(Line::plain).collect();
+        let joined = text.join("\n");
+        let crow_lines = text.iter().filter(|l| l.trim() == "╪" || l.trim() == "╫").count();
+        assert_eq!(crow_lines, 2, "간선 양 끝에 각각 한 줄씩만 있어야 한다(합쳐서 2줄): {joined}");
     }
 }
