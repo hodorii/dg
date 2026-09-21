@@ -1903,8 +1903,16 @@ fn marker_glyphs(marker: Marker, direction: Direction, at_top: bool) -> Vec<char
         (Direction::LeftRight, false) => 3,
     };
     // 까치발: 발가락이 노드 쪽으로 벌어진다. 한 개는 가로막대(╪/╫), 없음은 ○.
+    //
+    // "many"는 원래 집합론 기호(⋎/⋏/≻/≺)를 빌려 썼는데, 이 넷은 흔한 CJK
+    // 모노스페이스 폰트(예: 기본 Noto Sans Mono CJK)의 커버리지 밖이라
+    // 터미널이 매번 다른 폰트로 폴백해서 셰이핑해야 했다 — 실측: 이 폴백이
+    // 다이어그램이 화면에 있을 때만 스크롤이 눈에 띄게 느려지는 원인이었다
+    // (한 줄 안에서 폰트를 여러 번 갈아타야 함). `OpenArrow`가 이미 쓰는
+    // ∧/∨/</> 로 바꿨다 — 넷 다 기본 폰트에 있고, `one`(╪/╫) 뒤에만 붙어
+    // 나오므로 단독 `OpenArrow`와 헷갈리지 않는다.
     let one = ['╪', '╪', '╫', '╫'][index];
-    let many = ['⋎', '⋏', '≻', '≺'][index];
+    let many = ['∧', '∨', '<', '>'][index];
     let glyphs: Vec<char> = match marker {
         Marker::None => return Vec::new(),
         Marker::Arrow => vec![['▲', '▼', '◀', '▶'][index]],
@@ -1913,7 +1921,8 @@ fn marker_glyphs(marker: Marker, direction: Direction, at_top: bool) -> Vec<char
         Marker::DiamondFilled => vec!['♦'],
         Marker::DiamondOpen => vec!['♢'],
         Marker::Circle => vec!['○'],
-        Marker::Cross => vec!['✕'],
+        // ✕(U+2715)도 같은 이유로 폴백 대상이라 어디서나 커버되는 ×(U+00D7)로.
+        Marker::Cross => vec!['×'],
         Marker::CrowOne => vec![one, one],
         Marker::CrowZeroOne => vec!['○', one],
         Marker::CrowMany => vec![one, many],
