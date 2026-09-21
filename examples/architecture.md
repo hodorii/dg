@@ -110,8 +110,11 @@ flowchart TB
 
 ## 클래스 (mermaid)
 
-dg의 그래프형 다이어그램(flowchart·state·er·class와 PlantUML class·component)이 공통으로 쓰는
-중간 표현 `diagram::ir`의 실제 구조체들이다.
+다이어그램 지원 전체의 실제 타입 구조다. 그래프형 5종(flowchart·state·er·class와 PlantUML
+class·component)은 `diagram::ir::Graph` 하나를 공유해 `layout::graph` 배치기 하나만 쓴다(SSoT).
+시퀀스(mermaid·PlantUML 공통)는 배치 알고리즘이 달라 `ir::Sequence`라는 별도 구조체를 쓰고,
+gitGraph는 PlantUML 대응이 없어 애초에 공유 `ir`에 넣지 않고 `mermaid::gitgraph::GitGraph`로
+독립돼 있다 — 세 갈래 다 파서는 다르지만 배치기 입력은 이 세 구조체 중 하나로 고정된다.
 
 ```mermaid
 classDiagram
@@ -151,6 +154,31 @@ classDiagram
   Node --> Shape
   Edge --> Marker
   Edge --> LineKind
+
+  class Sequence {
+    +Vec~Participant~ participants
+    +Vec~SequenceItem~ items
+    +bool autonumber
+  }
+  class Participant {
+    +String id
+    +ParticipantKind kind
+  }
+  class SequenceItem
+  <<enumeration>> ParticipantKind
+  Sequence "1" *-- "*" Participant : participants
+  Sequence "1" *-- "*" SequenceItem : items
+  Participant --> ParticipantKind
+  SequenceItem --> Marker
+  SequenceItem --> LineKind
+
+  class GitGraph {
+    +Vec~String~ tracks
+    +Vec~GitEvent~ events
+    +Direction direction
+  }
+  class GitEvent
+  GitGraph "1" *-- "*" GitEvent : events
 ```
 
 ## ERD (mermaid)
