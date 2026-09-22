@@ -1,0 +1,22 @@
+{
+  "feature_name": "diagram-er-standalone-alias",
+  "created_at": "2026-09-22T09:13:22Z",
+  "updated_at": "2026-09-22T09:30:00Z",
+  "language": "ko",
+  "phase": "completed",
+  "approvals": {
+    "bugfix": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": true
+}
