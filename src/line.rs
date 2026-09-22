@@ -163,12 +163,13 @@ impl Line {
         out
     }
 
-    /// 문자 폭 기준 `[col_start, col_end)` 구간에 `style`을 덧씌운 줄(포커스된 링크 강조용,
-    /// `markdown-link-navigation`). `highlight`와 달리 부분 문자열 찾기가 아니라 열 좌표로
-    /// 바로 구간을 정한다 — CJK처럼 폭이 2인 글자가 섞여도 올바른 위치를 가리킨다.
-    pub fn highlight_span(&self, col_start: usize, col_end: usize, style: Style) -> Line {
+    /// `[col_start, col_end)`(문자 폭 기준, CJK처럼 폭이 2인 글자 포함)에 대응하는 바이트
+    /// 범위를 찾는다. `highlight_span`(강조)과 `text_between_cols`(드래그 선택 텍스트 추출,
+    /// markdown-source-view)가 함께 쓴다 — 부분 문자열 찾기가 아니라 열 좌표로 바로 구간을
+    /// 정해야 하는 두 용도가 같은 변환을 필요로 한다.
+    fn byte_range_for_cols(&self, col_start: usize, col_end: usize) -> Option<(usize, usize)> {
         if col_start >= col_end {
-            return self.clone();
+            return None;
         }
         let mut byte_start = None;
         let mut byte_end = self.text.len();
@@ -183,7 +184,22 @@ impl Line {
             }
             col += char_width(c);
         }
-        let Some(byte_start) = byte_start else { return self.clone() };
+        byte_start.map(|start| (start, byte_end))
+    }
+
+    /// `[col_start, col_end)` 구간의 텍스트만 뽑는다(드래그 선택 텍스트 추출용,
+    /// markdown-source-view). 구간이 줄 밖이면 빈 문자열.
+    pub fn text_between_cols(&self, col_start: usize, col_end: usize) -> &str {
+        match self.byte_range_for_cols(col_start, col_end) {
+            Some((start, end)) => &self.text[start..end],
+            None => "",
+        }
+    }
+
+    /// 문자 폭 기준 `[col_start, col_end)` 구간에 `style`을 덧씌운 줄(포커스된 링크 강조용,
+    /// `markdown-link-navigation`).
+    pub fn highlight_span(&self, col_start: usize, col_end: usize, style: Style) -> Line {
+        let Some((byte_start, byte_end)) = self.byte_range_for_cols(col_start, col_end) else { return self.clone() };
         let mut out = Line::empty();
         let mut offset = 0;
         for (text, run_style) in self.runs() {
@@ -259,5 +275,33 @@ mod tests {
         let hit = line.highlight("abc", Style::PLAIN.reverse());
         assert_eq!(hit.plain(), "가나다 ABC");
         assert!(hit.runs().any(|(t, s)| s.reverse && t == "ABC"));
+    }
+
+    /// CJK(폭 2)가 섞여도 열 좌표가 바이트가 아니라 화면 칸 기준으로 올바르게 구간을 잡는다.
+    #[test]
+    fn highlight_span_handles_wide_characters() {
+        let line = Line::single("가나 링크", Style::PLAIN);
+        // "가나 "는 폭 5(2+2+1), 그 뒤 "링크"(폭 4)가 5..9.
+        let hit = line.highlight_span(5, 9, Style::PLAIN.reverse());
+        assert_eq!(hit.plain(), "가나 링크");
+        assert!(hit.runs().any(|(t, s)| s.reverse && t == "링크"));
+    }
+
+    #[test]
+    fn highlight_span_out_of_range_returns_clone_unchanged() {
+        let line = Line::single("abc", Style::PLAIN);
+        assert_eq!(line.highlight_span(10, 20, Style::PLAIN.reverse()), line);
+        assert_eq!(line.highlight_span(2, 1, Style::PLAIN.reverse()), line);
+    }
+
+    /// text_between_cols가 highlight_span과 같은 헬퍼를 공유해 CJK 폭에서도 올바른 부분
+    /// 문자열을 돌려준다(드래그 선택 텍스트 추출용, markdown-source-view).
+    #[test]
+    fn text_between_cols_slices_by_display_width() {
+        let line = Line::single("가나 링크", Style::PLAIN);
+        assert_eq!(line.text_between_cols(0, 4), "가나");
+        assert_eq!(line.text_between_cols(5, 9), "링크");
+        assert_eq!(line.text_between_cols(0, 0), "");
+        assert_eq!(line.text_between_cols(100, 200), "");
     }
 }
