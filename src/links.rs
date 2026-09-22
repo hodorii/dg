@@ -136,6 +136,33 @@ pub fn resolve_file_path(base_dir: &Path, relative: &str) -> PathBuf {
     base_dir.join(relative)
 }
 
+const BASE64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// RFC 4648 표준 base64(패딩 포함). 알고리즘이 짧고 고정적이라 새 크레이트를 들일 값어치가
+/// 없다 — `open_external`이 `opener` 대신 `std::process::Command`를 쓴 것과 같은 판단
+/// (markdown-source-view).
+fn base64_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+        let n = (b0 as u32) << 16 | (b1 as u32) << 8 | b2 as u32;
+        out.push(BASE64_ALPHABET[(n >> 18 & 0x3f) as usize] as char);
+        out.push(BASE64_ALPHABET[(n >> 12 & 0x3f) as usize] as char);
+        out.push(if chunk.len() > 1 { BASE64_ALPHABET[(n >> 6 & 0x3f) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { BASE64_ALPHABET[(n & 0x3f) as usize] as char } else { '=' });
+    }
+    out
+}
+
+/// `text`를 OSC 52(클립보드) 이스케이프 시퀀스로 감싼다. 순수 함수 — 어떤 I/O도 하지 않고
+/// 호출자(`pager::draw`)가 기존 출력 스트림에 그대로 쓴다. 지원 안 하는 터미널은 시퀀스를
+/// 그냥 무시하므로 실패 상태 자체가 없다(markdown-source-view).
+pub fn clipboard_sequence(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", base64_encode(text.as_bytes()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +235,27 @@ mod tests {
         let base = Path::new("/docs/guide");
         assert_eq!(resolve_file_path(base, "../other.md"), PathBuf::from("/docs/guide/../other.md"));
         assert_eq!(resolve_file_path(base, "sub/x.md"), PathBuf::from("/docs/guide/sub/x.md"));
+    }
+
+    /// RFC 4648 표준 테스트 벡터로 손으로 짠 base64 인코더를 검증한다.
+    #[test]
+    fn base64_encode_matches_rfc_4648_test_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    /// 4.1/4.5 클립보드 시퀀스는 OSC 52로 감싼 base64 텍스트이고, 빈 문자열·유니코드도
+    /// 패닉 없이 처리한다.
+    #[test]
+    fn clipboard_sequence_wraps_base64_in_osc52() {
+        assert_eq!(clipboard_sequence("foo"), "\x1b]52;c;Zm9v\x07");
+        assert_eq!(clipboard_sequence(""), "\x1b]52;c;\x07");
+        let unicode = clipboard_sequence("한글");
+        assert!(unicode.starts_with("\x1b]52;c;") && unicode.ends_with('\x07'));
     }
 }

@@ -8,6 +8,7 @@ use crate::line::{Line, Span};
 use crate::style::{Style, Theme};
 use crate::text::{char_width, width_of};
 use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::ops::Range;
 
 /// 들여쓰기 한 단: 첫 줄에 쓸 조각과 그 뒤 줄에 쓸 조각.
 struct Indent {
@@ -29,6 +30,10 @@ struct TableState {
 pub struct Document {
     pub lines: Vec<Line>,
     pub diagrams: Vec<DiagramBlock>,
+    /// 다이어그램이 아닌 최상위 블록(문단·헤딩·인용·목록·표·각주·일반 코드펜스 등)의 위치와
+    /// 원문(markdown-source-view). 중첩된 하위 블록은 별도로 기록하지 않고 가장 바깥쪽 블록
+    /// 하나로 묶는다.
+    pub text_blocks: Vec<TextBlock>,
     /// 링크 목적지(등장 순서). 화면 위치는 `links::locate_links`가 밑줄 스타일로 찾아 이
     /// 목록과 순서대로 짝짓는다(markdown-link-navigation).
     pub links: Vec<String>,
@@ -73,6 +78,25 @@ pub struct DiagramBlock {
     pub source: String,
 }
 
+/// 다이어그램이 아닌 최상위 블록 하나(markdown-source-view).
+#[derive(Clone, Debug)]
+pub struct TextBlock {
+    /// 그 블록의 렌더된 첫 줄 번호.
+    pub start: usize,
+    /// 마지막 줄 다음 번호.
+    pub end: usize,
+    /// 원본 바이트 범위로 슬라이스한 마크다운 원문 그대로(가공 없음).
+    pub source: String,
+}
+
+/// 최상위 블록 추적 중 열려 있는 항목 — 깊이가 0으로 돌아올 때 `TextBlock`으로 확정된다.
+struct PendingTextBlock {
+    start_line: usize,
+    source_range: Range<usize>,
+    is_code_block: bool,
+    diagrams_before: usize,
+}
+
 pub struct Renderer<'a> {
     theme: &'a Theme,
     diagram_options: DiagramOptions,
@@ -80,8 +104,14 @@ pub struct Renderer<'a> {
     width: usize,
     /// 다이어그램·표·코드블록에 허용하는 폭(보통 터미널 전체 폭).
     block_width: usize,
+    /// 오프셋 슬라이싱용 원본 마크다운 전체(`render_source_block`처럼 파서 루프를 안 쓰는
+    /// 호출은 빈 문자열 — 그 경로는 블록 추적을 안 한다).
+    source: &'a str,
     lines: Vec<Line>,
     diagrams: Vec<DiagramBlock>,
+    text_blocks: Vec<TextBlock>,
+    text_block_depth: u32,
+    pending_text_block: Option<PendingTextBlock>,
     links: Vec<String>,
     headings: Vec<(String, usize)>,
     slugger: Slugger,
@@ -118,9 +148,172 @@ fn alert_style(theme: &Theme, kind: BlockQuoteKind) -> (&'static str, Style) {
 
 /// 다이어그램 원문을 코드블록으로 그린다(펼쳐 보기용).
 pub fn render_source_block(lang: &str, source: &str, theme: &Theme, width: usize) -> Vec<Line> {
-    let mut renderer = Renderer::new(theme, width, width, DiagramOptions::default());
+    let mut renderer = Renderer::new(theme, "", width, width, DiagramOptions::default());
     renderer.emit_code_block(lang, source, false);
     renderer.lines
+}
+
+/// 마크다운 원문(`source`)을 문자 하나 안 바꾸고 그대로 보여주되, 헤딩(`#`)·강조(`**`/`*`)·
+/// 링크(`[텍스트](url)`)·인용(`>`)·목록 마커(`-`/`1.`)·코드펜스 구분 기호(```)에 기존 렌더
+/// 테마 색을 덧씌운다(markdown-source-view, 전역/블록 원문 토글 공용). `--style none`에서는
+/// 색만 안 보일 뿐 문자는 그대로라 문법 요소 구분 자체는 유지된다(원문이니 원래 그 문자가 있다).
+pub fn render_source_text(source: &str, theme: &Theme, width: usize) -> Vec<Line> {
+    let width = width.max(10);
+    let paints = collect_syntax_paints(source, theme);
+    let mut lines = Vec::new();
+    let mut line_start = 0usize;
+    for (i, c) in source.char_indices() {
+        if c == '\n' {
+            lines.extend(wrap_line_hard(&styled_physical_line(source, line_start, i, &paints), width));
+            line_start = i + 1;
+        }
+    }
+    if line_start < source.len() {
+        lines.extend(wrap_line_hard(&styled_physical_line(source, line_start, source.len(), &paints), width));
+    }
+    if lines.is_empty() {
+        lines.push(Line::empty());
+    }
+    lines
+}
+
+/// 원문을 훑어 문법 요소별 (바이트 범위, 스타일) 목록을 만든다. 범위가 겹치면(예: 헤딩 안
+/// 링크) `styled_physical_line`이 바깥→안쪽 순서로 `Style::merge`해 안쪽이 우선하게 한다.
+fn collect_syntax_paints(source: &str, theme: &Theme) -> Vec<(Range<usize>, Style)> {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_FOOTNOTES);
+    options.insert(Options::ENABLE_GFM);
+    let mut paints = Vec::new();
+    for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                let index = (level as usize).saturating_sub(1).min(5);
+                paints.push((range, theme.heading[index]));
+            }
+            Event::Start(Tag::Strong) => paints.push((range, theme.strong)),
+            Event::Start(Tag::Emphasis) => paints.push((range, theme.emphasis)),
+            Event::Start(Tag::Link { .. }) => paints.push((range, theme.link)),
+            Event::Start(Tag::BlockQuote(_)) => paints.push((range, theme.quote)),
+            Event::Start(Tag::Item) => {
+                if let Some(marker_end) = item_marker_end(source, range.start) {
+                    paints.push((range.start..marker_end, theme.bullet));
+                }
+            }
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_))) => {
+                for fence_range in fence_marker_ranges(source, &range) {
+                    paints.push((fence_range, theme.code_border));
+                }
+            }
+            _ => {}
+        }
+    }
+    paints
+}
+
+/// 리스트 항목 시작에서 마커(`-`/`*`/`+`/`1.`/`1)`) + 뒤따르는 공백까지의 끝 위치. 마커로
+/// 안 보이면(예상 밖 형태) `None` — 그 항목은 색 없이 그대로 둔다(패닉 없음).
+fn item_marker_end(source: &str, start: usize) -> Option<usize> {
+    let rest = &source[start..];
+    let mut chars = rest.chars();
+    let first = chars.next()?;
+    let mut end = start + first.len_utf8();
+    if matches!(first, '-' | '*' | '+') {
+        // 그대로 진행 — 불릿 한 글자로 끝.
+    } else if first.is_ascii_digit() {
+        let mut closed = false;
+        for c in chars.by_ref() {
+            end += c.len_utf8();
+            if c == '.' || c == ')' {
+                closed = true;
+                break;
+            }
+            if !c.is_ascii_digit() {
+                return None;
+            }
+        }
+        if !closed {
+            return None;
+        }
+    } else {
+        return None;
+    }
+    while source[end..].starts_with(' ') || source[end..].starts_with('\t') {
+        end += 1;
+    }
+    Some(end)
+}
+
+/// 펜스 코드블록의 여는 줄과 닫는 줄(``` 등 + 언어)만 범위로 돌려준다 — 안쪽 내용은 색 없이
+/// 그대로 둔다.
+fn fence_marker_ranges(source: &str, block: &Range<usize>) -> Vec<Range<usize>> {
+    let text = &source[block.clone()];
+    let mut ranges = Vec::new();
+    if let Some(first_newline) = text.find('\n') {
+        ranges.push(block.start..block.start + first_newline);
+    }
+    if let Some(last_newline) = text.rfind('\n') {
+        let closing_start = block.start + last_newline + 1;
+        if closing_start < block.end {
+            ranges.push(closing_start..block.end);
+        }
+    }
+    ranges
+}
+
+/// `[start, end)` 구간(원문 안 물리적 한 줄, 개행 문자는 제외)을 겹치는 `paints`로 칠해
+/// `Line` 하나로 만든다.
+fn styled_physical_line(source: &str, start: usize, end: usize, paints: &[(Range<usize>, Style)]) -> Line {
+    let mut line = Line::empty();
+    if start >= end {
+        return line;
+    }
+    let mut run_start = start;
+    let mut run_style = Style::PLAIN;
+    let mut first = true;
+    for (byte_i, _) in source[start..end].char_indices() {
+        let abs = start + byte_i;
+        let style = paints.iter().filter(|(r, _)| r.contains(&abs)).fold(Style::PLAIN, |acc, (_, s)| acc.merge(*s));
+        if first {
+            run_style = style;
+            first = false;
+        } else if style != run_style {
+            line.push_str(&source[run_start..abs], run_style);
+            run_start = abs;
+            run_style = style;
+        }
+    }
+    if run_start < end {
+        line.push_str(&source[run_start..end], run_style);
+    }
+    line
+}
+
+/// 한 줄을 문자 폭 기준으로 강제 줄바꿈한다(`hard_split`의 스타일 보존 버전) — 원문 줄바꿈은
+/// 이미 물리적 줄 단위로 나뉜 뒤라, 여기서는 터미널 폭을 넘는 줄만 자른다.
+fn wrap_line_hard(line: &Line, width: usize) -> Vec<Line> {
+    if line.width() <= width {
+        return vec![line.clone()];
+    }
+    let mut out = Vec::new();
+    let mut current = Line::empty();
+    let mut used = 0usize;
+    for (text, style) in line.runs() {
+        for c in text.chars() {
+            let w = char_width(c);
+            if used + w > width && used > 0 {
+                out.push(std::mem::replace(&mut current, Line::empty()));
+                used = 0;
+            }
+            let mut buf = [0u8; 4];
+            current.push_str(c.encode_utf8(&mut buf), style);
+            used += w;
+        }
+    }
+    out.push(current);
+    out
 }
 
 /// `width`는 문단 줄바꿈 폭, `block_width`는 다이어그램·표·코드블록이 쓸 수 있는 폭.
@@ -134,27 +327,39 @@ pub fn render_document(source: &str, theme: &Theme, width: usize, block_width: u
     options.insert(Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS);
     // GitHub 스타일 알림 블록(`> [!NOTE]` 등)의 종류를 파싱해 준다(markdown-gfm-alerts).
     options.insert(Options::ENABLE_GFM);
-    let parser = Parser::new_ext(source, options);
-    let mut renderer = Renderer::new(theme, width, block_width, diagram_options);
-    for event in parser {
-        renderer.handle(event);
+    // 오프셋 반복자를 쓰면 이벤트마다 원본 바이트 범위가 같이 나와, 블록별 원문을 재구성이
+    // 아니라 그대로 슬라이스할 수 있다(markdown-source-view) — 렌더링 로직 자체는 그대로다.
+    let parser = Parser::new_ext(source, options).into_offset_iter();
+    let mut renderer = Renderer::new(theme, source, width, block_width, diagram_options);
+    for (event, range) in parser {
+        renderer.handle(event, range);
     }
     renderer.flush_paragraph();
     while renderer.lines.last().is_some_and(Line::is_blank) {
         renderer.lines.pop();
     }
-    Document { lines: renderer.lines, diagrams: renderer.diagrams, links: renderer.links, headings: renderer.headings }
+    Document {
+        lines: renderer.lines,
+        diagrams: renderer.diagrams,
+        text_blocks: renderer.text_blocks,
+        links: renderer.links,
+        headings: renderer.headings,
+    }
 }
 
 impl<'a> Renderer<'a> {
-    fn new(theme: &'a Theme, width: usize, block_width: usize, diagram_options: DiagramOptions) -> Renderer<'a> {
+    fn new(theme: &'a Theme, source: &'a str, width: usize, block_width: usize, diagram_options: DiagramOptions) -> Renderer<'a> {
         Renderer {
             theme,
             diagram_options,
             width: width.max(10),
             block_width: block_width.max(width).max(10),
+            source,
             lines: Vec::new(),
             diagrams: Vec::new(),
+            text_blocks: Vec::new(),
+            text_block_depth: 0,
+            pending_text_block: None,
             links: Vec::new(),
             headings: Vec::new(),
             slugger: Slugger::default(),
@@ -263,10 +468,16 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    fn handle(&mut self, event: Event<'_>) {
+    fn handle(&mut self, event: Event<'_>, range: Range<usize>) {
         match event {
-            Event::Start(tag) => self.start(tag),
-            Event::End(tag) => self.end(tag),
+            Event::Start(tag) => {
+                self.enter_text_block(&tag, &range);
+                self.start(tag);
+            }
+            Event::End(tag) => {
+                self.end(tag);
+                self.exit_text_block(tag);
+            }
             Event::Text(text) => {
                 if let Some((_, buffer)) = &mut self.code {
                     buffer.push_str(&text);
@@ -547,6 +758,76 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    /// 최상위 블록 토글 대상 여부(markdown-source-view). 중첩 여부는 `text_block_depth`가
+    /// 판단하므로 여기서는 종류만 가린다.
+    fn is_text_block_tag(tag: &Tag) -> bool {
+        matches!(
+            tag,
+            Tag::Paragraph
+                | Tag::Heading { .. }
+                | Tag::BlockQuote(_)
+                | Tag::List(_)
+                | Tag::Table(_)
+                | Tag::FootnoteDefinition(_)
+                | Tag::CodeBlock(_)
+                | Tag::HtmlBlock
+        )
+    }
+
+    fn is_text_block_tag_end(tag: &TagEnd) -> bool {
+        matches!(
+            tag,
+            TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::BlockQuote(_)
+                | TagEnd::List(_)
+                | TagEnd::Table
+                | TagEnd::FootnoteDefinition
+                | TagEnd::CodeBlock
+                | TagEnd::HtmlBlock
+        )
+    }
+
+    /// 최상위(깊이 0→1) 블록만 시작 위치·원본 범위를 기억해 둔다. 중첩된 블록(리스트 항목 안
+    /// 문단 등)은 깊이만 늘리고 별도로 기억하지 않아, 끝날 때 가장 바깥쪽 블록 하나로 묶인다.
+    fn enter_text_block(&mut self, tag: &Tag, range: &Range<usize>) {
+        if !Self::is_text_block_tag(tag) {
+            return;
+        }
+        if self.text_block_depth == 0 {
+            self.pending_text_block = Some(PendingTextBlock {
+                start_line: self.lines.len(),
+                source_range: range.clone(),
+                is_code_block: matches!(tag, Tag::CodeBlock(_)),
+                diagrams_before: self.diagrams.len(),
+            });
+        }
+        self.text_block_depth += 1;
+    }
+
+    /// 깊이가 0으로 돌아오면 기억해 둔 시작점으로 `TextBlock`을 확정한다. 코드펜스가 다이어그램
+    /// 으로 인식돼 이미 `self.diagrams`에 들어갔다면 중복으로 만들지 않는다.
+    fn exit_text_block(&mut self, tag: TagEnd) {
+        if !Self::is_text_block_tag_end(&tag) {
+            return;
+        }
+        self.text_block_depth = self.text_block_depth.saturating_sub(1);
+        if self.text_block_depth != 0 {
+            return;
+        }
+        let Some(pending) = self.pending_text_block.take() else { return };
+        if pending.is_code_block && self.diagrams.len() > pending.diagrams_before {
+            return;
+        }
+        let mut end_line = self.lines.len();
+        while end_line > pending.start_line && self.lines[end_line - 1].is_blank() {
+            end_line -= 1;
+        }
+        if end_line > pending.start_line {
+            self.text_blocks.push(TextBlock { start: pending.start_line, end: end_line, source: self.source[pending.source_range].to_string() });
+        }
+    }
+
     fn emit_code_block(&mut self, lang: &str, buffer: &str, allow_diagram: bool) {
         let available = self.available_block();
         if allow_diagram
@@ -693,6 +974,105 @@ mod tests {
         assert_eq!(doc.headings[0].0, "시작");
         assert_eq!(doc.headings[1].0, "시작-1");
         assert!(doc.headings[0].1 < doc.headings[1].1, "헤딩 줄 번호는 등장 순서대로 증가해야 한다");
+    }
+
+    /// 2.1/2.3/2.4(markdown-source-view) 최상위 블록마다 원문이 그대로(마크업 포함) 슬라이스
+    /// 되고, 서로 겹치지 않는다.
+    #[test]
+    fn text_blocks_collect_top_level_blocks_with_raw_source() {
+        let source = "# 제목\n\n**굵게** 문단.\n\n- 목록1\n- 목록2\n";
+        let doc = render_document(source, &Theme::none(), 40, 40, DiagramOptions::default());
+        assert_eq!(doc.text_blocks.len(), 3, "{:?}", doc.text_blocks.iter().map(|b| &b.source).collect::<Vec<_>>());
+        assert_eq!(doc.text_blocks[0].source, "# 제목\n");
+        assert_eq!(doc.text_blocks[1].source, "**굵게** 문단.\n");
+        assert_eq!(doc.text_blocks[2].source, "- 목록1\n- 목록2\n");
+        for pair in doc.text_blocks.windows(2) {
+            assert!(pair[0].end <= pair[1].start, "블록이 겹치면 안 된다: {:?}", doc.text_blocks.iter().map(|b| (b.start, b.end)).collect::<Vec<_>>());
+        }
+    }
+
+    /// 2.1/2.4 중첩된 블록(리스트 항목 안 하위 리스트)은 가장 바깥쪽 블록 하나로 묶인다.
+    #[test]
+    fn text_blocks_merge_nested_blocks_into_outer() {
+        let source = "- 항목1\n  - 하위1\n  - 하위2\n- 항목2\n";
+        let doc = render_document(source, &Theme::none(), 40, 40, DiagramOptions::default());
+        assert_eq!(doc.text_blocks.len(), 1, "{:?}", doc.text_blocks.iter().map(|b| &b.source).collect::<Vec<_>>());
+        assert_eq!(doc.text_blocks[0].source, source);
+    }
+
+    /// 2.1 다이어그램으로 인식된 코드펜스는 `diagrams`에만 들어가고 `text_blocks`에는 중복으로
+    /// 들어가지 않는다. 인식 안 되는 일반 코드펜스는 `text_blocks`에 들어간다.
+    #[test]
+    fn text_blocks_exclude_recognized_diagrams_but_include_plain_code_fences() {
+        let source = "```mermaid\nflowchart TB\n A --> B\n```\n\n```rust\nfn f() {}\n```\n";
+        let doc = render_document(source, &Theme::none(), 40, 40, DiagramOptions::default());
+        assert_eq!(doc.diagrams.len(), 1, "mermaid 펜스는 다이어그램으로 인식돼야 한다");
+        assert_eq!(doc.text_blocks.len(), 1, "{:?}", doc.text_blocks.iter().map(|b| &b.source).collect::<Vec<_>>());
+        assert!(doc.text_blocks[0].source.contains("fn f() {}"), "{:?}", doc.text_blocks[0].source);
+        assert!(!doc.text_blocks[0].source.contains("flowchart"), "다이어그램 원문이 중복되면 안 된다");
+    }
+
+    /// 3.1 원문 하이라이팅: 헤딩·강조·링크·인용·목록·코드펜스가 섞인 원문에서 문자는 그대로
+    /// 보존되고, 각 요소가 대응하는 테마 색을 받는다.
+    #[test]
+    fn render_source_text_preserves_characters_and_colors_syntax_elements() {
+        let source = "# 제목\n\n**굵게** [링크](https://x.com)\n\n> 인용\n\n- 목록1\n1. 순서목록\n\n```rust\ncode\n```\n";
+        let theme = Theme::dark();
+        let lines = render_source_text(source, &theme, 80);
+        let plain: String = lines.iter().map(Line::plain).collect::<Vec<_>>().join("\n");
+        assert_eq!(plain, source.trim_end_matches('\n'), "문자는 원문 그대로 보존돼야 한다");
+
+        let heading_line = &lines[0];
+        assert!(heading_line.runs().any(|(t, s)| t.contains('#') && s == theme.heading[0]), "{heading_line:?}");
+
+        let strong_line = lines.iter().find(|l| l.plain().contains("굵게")).unwrap();
+        assert!(strong_line.runs().any(|(t, s)| t.contains("**굵게**") && s == theme.strong), "{strong_line:?}");
+        assert!(strong_line.runs().any(|(t, s)| t.contains("[링크]") && s == theme.link), "{strong_line:?}");
+
+        let quote_line = lines.iter().find(|l| l.plain().contains("인용")).unwrap();
+        assert!(quote_line.runs().any(|(t, s)| t.contains('>') && s == theme.quote), "{quote_line:?}");
+
+        let bullet_line = lines.iter().find(|l| l.plain().starts_with("- 목록1")).unwrap();
+        assert!(bullet_line.runs().any(|(t, s)| t == "- " && s == theme.bullet), "{bullet_line:?}");
+        let ordered_line = lines.iter().find(|l| l.plain().starts_with("1. 순서목록")).unwrap();
+        assert!(ordered_line.runs().any(|(t, s)| t == "1. " && s == theme.bullet), "{ordered_line:?}");
+
+        let fence_open = lines.iter().find(|l| l.plain() == "```rust").unwrap();
+        assert!(fence_open.runs().any(|(t, s)| t == "```rust" && s == theme.code_border), "{fence_open:?}");
+        let fence_close = lines.iter().find(|l| l.plain() == "```").unwrap();
+        assert!(fence_close.runs().any(|(t, s)| t == "```" && s == theme.code_border), "{fence_close:?}");
+        let code_content = lines.iter().find(|l| l.plain() == "code").unwrap();
+        assert!(code_content.runs().all(|(_, s)| s == Style::PLAIN), "코드 내용은 색이 없어야 한다: {code_content:?}");
+    }
+
+    /// 3.2 `--style none`에서도 문자 구성이 안 바뀐다(색만 안 보일 뿐 문법 마커 문자는 원문
+    /// 그대로 있어 구분 자체는 유지된다).
+    #[test]
+    fn render_source_text_keeps_characters_unchanged_when_style_is_none() {
+        let source = "# 제목\n\n**굵게** 문단\n";
+        let colored = render_source_text(source, &Theme::dark(), 80);
+        let plain = render_source_text(source, &Theme::none(), 80);
+        let colored_text: Vec<String> = colored.iter().map(Line::plain).collect();
+        let plain_text: Vec<String> = plain.iter().map(Line::plain).collect();
+        assert_eq!(colored_text, plain_text, "테마와 무관하게 글자 구성은 같아야 한다");
+    }
+
+    /// 3.3 코드펜스 안쪽은 원본 그대로, 펜스 기호(```)만 구분 표시된다 — 위 종합 테스트에서
+    /// 이미 확인했지만, 언어 정보 없는 순수 ``` 펜스도 문제없는지 별도로 확인한다.
+    #[test]
+    fn render_source_text_handles_fence_without_language() {
+        let source = "```\nplain code\n```\n";
+        let lines = render_source_text(source, &Theme::dark(), 80);
+        let plain: String = lines.iter().map(Line::plain).collect::<Vec<_>>().join("\n");
+        assert_eq!(plain, "```\nplain code\n```");
+    }
+
+    /// 빈 문자열도 패닉 없이 최소 한 줄을 돌려준다.
+    #[test]
+    fn render_source_text_handles_empty_input_without_panicking() {
+        let lines = render_source_text("", &Theme::dark(), 80);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].plain().is_empty());
     }
 
     /// 1.7 `--style none`에서도 라벨 텍스트만으로 다섯 종류가 서로 구분된다.

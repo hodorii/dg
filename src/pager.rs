@@ -2,23 +2,45 @@
 
 use crate::line::Line;
 use crate::links::{self, HistoryEntry, LinkKind, LinkPosition};
-use crate::markdown::{self, DiagramBlock, Document};
+use crate::markdown::{self, DiagramBlock, Document, TextBlock};
 use crate::style::{Style, Theme};
 use crate::text::char_width;
 use crate::watch::{self, PollResult, Watcher};
 use std::path::PathBuf;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+#[cfg(test)]
+use crossterm::event::MouseEvent;
 use crossterm::{cursor, event, execute, queue, terminal};
 use std::io::{self, Write};
 
-const MOUSE_WHEEL_ON: &str = "\x1b[?1000h\x1b[?1006h";
-const MOUSE_WHEEL_OFF: &str = "\x1b[?1006l\x1b[?1000l";
+// 1002(button-event tracking): 버튼을 누른 채 움직이는 동안도(드래그) 이벤트를 준다 —
+// 이전엔 1000(클릭·휠만)이라 드래그를 구분할 수 없었다(markdown-source-view). 1006(SGR
+// 확장 좌표)은 그대로. 휠 이벤트는 두 모드 모두 같은 방식으로 보고돼 기존 스크롤엔 영향 없다.
+const MOUSE_TRACKING_ON: &str = "\x1b[?1002h\x1b[?1006h";
+const MOUSE_TRACKING_OFF: &str = "\x1b[?1006l\x1b[?1002l";
 
-/// 화면에 나오는 다이어그램 블록의 줄 범위(원문을 펼쳤으면 그것까지).
+/// 토글 가능한 블록이 어느 목록의 몇 번째인지(markdown-source-view — 기존 다이어그램 전용
+/// 토글을 텍스트 블록까지 일반화). `Document.diagrams`/`Document.text_blocks` 자체는 이
+/// 스펙에서 건드리지 않는다 — 페이저 쪽에서만 두 목록을 한 화면 좌표계로 합쳐서 다룬다.
+#[derive(Clone, Copy)]
+enum BlockRef {
+    Diagram(usize),
+    Text(usize),
+}
+
+/// 화면에 나오는 토글 가능한 블록 하나의 줄 범위(펼쳤으면 그것까지 포함).
 struct ShownBlock {
     start: usize,
     end: usize,
-    index: usize,
+    block: BlockRef,
+}
+
+/// 진행 중이거나 막 끝난 드래그 선택(절대 줄 번호, 열) — `draw()`가 이 구간에 강조를
+/// 덧씌운다(markdown-source-view). 스트림(읽기 순서) 선택만 지원 — 사각형 선택은 없다.
+#[derive(Clone, Copy)]
+struct DragSelection {
+    origin: (usize, usize),
+    current: (usize, usize),
 }
 
 pub struct Pager<'a, F: Fn(&str, usize, usize) -> Document> {
@@ -34,6 +56,18 @@ pub struct Pager<'a, F: Fn(&str, usize, usize) -> Document> {
     document: Document,
     /// 다이어그램마다 원문을 펼쳤는지.
     expanded: Vec<bool>,
+    /// 텍스트 블록(문단·헤딩·인용·목록 등)마다 원문으로 바꿔 보여주는지(markdown-source-view).
+    text_expanded: Vec<bool>,
+    /// 전역 원문 토글(`s` 키) — 켜져 있으면 `self.lines`는 문서 전체의 원문 하이라이팅이고,
+    /// 블록별 펼침 상태(`expanded`/`text_expanded`)는 건드리지 않아 꺼도 그대로 유지된다.
+    viewing_source: bool,
+    /// 가장 최근 `MouseDown` 좌표 — `Drag`가 오면 이 위치가 드래그의 시작점이 된다.
+    mouse_down_at: Option<(usize, usize)>,
+    /// 진행 중이거나 방금 끝난 드래그 선택(강조 표시용).
+    drag: Option<DragSelection>,
+    /// 다음 `draw()`에서 출력할 클립보드 시퀀스(있으면). 마우스 이벤트 시점엔 출력 스트림이
+    /// 없어 `draw()`까지 미룬다.
+    pending_clipboard: Option<String>,
     /// 실제로 보여 주는 줄(펼친 원문 포함).
     lines: Vec<Line>,
     shown_blocks: Vec<ShownBlock>,
@@ -76,6 +110,11 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             watch_error: None,
             document: Document::default(),
             expanded: Vec::new(),
+            text_expanded: Vec::new(),
+            viewing_source: false,
+            mouse_down_at: None,
+            drag: None,
+            pending_clipboard: None,
             lines: Vec::new(),
             shown_blocks: Vec::new(),
             heading_lines: Vec::new(),
@@ -96,11 +135,12 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
     pub fn run(mut self) -> io::Result<()> {
         let mut out = io::stdout();
         terminal::enable_raw_mode()?;
-        // 휠만 필요하므로 버튼 이벤트(1000)+SGR(1006)만 켠다. 이동 추적(1003)을 켜면
-        // 마우스가 움직일 때마다 이벤트가 쏟아져 화면이 깜빡인다.
-        execute!(out, terminal::EnterAlternateScreen, crossterm::style::Print(MOUSE_WHEEL_ON), cursor::Hide)?;
+        // 드래그 선택을 구분하려면 버튼을 누른 채 움직이는 이벤트도 와야 한다(1002). 모든
+        // 움직임을 다 보고하는 1003은 안 쓴다 — 버튼 없이 움직이기만 해도 이벤트가 쏟아져
+        // 화면이 깜빡인다.
+        execute!(out, terminal::EnterAlternateScreen, crossterm::style::Print(MOUSE_TRACKING_ON), cursor::Hide)?;
         let result = self.event_loop(&mut out);
-        execute!(out, cursor::Show, crossterm::style::Print(MOUSE_WHEEL_OFF), terminal::LeaveAlternateScreen)?;
+        execute!(out, cursor::Show, crossterm::style::Print(MOUSE_TRACKING_OFF), terminal::LeaveAlternateScreen)?;
         terminal::disable_raw_mode()?;
         result
     }
@@ -157,18 +197,47 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
                 }
                 Some(true)
             }
-            Event::Mouse(mouse) => Some(match mouse.kind {
-                MouseEventKind::ScrollDown => {
-                    self.top += 3;
-                    true
-                }
-                MouseEventKind::ScrollUp => {
-                    self.top = self.top.saturating_sub(3);
-                    true
-                }
-                MouseEventKind::Down(MouseButton::Left) => self.click_at(self.top + mouse.row as usize, mouse.column as usize, page),
-                _ => false,
-            }),
+            Event::Mouse(mouse) => {
+                let row = self.top + mouse.row as usize;
+                let col = mouse.column as usize;
+                Some(match mouse.kind {
+                    MouseEventKind::ScrollDown => {
+                        self.top += 3;
+                        true
+                    }
+                    MouseEventKind::ScrollUp => {
+                        self.top = self.top.saturating_sub(3);
+                        true
+                    }
+                    // 새 제스처 시작 — 아직 클릭인지 드래그인지 모른다. 이전 선택 강조가
+                    // 있었다면(이전 드래그가 남긴 것) 여기서 지워진다.
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        self.mouse_down_at = Some((row, col));
+                        self.drag = None;
+                        false
+                    }
+                    // 버튼을 누른 채 움직였다 — 클릭이 아니라 드래그 선택으로 확정.
+                    MouseEventKind::Drag(MouseButton::Left) => {
+                        let origin = self.mouse_down_at.unwrap_or((row, col));
+                        self.drag = Some(DragSelection { origin, current: (row, col) });
+                        true
+                    }
+                    MouseEventKind::Up(MouseButton::Left) => {
+                        self.mouse_down_at = None;
+                        match self.drag {
+                            // 드래그가 있었으면 클릭 액션 대신 선택을 마무리한다(텍스트 추출·
+                            // 클립보드 전달) — 강조 표시는 다음 키/클릭까지 남겨 둔다.
+                            Some(selection) => {
+                                self.complete_selection(selection);
+                                true
+                            }
+                            // 이동 없이 뗐으면 기존 클릭 액션 그대로(회귀 없음).
+                            None => self.click_at(row, col, page),
+                        }
+                    }
+                    _ => false,
+                })
+            }
             Event::Resize(_, _) => Some(true),
             _ => Some(false),
         }
@@ -178,9 +247,10 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
     fn rerender(&mut self, width: usize, columns: usize) {
         self.document = (self.render)(&self.source, width, columns.max(10));
         self.expanded.resize(self.document.diagrams.len(), false);
+        self.text_expanded.resize(self.document.text_blocks.len(), false);
         self.rendered_width = width;
         self.rendered_columns = columns;
-        self.rebuild_lines();
+        self.refresh_lines();
     }
 
     /// `r` 키: mtime과 무관하게 즉시 다시 읽는다. 감시 중이 아니면 아무 것도 하지 않는다.
@@ -216,6 +286,8 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
 
     /// 종료하면 true.
     fn handle_key(&mut self, key: KeyEvent, page: usize) -> bool {
+        // 어떤 키든 눌리면 남아 있던 드래그 선택 강조를 지운다(markdown-source-view).
+        self.drag = None;
         if self.typing {
             match key.code {
                 KeyCode::Esc => {
@@ -285,16 +357,23 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             KeyCode::BackTab => self.focus_next_link(false, page),
             KeyCode::Char('[') => self.go_back(),
             KeyCode::Char(']') => self.go_forward(),
+            KeyCode::Char('s') => {
+                self.viewing_source = !self.viewing_source;
+                self.refresh_lines();
+            }
             _ => {}
         }
         false
     }
 
-    /// 표시 줄 번호가 다이어그램 블록 안이면 그 블록의 원문을 펼치거나 접는다. 바뀌면 true.
+    /// 표시 줄 번호가 토글 가능한 블록(다이어그램·텍스트 블록 무관) 안이면 그 블록을 펼치거나
+    /// 접는다. 바뀌면 true.
     fn toggle_block_at(&mut self, line: usize) -> bool {
         let Some(block) = self.shown_blocks.iter().find(|b| b.start <= line && line < b.end) else { return false };
-        let index = block.index;
-        self.expanded[index] = !self.expanded[index];
+        match block.block {
+            BlockRef::Diagram(index) => self.expanded[index] = !self.expanded[index],
+            BlockRef::Text(index) => self.text_expanded[index] = !self.text_expanded[index],
+        }
         self.rebuild_lines();
         true
     }
@@ -311,6 +390,27 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             return true;
         }
         self.toggle_block_at(line)
+    }
+
+    /// 드래그 선택이 끝났을 때(마우스 업) 구간의 텍스트를 스트림(읽기) 순서로 뽑아 다음
+    /// `draw()`에서 클립보드로 보낼 수 있게 채워 둔다. `viewing_source` 여부와 무관하게
+    /// `self.lines` 기준이라 원문 화면에서도 동일하게 동작한다(markdown-source-view).
+    fn complete_selection(&mut self, selection: DragSelection) {
+        let (start, end) = normalize_selection(selection);
+        let (start_row, start_col) = start;
+        let (end_row, end_col) = end;
+        let last_row = self.lines.len().saturating_sub(1);
+        let mut collected = String::new();
+        for row in start_row..=end_row.min(last_row) {
+            let Some(line) = self.lines.get(row) else { break };
+            let col_start = if row == start_row { start_col } else { 0 };
+            let col_end = if row == end_row { end_col } else { line.width() };
+            if row > start_row {
+                collected.push('\n');
+            }
+            collected.push_str(line.text_between_cols(col_start, col_end));
+        }
+        self.pending_clipboard = Some(collected);
     }
 
     /// 현재 뷰포트(`top..top+page`) 안의 링크 사이에서 포커스를 옮긴다. 보이는 링크가 없으면
@@ -422,29 +522,75 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         self.rerender(width, columns);
     }
 
-    /// 문서 줄에 펼친 원문을 끼워 넣어 표시 줄을 만든다.
+    /// 다시 그려야 할 때(재렌더링·전역 원문 토글 전환) `self.lines`를 채운다. 전역 원문
+    /// 보기가 켜져 있으면 문서 전체를 원문 하이라이팅으로 바꾸고(블록·헤딩·링크 인식은 이
+    /// 동안 의미가 없어 비운다), 아니면 기존 블록 인식 경로(`rebuild_lines`)를 쓴다.
+    fn refresh_lines(&mut self) {
+        if self.viewing_source {
+            self.lines = markdown::render_source_text(&self.source, self.theme, self.rendered_columns.max(10));
+            self.shown_blocks = Vec::new();
+            self.heading_lines = Vec::new();
+            self.link_positions = Vec::new();
+            self.focused_link = None;
+            self.refresh_matches();
+        } else {
+            self.rebuild_lines();
+        }
+    }
+
+    /// 문서 줄에 펼친/대체된 원문을 끼워 넣어 표시 줄을 만든다. 다이어그램과 텍스트 블록을
+    /// 원본 줄 순서로 합쳐 한 좌표계(`shown_blocks`)로 다룬다(markdown-source-view) — 둘 다
+    /// `Document`가 겹치지 않게 만들어 준다는 전제 위에서, 한쪽만 훑어도 되는 별도 루프 없이
+    /// 이 순회 하나로 끝난다.
     fn rebuild_lines(&mut self) {
+        let mut blocks: Vec<(usize, usize, BlockRef)> = Vec::new();
+        for (index, block) in self.document.diagrams.iter().enumerate() {
+            blocks.push((block.start, block.end, BlockRef::Diagram(index)));
+        }
+        for (index, block) in self.document.text_blocks.iter().enumerate() {
+            blocks.push((block.start, block.end, BlockRef::Text(index)));
+        }
+        blocks.sort_by_key(|(start, _, _)| *start);
+
         let mut lines: Vec<Line> = Vec::with_capacity(self.document.lines.len());
         let mut shown = Vec::new();
-        // (원본 block.end, 그 시점까지 펼침으로 늘어난 누적 줄 수) — 헤딩 위치 보정에 쓴다.
-        let mut offsets: Vec<(usize, usize)> = Vec::new();
-        let mut cumulative_offset = 0usize;
+        // (원본 block.end, 그 시점까지 늘거나(다이어그램 원문 삽입) 줄어든(텍스트 블록 원문
+        // 대체) 누적 줄 수) — 헤딩 위치 보정에 쓴다. 대체는 줄어들 수도 있어 isize.
+        let mut offsets: Vec<(usize, isize)> = Vec::new();
+        let mut cumulative_offset: isize = 0;
         let mut cursor = 0;
-        for (index, block) in self.document.diagrams.iter().enumerate() {
-            lines.extend(self.document.lines[cursor..block.start].iter().cloned());
-            let start = lines.len();
-            let expanded = self.expanded[index];
-            lines.push(self.document.lines[block.start].clone());
-            // 원문은 캡션 줄 바로 아래 펼친다(그린 다이어그램 뒤가 아니라).
-            if expanded {
-                let source_lines = self.source_lines(block);
-                cumulative_offset += source_lines.len();
-                lines.extend(source_lines);
+        for (start, end, block_ref) in blocks {
+            lines.extend(self.document.lines[cursor..start].iter().cloned());
+            let shown_start = lines.len();
+            match block_ref {
+                BlockRef::Diagram(index) => {
+                    let block = &self.document.diagrams[index];
+                    // 캡션 줄은 항상 그대로, 원문은 그 바로 아래 "덧붙인다"(그린 다이어그램은
+                    // 안 지운다) — 기존 동작 그대로(회귀 없음).
+                    lines.push(self.document.lines[start].clone());
+                    if self.expanded[index] {
+                        let source_lines = self.source_lines(block);
+                        cumulative_offset += source_lines.len() as isize;
+                        lines.extend(source_lines);
+                    }
+                    lines.extend(self.document.lines[start + 1..end].iter().cloned());
+                }
+                BlockRef::Text(index) => {
+                    // 텍스트 블록은 펼치면 그 구간을 원문으로 "바꾼다"(둘을 같이 보여주면
+                    // 중복이라 다이어그램과 다르게 대체 방식을 쓴다 — design.md 참조).
+                    if self.text_expanded[index] {
+                        let block = &self.document.text_blocks[index];
+                        let replacement = self.text_source_lines(block);
+                        cumulative_offset += replacement.len() as isize - (end - start) as isize;
+                        lines.extend(replacement);
+                    } else {
+                        lines.extend(self.document.lines[start..end].iter().cloned());
+                    }
+                }
             }
-            lines.extend(self.document.lines[block.start + 1..block.end].iter().cloned());
-            shown.push(ShownBlock { start, end: lines.len(), index });
-            offsets.push((block.end, cumulative_offset));
-            cursor = block.end;
+            shown.push(ShownBlock { start: shown_start, end: lines.len(), block: block_ref });
+            offsets.push((end, cumulative_offset));
+            cursor = end;
         }
         lines.extend(self.document.lines[cursor..].iter().cloned());
         self.lines = lines;
@@ -455,7 +601,7 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             .iter()
             .map(|(slug, original)| {
                 let offset = offsets.iter().rev().find(|(end, _)| *end <= *original).map(|(_, o)| *o).unwrap_or(0);
-                (slug.clone(), original + offset)
+                (slug.clone(), (*original as isize + offset).max(0) as usize)
             })
             .collect();
         self.link_positions = links::locate_links(&self.lines);
@@ -467,6 +613,10 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         let mut lines = markdown::render_source_block(&block.lang, &block.source, self.theme, self.rendered_columns.max(10));
         lines.insert(0, Line::empty());
         lines
+    }
+
+    fn text_source_lines(&self, block: &TextBlock) -> Vec<Line> {
+        markdown::render_source_text(&block.source, self.theme, self.rendered_columns.max(10))
     }
 
     fn refresh_matches(&mut self) {
@@ -498,11 +648,12 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         }
     }
 
-    fn draw(&self, out: &mut io::Stdout, columns: usize, rows: usize) -> io::Result<()> {
+    fn draw(&mut self, out: &mut io::Stdout, columns: usize, rows: usize) -> io::Result<()> {
         // 동기화 갱신 안에서 줄을 쓴 뒤 남은 부분만 지워 깜빡임을 줄인다.
         queue!(out, terminal::BeginSynchronizedUpdate, cursor::MoveTo(0, 0))?;
         let page = rows.saturating_sub(1);
         let focused_position = self.focused_link.and_then(|index| self.link_positions.get(index));
+        let selection = self.drag.map(normalize_selection);
         for row in 0..page {
             queue!(out, cursor::MoveTo(0, row as u16))?;
             let absolute = self.top + row;
@@ -513,6 +664,15 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
                 {
                     line = line.highlight_span(position.col_start, position.col_end, Style::PLAIN.reverse());
                 }
+                // 드래그 선택 강조 — 링크 포커스와 같은 역상 스타일을 재사용한다(markdown-source-view).
+                if let Some(((start_row, start_col), (end_row, end_col))) = selection
+                    && absolute >= start_row
+                    && absolute <= end_row
+                {
+                    let col_start = if absolute == start_row { start_col } else { 0 };
+                    let col_end = if absolute == end_row { end_col } else { line.width() };
+                    line = line.highlight_span(col_start, col_end, Style::PLAIN.reverse());
+                }
                 let truncated = truncate_line(&line, columns);
                 queue!(out, crossterm::style::Print(truncated.to_ansi(self.theme)))?;
             }
@@ -521,6 +681,11 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         queue!(out, cursor::MoveTo(0, page as u16))?;
         let status = self.status(columns);
         queue!(out, crossterm::style::Print(status.to_ansi(self.theme)), terminal::EndSynchronizedUpdate)?;
+        // 드래그로 선택된 텍스트가 있으면 이번 프레임에 클립보드 시퀀스를 함께 내보내고 비운다
+        // (마우스 이벤트 시점엔 출력 스트림이 없어 여기까지 미뤄 둔 것).
+        if let Some(text) = self.pending_clipboard.take() {
+            queue!(out, crossterm::style::Print(links::clipboard_sequence(&text)))?;
+        }
         out.flush()
     }
 
@@ -541,7 +706,7 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
                 (Some(_), None) => "  감시 중".to_string(),
                 (None, _) => String::new(),
             };
-            format!(" {}  {}%{}{}  ·  j/k 이동  / 검색{}{}  q 종료", self.title, percent, extra, watch, hint, link_hint)
+            format!(" {}  {}%{}{}  ·  j/k 이동  / 검색  s 원문{}{}  q 종료", self.title, percent, extra, watch, hint, link_hint)
         };
         let mut padded = text;
         let mut used = crate::text::width_of(&padded);
@@ -551,6 +716,12 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         }
         truncate_line(&Line::single(padded, self.theme.status), columns)
     }
+}
+
+/// 드래그 선택의 시작·끝을 읽기 순서(줄 먼저, 그다음 칸)로 정렬한다 — 사용자가 아래에서
+/// 위로, 또는 오른쪽에서 왼쪽으로 드래그해도 항상 (앞, 뒤) 순서로 돌려준다.
+fn normalize_selection(selection: DragSelection) -> ((usize, usize), (usize, usize)) {
+    if selection.origin <= selection.current { (selection.origin, selection.current) } else { (selection.current, selection.origin) }
 }
 
 /// 터미널 폭을 넘는 부분을 잘라낸다.
@@ -598,6 +769,7 @@ mod tests {
         let render = (|_: &str, _, _| Document::default()) as fn(&str, usize, usize) -> Document;
         let mut pager = Pager::new("t", theme, 80, String::new(), render, None, None);
         pager.expanded = vec![false; document.diagrams.len()];
+        pager.text_expanded = vec![false; document.text_blocks.len()];
         pager.document = document;
         pager.rendered_columns = 80;
         pager.rebuild_lines();
@@ -623,6 +795,84 @@ mod tests {
         assert!(pager.toggle_block_at(block.start));
         let collapsed: Vec<String> = pager.lines.iter().map(Line::plain).collect();
         assert!(!collapsed.iter().any(|line| line.contains("flowchart TB")), "접으면 원문이 사라져야 한다");
+    }
+
+    /// 2.1~2.3(markdown-source-view) `toggle_block_at`가 다이어그램·텍스트 블록을 가리지 않고
+    /// 같은 좌표계로 다룬다. 텍스트 블록은 대체(원문으로 바뀜), 다이어그램은 기존처럼 덧붙임
+    /// (회귀 없음) — 서로 상태가 안 섞인다.
+    #[test]
+    fn block_toggle_generalizes_across_diagram_and_text_blocks() {
+        let theme = Theme::none();
+        let block = DiagramBlock { start: 2, end: 5, lang: "mermaid".to_string(), source: "flowchart TB\n A --> B".to_string() };
+        let text_block = TextBlock { start: 0, end: 1, source: "**굵게** 문단".to_string() };
+        let lines = vec![
+            Line::single("굵게 문단", Style::PLAIN),
+            Line::single("본문", Style::PLAIN),
+            Line::single("◈ mermaid · flowchart ─", Style::PLAIN),
+            Line::single("그림 줄 1", Style::PLAIN),
+            Line::single("그림 줄 2", Style::PLAIN),
+        ];
+        let document = Document { lines, diagrams: vec![block], text_blocks: vec![text_block], ..Document::default() };
+        let mut pager = pager(document, &theme);
+
+        // 텍스트 블록(줄 0) 토글 → 원문으로 대체.
+        assert!(pager.toggle_block_at(0));
+        assert!(pager.lines[0].plain().contains("**굵게**"), "{:?}", pager.lines[0].plain());
+        assert!(pager.text_expanded[0]);
+        assert!(!pager.expanded[0], "텍스트 블록 토글이 다이어그램 상태를 건드리면 안 된다");
+
+        // 다시 토글하면 원래 렌더로 복귀.
+        assert!(pager.toggle_block_at(0));
+        assert_eq!(pager.lines[0].plain(), "굵게 문단");
+
+        // 다이어그램(캡션 줄) 토글 → 기존처럼 원문이 캡션 아래 덧붙여지고 그린 그림도 남는다.
+        let caption_row = pager.lines.iter().position(|l| l.plain().contains('◈')).unwrap();
+        assert!(pager.toggle_block_at(caption_row));
+        let plain: Vec<String> = pager.lines.iter().map(Line::plain).collect();
+        assert!(plain.iter().any(|l| l.contains("flowchart TB")), "원문이 덧붙여져야 한다: {plain:?}");
+        assert!(plain.iter().any(|l| l.contains("그림 줄 1")), "그린 그림도 남아 있어야 한다(회귀 없음): {plain:?}");
+        assert!(!pager.text_expanded[0], "다이어그램 토글이 텍스트 블록 상태를 건드리면 안 된다");
+    }
+
+    /// 2.4 토글 가능한 블록 경계가 없는 위치(빈 줄 등)에서는 화면이 바뀌지 않는다.
+    #[test]
+    fn toggle_at_line_with_no_block_is_noop() {
+        let theme = Theme::none();
+        let document = Document { lines: vec![Line::single("그냥 본문", Style::PLAIN)], ..Document::default() };
+        let mut pager = pager(document, &theme);
+        assert!(!pager.toggle_block_at(0));
+    }
+
+    /// 1.1/1.2/1.5(markdown-source-view) `s` 키는 문서 전체를 원문 하이라이팅으로 전환하고,
+    /// 다시 누르면 스크롤 위치를 유지한 채 렌더 화면으로 돌아가며, 그 사이 블록별 펼침 상태는
+    /// 건드리지 않는다.
+    #[test]
+    fn global_source_toggle_round_trips_and_preserves_scroll_and_block_state() {
+        let theme = Theme::none();
+        let source = "# 제목\n\n**굵게** 문단\n".to_string();
+        let render = (|src: &str, _: usize, _: usize| Document {
+            lines: vec![Line::single("렌더된 줄", Style::PLAIN)],
+            text_blocks: vec![TextBlock { start: 0, end: 1, source: src.to_string() }],
+            ..Document::default()
+        }) as fn(&str, usize, usize) -> Document;
+        let mut pager = Pager::new("t", &theme, 80, source.clone(), render, None, None);
+        pager.rerender(80, 80);
+        pager.top = 1;
+        pager.text_expanded[0] = true;
+        pager.rebuild_lines();
+        let rendered_before: Vec<String> = pager.lines.iter().map(Line::plain).collect();
+
+        pager.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), 10);
+        assert!(pager.viewing_source);
+        let shown: Vec<String> = pager.lines.iter().map(Line::plain).collect();
+        assert_eq!(shown.join("\n"), source.trim_end_matches('\n'), "원문이 그대로 보여야 한다");
+        assert!(pager.shown_blocks.is_empty());
+
+        pager.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), 10);
+        assert!(!pager.viewing_source);
+        assert_eq!(pager.top, 1, "스크롤 위치가 유지돼야 한다");
+        let rendered_after: Vec<String> = pager.lines.iter().map(Line::plain).collect();
+        assert_eq!(rendered_after, rendered_before, "렌더 화면·블록 펼침 상태가 왕복 후에도 그대로여야 한다");
     }
 
     struct TempFile {
@@ -700,6 +950,30 @@ mod tests {
         assert!(status.contains("test: 없음"), "{status}");
     }
 
+    /// 4.2(markdown-source-view) 상태 표시줄에 전역 원문 토글 키 힌트가 보인다.
+    #[test]
+    fn status_line_shows_global_source_toggle_hint() {
+        let theme = Theme::none();
+        let document = Document { lines: vec![Line::single("본문", Style::PLAIN)], ..Document::default() };
+        let pager = pager(document, &theme);
+        assert!(pager.status(80).plain().contains('s'), "{}", pager.status(80).plain());
+        assert!(pager.status(80).plain().contains("원문"), "{}", pager.status(80).plain());
+    }
+
+    /// 4.1(Integration) 드래그 강조가 남아 있는 상태에서 임의의 키를 누르면 강조가 사라진다.
+    #[test]
+    fn any_key_press_clears_lingering_drag_selection() {
+        let theme = Theme::none();
+        let document = Document { lines: vec![Line::single("hello world", Style::PLAIN)], ..Document::default() };
+        let mut pager = pager(document, &theme);
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5), 10);
+        pager.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 0, 5), 10);
+        assert!(pager.drag.is_some(), "선택 강조가 남아 있어야 한다");
+        pager.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), 10);
+        assert!(pager.drag.is_none(), "키 입력 뒤엔 강조가 지워져야 한다");
+    }
+
     /// 3.5 `r` 키는 mtime과 무관하게 즉시 다시 읽고(`poll_forced`), 감시 중이 아니면 아무 일도
     /// 하지 않는다.
     #[test]
@@ -723,6 +997,26 @@ mod tests {
         assert!(pager.lines.iter().any(|l| l.plain().contains("바뀐 내용")));
     }
 
+    /// 1.4 감시 모드에서 전역 원문 보기 중 파일이 바뀌면 원문 내용도 최신으로 갱신되고,
+    /// 전역 보기 모드 자체는 꺼지지 않는다.
+    #[test]
+    fn global_source_toggle_updates_on_watch_reload() {
+        let theme = Theme::none();
+        let temp = TempFile::with_content("# A\n");
+        let render =
+            (|source: &str, _: usize, _: usize| Document { lines: vec![Line::single(source.to_string(), Style::PLAIN)], ..Document::default() })
+                as fn(&str, usize, usize) -> Document;
+        let mut pager = Pager::new("t", &theme, 80, "# A\n".to_string(), render, Some(Watcher::new(&temp.path)), None);
+        pager.rerender(80, 80);
+        pager.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), 10);
+        assert!(pager.lines.iter().any(|l| l.plain().contains('A')));
+
+        std::fs::write(&temp.path, "# B\n").unwrap();
+        pager.manual_refresh();
+        assert!(pager.viewing_source, "감시 갱신이 전역 원문 모드를 꺼서는 안 된다");
+        assert!(pager.lines.iter().any(|l| l.plain().contains('B')), "{:?}", pager.lines.iter().map(Line::plain).collect::<Vec<_>>());
+    }
+
     /// 4.1 다이어그램 원문을 펼치면(`o`/클릭 토글) 헤딩·링크 위치가 밀린 줄만큼 함께 보정된다.
     #[test]
     fn heading_and_link_positions_stay_correct_after_expanding_a_diagram() {
@@ -737,7 +1031,8 @@ mod tests {
             Line::single("헤딩 줄", Style::PLAIN),
             link_line,
         ];
-        let document = Document { lines, diagrams: vec![block], links: vec!["#target".into()], headings: vec![("target".into(), 3)] };
+        let document =
+            Document { lines, diagrams: vec![block], links: vec!["#target".into()], headings: vec![("target".into(), 3)], ..Document::default() };
         let mut pager = pager(document, &theme);
         assert_eq!(pager.heading_lines, vec![("target".to_string(), 3)]);
         let link_line_before = pager.link_positions[0].line;
@@ -836,6 +1131,113 @@ mod tests {
         let mut pager = pager(document, &theme);
         assert!(pager.click_at(block.start, 0, 10));
         assert!(pager.expanded[0], "링크가 없는 자리 클릭은 기존처럼 다이어그램을 펼쳐야 한다");
+    }
+
+    fn mouse(kind: MouseEventKind, row: u16, col: u16) -> Event {
+        Event::Mouse(MouseEvent { kind, column: col, row, modifiers: KeyModifiers::NONE })
+    }
+
+    /// 3.2(markdown-source-view) Down 후 이동 없이 Up이 오면 기존 클릭 액션(다이어그램 토글)
+    /// 이 그대로 실행된다(회귀 없음).
+    #[test]
+    fn mouse_down_up_without_movement_falls_back_to_click_action() {
+        let theme = Theme::none();
+        let (document, block) = fixture();
+        let mut pager = pager(document, &theme);
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), block.start as u16, 0), 10);
+        assert!(pager.drag.is_none());
+        pager.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), block.start as u16, 0), 10);
+        assert!(pager.expanded[0], "이동 없는 클릭은 기존처럼 다이어그램을 펼쳐야 한다");
+    }
+
+    /// 3.2 Down-Drag-Up이면 클릭 액션 대신 선택 상태로 전환되고, Up 뒤에도 강조 상태(`drag`)가
+    /// 남아 있는다(다음 키 입력 전까지, 4.1에서 지워짐을 확인).
+    #[test]
+    fn mouse_down_drag_up_selects_instead_of_clicking() {
+        let theme = Theme::none();
+        let (document, block) = fixture();
+        let mut pager = pager(document, &theme);
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), block.start as u16, 0), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), block.start as u16, 3), 10);
+        assert!(pager.drag.is_some());
+        pager.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), block.start as u16, 3), 10);
+        assert!(!pager.expanded[0], "드래그였으면 다이어그램 토글이 실행되면 안 된다");
+        assert!(pager.drag.is_some(), "선택 강조는 Up 뒤에도 남아 있어야 한다");
+    }
+
+    /// 4.1/4.3(markdown-source-view) 여러 줄에 걸친 드래그 구간에서 스트림(읽기) 순서로
+    /// 텍스트가 정확히 추출돼 대기 중인 클립보드 상태에 저장된다. 드래그 방향(아래→위로
+    /// 끌어도)과 무관하게 같은 결과.
+    #[test]
+    fn drag_selection_extracts_text_in_stream_order_regardless_of_direction() {
+        let theme = Theme::none();
+        let document =
+            Document { lines: vec![Line::single("hello world", Style::PLAIN), Line::single("second line", Style::PLAIN)], ..Document::default() };
+        let mut pager = pager(document, &theme);
+
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 0, 6), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 1, 6), 10);
+        pager.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 1, 6), 10);
+        assert_eq!(pager.pending_clipboard.as_deref(), Some("world\nsecond"));
+
+        // 반대 방향(아래에서 위로)으로 드래그해도 같은 결과.
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 1, 6), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 0, 6), 10);
+        pager.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 0, 6), 10);
+        assert_eq!(pager.pending_clipboard.as_deref(), Some("world\nsecond"));
+    }
+
+    /// 4.3 전역 원문 화면에서도(`viewing_source`) 같은 경로(`self.lines` 기준)라 드래그 선택이
+    /// 동일하게 동작한다.
+    #[test]
+    fn drag_selection_works_the_same_in_global_source_view() {
+        let theme = Theme::none();
+        let render = (|source: &str, _: usize, _: usize| Document { lines: vec![Line::single(source.to_string(), Style::PLAIN)], ..Document::default() })
+            as fn(&str, usize, usize) -> Document;
+        let mut pager = Pager::new("t", &theme, 80, "hello".to_string(), render, None, None);
+        pager.rerender(80, 80);
+        pager.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), 10);
+        assert!(pager.viewing_source);
+
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5), 10);
+        pager.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 0, 5), 10);
+        assert_eq!(pager.pending_clipboard.as_deref(), Some("hello"));
+    }
+
+    /// 4.4 마우스 휠 스크롤은 진행 중인 선택 상태를 건드리지 않는다.
+    #[test]
+    fn wheel_scroll_does_not_disturb_drag_selection() {
+        let theme = Theme::none();
+        let document = Document {
+            lines: (0..20).map(|i| Line::single(format!("줄 {i}"), Style::PLAIN)).collect(),
+            ..Document::default()
+        };
+        let mut pager = pager(document, &theme);
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 1, 0), 10);
+        assert!(pager.drag.is_some());
+        pager.handle_event(mouse(MouseEventKind::ScrollDown, 0, 0), 10);
+        assert!(pager.drag.is_some(), "휠 스크롤이 선택 상태를 지우면 안 된다");
+    }
+
+    /// 3.4 `draw()`가 드래그 구간에 역상 강조를 덧씌우는 근거(정규화된 선택 구간 + 그 구간에
+    /// `highlight_span`을 적용하면 역상이 붙는지)를 확인한다. `draw()` 자체는 `io::Stdout`을
+    /// 요구해 이 세션에선 직접 호출하지 않는다(markdown-link-navigation 때의 포커스 강조와
+    /// 같은 제약, 그때도 draw() 자체는 테스트하지 않고 같은 방식으로 확인했다).
+    #[test]
+    fn draw_highlights_the_dragged_selection() {
+        let theme = Theme::none();
+        let document = Document { lines: vec![Line::single("hello world", Style::PLAIN)], ..Document::default() };
+        let mut pager = pager(document, &theme);
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5), 10);
+        assert!(pager.drag.is_some());
+
+        let selection = normalize_selection(pager.drag.unwrap());
+        assert_eq!(selection, ((0, 0), (0, 5)));
+        let highlighted = pager.lines[0].highlight_span(0, 5, Style::PLAIN.reverse());
+        assert!(highlighted.runs().any(|(t, s)| s.reverse && t == "hello"));
     }
 
     /// 7.1 앵커 점프: 찾으면 그 헤딩 줄로, 못 찾으면 위치를 유지하고 상태 메시지를 남긴다.
