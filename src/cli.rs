@@ -34,6 +34,10 @@ pub struct Cli {
     /// 폭에 안 들어가면 반대 축으로 재시도
     #[arg(long, value_enum)]
     pub direction: Option<DirectionArg>,
+
+    /// 파일 변경을 감시해 자동으로 다시 렌더링(페이저·print 모드 모두 지원, 표준입력 불가)
+    #[arg(short = 'W', long)]
+    pub watch: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
