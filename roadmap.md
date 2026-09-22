@@ -64,7 +64,7 @@ discovery가 배제한 "파일브라우저"와의 관계도 정리했다 — 디
 - [x] gitgraph-junction-polish -- gitGraph 분기·병합 연결선의 모서리를 둥글게(기존 `canvas.rect`/`join`의 `round` 메커니즘 재사용), 세로 모드에서 분기 연결선이 부모의 최근 커밋 행과 겹칠 때 커밋 id 글자와 최소 한 칸 간격 확보. 재현된 결함 + 기존 메커니즘 재사용이라 설계 이견 없음. Dependencies: gitgraph-branch-distinction
 - [x] markdown-gfm-alerts -- GitHub 스타일 알림 블록(`> [!NOTE]`/`[!TIP]`/`[!IMPORTANT]`/`[!WARNING]`/`[!CAUTION]`)을 라벨+색으로 렌더링. `pulldown-cmark`의 `ENABLE_GFM`을 켜기만 하면 되는 기존 라이브러리 기능 재사용 — 재현된 결함, 설계 이견 없음. Dependencies: none
 - [x] markdown-link-navigation -- 문서 내 앵커(`#헤딩`) 점프, 외부 URL 브라우저 열기(`xdg-open`/`open` 셸아웃), 다른 `.md` 파일로 이동(`dg-watch-mode`의 `source`/`rerender()` 경로 재사용)+back/forward 히스토리. 마우스·키보드 양쪽 링크 선택. 이번 discovery로 스코프가 좁혀짐(디렉터리 브라우징 UI는 계속 배제). Dependencies: dg-watch-mode
-- [ ] markdown-source-view -- 마크다운 원문을 마크업 신택스 하이라이팅과 함께 보여주는 모드(기존 `o` 다이어그램 원문 토글을 문서 전체로 일반화). "md full support" 축의 스코프 자체가 논란거리라 맨 뒤 — 트리거 방식(전역 토글/블록별 확장/둘 다) requirements 단계에서 결정 필요. Dependencies: none
+- [x] markdown-source-view -- 마크다운 원문을 마크업 신택스 하이라이팅과 함께 보여주는 모드(기존 `o` 다이어그램 원문 토글을 문서 전체로 일반화). 트리거 방식은 requirements 단계에서 사용자와 확정: 전역 토글 키(`s`) + 블록별 `o` 확장 둘 다 채택. 사용자 추가 요청으로 마우스 드래그 텍스트 선택 + OSC 52 클립보드 복사도 같은 스펙에 포함(일반 드래그=선택, 클릭=액션 휴리스틱). Dependencies: none
 
 ## Existing Spec Updates
 (없음)
