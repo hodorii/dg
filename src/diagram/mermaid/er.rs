@@ -24,9 +24,33 @@ pub fn parse(source: &str) -> Graph {
             open_entity = Some(index);
             continue;
         }
-        parse_relation(&mut graph, trimmed);
+        // 관계선(`--`/`..` 포함)이 아니면 관계 없이 개체 하나만 선언하는 줄이다
+        // (`ID["라벨"]` 단독) — parse_relation은 관계 연산자를 전제로 하므로 여기서 먼저
+        // declare()로 보낸다(diagram-er-standalone-alias). 대괄호 라벨은 공백을 포함할 수
+        // 있어(예: "회원입학선발점수이력 (mbr_ams_score_hst)") 판정에서 제외한다.
+        if is_relation_line(trimmed) {
+            parse_relation(&mut graph, trimmed);
+        } else {
+            declare(&mut graph, trimmed);
+        }
     }
     graph
+}
+
+/// 대괄호 `[...]` 안의 내용을 지우고 남은 부분에 관계 연산자(`--`/`..`)가 있으면 관계선으로
+/// 판정한다. 라벨 안에 우연히 그 문자열이 들어 있어도(드묾) 대괄호 밖만 보므로 오판하지 않는다.
+fn is_relation_line(line: &str) -> bool {
+    let mut outside_brackets = String::with_capacity(line.len());
+    let mut depth = 0u32;
+    for c in line.chars() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => outside_brackets.push(c),
+            _ => {}
+        }
+    }
+    outside_brackets.contains("--") || outside_brackets.contains("..")
 }
 
 fn declare(graph: &mut Graph, raw: &str) -> usize {
@@ -138,5 +162,39 @@ mod tests {
         let g = parse("erDiagram\n CUSTOMER ||--o{ ORDER : places\n CUSTOMER[\"고객\"] ||--o{ INVOICE : has\n");
         let customer = g.find("CUSTOMER").unwrap();
         assert_eq!(g.nodes[customer].sections[0], vec!["고객"]);
+    }
+
+    // 1.1/2.1(diagram-er-standalone-alias): 관계선·속성 블록 없이 별칭만 단독으로 선언한
+    // 줄도 반영돼야 한다 — 그 줄이 parse_relation으로 잘못 넘어가 통째로 무시되던 결함.
+    #[test]
+    fn standalone_declaration_alias_is_shown() {
+        let g = parse("erDiagram\n CUSTOMER[\"Customer\"]\n CUSTOMER ||--o{ ORDER : places\n");
+        let customer = g.find("CUSTOMER").unwrap();
+        assert_eq!(g.nodes[customer].sections[0], vec!["Customer"]);
+    }
+
+    // 1.2/2.2: 라벨에 공백이 섞인 단독 선언도 반영돼야 한다(실제 재현 사례:
+    // `/home/hs/w/.kiro/reference/schemas_diagram.md`의 회원 도메인 ERD).
+    #[test]
+    fn standalone_declaration_alias_with_spaces_is_shown() {
+        let g = parse(
+            "erDiagram\n mbr_ams_score_hst[\"회원입학선발점수이력 (mbr_ams_score_hst)\"]\n mbr_role_rel[\"회원역활관계\"]\n mbr_role_rel ||--o{ mbr_ams_score_hst : \"rel\"\n",
+        );
+        let hst = g.find("mbr_ams_score_hst").unwrap();
+        assert_eq!(g.nodes[hst].sections[0], vec!["회원입학선발점수이력 (mbr_ams_score_hst)"]);
+        let role = g.find("mbr_role_rel").unwrap();
+        assert_eq!(g.nodes[role].sections[0], vec!["회원역활관계"]);
+    }
+
+    // 3.1~3.3(불변): 관계선 인라인 별칭·속성 블록 별칭·별칭 없는 관계선은 여전히 그대로다.
+    #[test]
+    fn inline_relation_and_attribute_block_aliases_still_work_without_regression() {
+        let g = parse("erDiagram\n CUSTOMER[\"Customer\"] ||--o{ ORDER : places\n ORDER[\"Order\"] {\n  string id\n }\n");
+        assert_eq!(g.nodes[0].sections[0], vec!["Customer"]);
+        let order = g.find("ORDER").unwrap();
+        assert_eq!(g.nodes[order].sections[0], vec!["Order"]);
+
+        let g2 = parse("erDiagram\n CUSTOMER ||--o{ ORDER : places\n");
+        assert_eq!(g2.nodes[0].sections[0], vec!["CUSTOMER"]);
     }
 }
