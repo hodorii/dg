@@ -20,6 +20,8 @@
 
 pub mod diagram;
 pub mod line;
+#[cfg(feature = "cli")]
+pub mod links;
 pub mod markdown;
 #[cfg(feature = "cli")]
 pub mod pager;

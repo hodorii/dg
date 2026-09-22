@@ -4,7 +4,7 @@
 //! 할당이 훨씬 적어, 수십만 줄짜리 문서도 가볍게 들고 있을 수 있다. 만들 때는 `Span`을 밀어 넣는다.
 
 use crate::style::{Style, Theme};
-use crate::text::width_of;
+use crate::text::{char_width, width_of};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Span {
@@ -157,6 +157,50 @@ impl Line {
             }
             if cursor < run_end {
                 out.push_str(&self.text[cursor..run_end], style);
+            }
+            offset = run_end;
+        }
+        out
+    }
+
+    /// 문자 폭 기준 `[col_start, col_end)` 구간에 `style`을 덧씌운 줄(포커스된 링크 강조용,
+    /// `markdown-link-navigation`). `highlight`와 달리 부분 문자열 찾기가 아니라 열 좌표로
+    /// 바로 구간을 정한다 — CJK처럼 폭이 2인 글자가 섞여도 올바른 위치를 가리킨다.
+    pub fn highlight_span(&self, col_start: usize, col_end: usize, style: Style) -> Line {
+        if col_start >= col_end {
+            return self.clone();
+        }
+        let mut byte_start = None;
+        let mut byte_end = self.text.len();
+        let mut col = 0;
+        for (i, c) in self.text.char_indices() {
+            if byte_start.is_none() && col >= col_start {
+                byte_start = Some(i);
+            }
+            if col >= col_end {
+                byte_end = i;
+                break;
+            }
+            col += char_width(c);
+        }
+        let Some(byte_start) = byte_start else { return self.clone() };
+        let mut out = Line::empty();
+        let mut offset = 0;
+        for (text, run_style) in self.runs() {
+            let run_start = offset;
+            let run_end = offset + text.len();
+            let start = byte_start.max(run_start);
+            let end = byte_end.min(run_end);
+            if start < end {
+                if run_start < start {
+                    out.push_str(&self.text[run_start..start], run_style);
+                }
+                out.push_str(&self.text[start..end], run_style.merge(style));
+                if end < run_end {
+                    out.push_str(&self.text[end..run_end], run_style);
+                }
+            } else {
+                out.push_str(text, run_style);
             }
             offset = run_end;
         }
