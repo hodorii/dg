@@ -11,8 +11,11 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, Mous
 use crossterm::{cursor, event, execute, queue, terminal};
 use std::io::{self, Write};
 
-const MOUSE_WHEEL_ON: &str = "\x1b[?1000h\x1b[?1006h";
-const MOUSE_WHEEL_OFF: &str = "\x1b[?1006l\x1b[?1000l";
+// 1002(button-event tracking): 버튼을 누른 채 움직이는 동안도(드래그) 이벤트를 준다 —
+// 이전엔 1000(클릭·휠만)이라 드래그를 구분할 수 없었다(markdown-source-view). 1006(SGR
+// 확장 좌표)은 그대로. 휠 이벤트는 두 모드 모두 같은 방식으로 보고돼 기존 스크롤엔 영향 없다.
+const MOUSE_TRACKING_ON: &str = "\x1b[?1002h\x1b[?1006h";
+const MOUSE_TRACKING_OFF: &str = "\x1b[?1006l\x1b[?1002l";
 
 /// 토글 가능한 블록이 어느 목록의 몇 번째인지(markdown-source-view — 기존 다이어그램 전용
 /// 토글을 텍스트 블록까지 일반화). `Document.diagrams`/`Document.text_blocks` 자체는 이
@@ -112,11 +115,12 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
     pub fn run(mut self) -> io::Result<()> {
         let mut out = io::stdout();
         terminal::enable_raw_mode()?;
-        // 휠만 필요하므로 버튼 이벤트(1000)+SGR(1006)만 켠다. 이동 추적(1003)을 켜면
-        // 마우스가 움직일 때마다 이벤트가 쏟아져 화면이 깜빡인다.
-        execute!(out, terminal::EnterAlternateScreen, crossterm::style::Print(MOUSE_WHEEL_ON), cursor::Hide)?;
+        // 드래그 선택을 구분하려면 버튼을 누른 채 움직이는 이벤트도 와야 한다(1002). 모든
+        // 움직임을 다 보고하는 1003은 안 쓴다 — 버튼 없이 움직이기만 해도 이벤트가 쏟아져
+        // 화면이 깜빡인다.
+        execute!(out, terminal::EnterAlternateScreen, crossterm::style::Print(MOUSE_TRACKING_ON), cursor::Hide)?;
         let result = self.event_loop(&mut out);
-        execute!(out, cursor::Show, crossterm::style::Print(MOUSE_WHEEL_OFF), terminal::LeaveAlternateScreen)?;
+        execute!(out, cursor::Show, crossterm::style::Print(MOUSE_TRACKING_OFF), terminal::LeaveAlternateScreen)?;
         terminal::disable_raw_mode()?;
         result
     }
