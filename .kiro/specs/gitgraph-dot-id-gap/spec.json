@@ -1,0 +1,26 @@
+{
+  "feature_name": "gitgraph-dot-id-gap",
+  "created_at": "2026-09-22T04:34:16Z",
+  "updated_at": "2026-09-22T05:20:00Z",
+  "language": "ko",
+  "phase": "completed",
+  "approvals": {
+    "bugfix": {
+      "generated": true,
+      "approved": true
+    },
+    "bizProcess": {
+      "generated": false,
+      "approved": false
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": true
+}
