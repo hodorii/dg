@@ -2,7 +2,7 @@
 
 use crate::line::Line;
 use crate::links::{self, HistoryEntry, LinkKind, LinkPosition};
-use crate::markdown::{self, DiagramBlock, Document};
+use crate::markdown::{self, DiagramBlock, Document, TextBlock};
 use crate::style::{Style, Theme};
 use crate::text::char_width;
 use crate::watch::{self, PollResult, Watcher};
@@ -14,11 +14,20 @@ use std::io::{self, Write};
 const MOUSE_WHEEL_ON: &str = "\x1b[?1000h\x1b[?1006h";
 const MOUSE_WHEEL_OFF: &str = "\x1b[?1006l\x1b[?1000l";
 
-/// 화면에 나오는 다이어그램 블록의 줄 범위(원문을 펼쳤으면 그것까지).
+/// 토글 가능한 블록이 어느 목록의 몇 번째인지(markdown-source-view — 기존 다이어그램 전용
+/// 토글을 텍스트 블록까지 일반화). `Document.diagrams`/`Document.text_blocks` 자체는 이
+/// 스펙에서 건드리지 않는다 — 페이저 쪽에서만 두 목록을 한 화면 좌표계로 합쳐서 다룬다.
+#[derive(Clone, Copy)]
+enum BlockRef {
+    Diagram(usize),
+    Text(usize),
+}
+
+/// 화면에 나오는 토글 가능한 블록 하나의 줄 범위(펼쳤으면 그것까지 포함).
 struct ShownBlock {
     start: usize,
     end: usize,
-    index: usize,
+    block: BlockRef,
 }
 
 pub struct Pager<'a, F: Fn(&str, usize, usize) -> Document> {
@@ -34,6 +43,8 @@ pub struct Pager<'a, F: Fn(&str, usize, usize) -> Document> {
     document: Document,
     /// 다이어그램마다 원문을 펼쳤는지.
     expanded: Vec<bool>,
+    /// 텍스트 블록(문단·헤딩·인용·목록 등)마다 원문으로 바꿔 보여주는지(markdown-source-view).
+    text_expanded: Vec<bool>,
     /// 실제로 보여 주는 줄(펼친 원문 포함).
     lines: Vec<Line>,
     shown_blocks: Vec<ShownBlock>,
@@ -76,6 +87,7 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             watch_error: None,
             document: Document::default(),
             expanded: Vec::new(),
+            text_expanded: Vec::new(),
             lines: Vec::new(),
             shown_blocks: Vec::new(),
             heading_lines: Vec::new(),
@@ -178,6 +190,7 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
     fn rerender(&mut self, width: usize, columns: usize) {
         self.document = (self.render)(&self.source, width, columns.max(10));
         self.expanded.resize(self.document.diagrams.len(), false);
+        self.text_expanded.resize(self.document.text_blocks.len(), false);
         self.rendered_width = width;
         self.rendered_columns = columns;
         self.rebuild_lines();
@@ -290,11 +303,14 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         false
     }
 
-    /// 표시 줄 번호가 다이어그램 블록 안이면 그 블록의 원문을 펼치거나 접는다. 바뀌면 true.
+    /// 표시 줄 번호가 토글 가능한 블록(다이어그램·텍스트 블록 무관) 안이면 그 블록을 펼치거나
+    /// 접는다. 바뀌면 true.
     fn toggle_block_at(&mut self, line: usize) -> bool {
         let Some(block) = self.shown_blocks.iter().find(|b| b.start <= line && line < b.end) else { return false };
-        let index = block.index;
-        self.expanded[index] = !self.expanded[index];
+        match block.block {
+            BlockRef::Diagram(index) => self.expanded[index] = !self.expanded[index],
+            BlockRef::Text(index) => self.text_expanded[index] = !self.text_expanded[index],
+        }
         self.rebuild_lines();
         true
     }
@@ -422,29 +438,59 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         self.rerender(width, columns);
     }
 
-    /// 문서 줄에 펼친 원문을 끼워 넣어 표시 줄을 만든다.
+    /// 문서 줄에 펼친/대체된 원문을 끼워 넣어 표시 줄을 만든다. 다이어그램과 텍스트 블록을
+    /// 원본 줄 순서로 합쳐 한 좌표계(`shown_blocks`)로 다룬다(markdown-source-view) — 둘 다
+    /// `Document`가 겹치지 않게 만들어 준다는 전제 위에서, 한쪽만 훑어도 되는 별도 루프 없이
+    /// 이 순회 하나로 끝난다.
     fn rebuild_lines(&mut self) {
+        let mut blocks: Vec<(usize, usize, BlockRef)> = Vec::new();
+        for (index, block) in self.document.diagrams.iter().enumerate() {
+            blocks.push((block.start, block.end, BlockRef::Diagram(index)));
+        }
+        for (index, block) in self.document.text_blocks.iter().enumerate() {
+            blocks.push((block.start, block.end, BlockRef::Text(index)));
+        }
+        blocks.sort_by_key(|(start, _, _)| *start);
+
         let mut lines: Vec<Line> = Vec::with_capacity(self.document.lines.len());
         let mut shown = Vec::new();
-        // (원본 block.end, 그 시점까지 펼침으로 늘어난 누적 줄 수) — 헤딩 위치 보정에 쓴다.
-        let mut offsets: Vec<(usize, usize)> = Vec::new();
-        let mut cumulative_offset = 0usize;
+        // (원본 block.end, 그 시점까지 늘거나(다이어그램 원문 삽입) 줄어든(텍스트 블록 원문
+        // 대체) 누적 줄 수) — 헤딩 위치 보정에 쓴다. 대체는 줄어들 수도 있어 isize.
+        let mut offsets: Vec<(usize, isize)> = Vec::new();
+        let mut cumulative_offset: isize = 0;
         let mut cursor = 0;
-        for (index, block) in self.document.diagrams.iter().enumerate() {
-            lines.extend(self.document.lines[cursor..block.start].iter().cloned());
-            let start = lines.len();
-            let expanded = self.expanded[index];
-            lines.push(self.document.lines[block.start].clone());
-            // 원문은 캡션 줄 바로 아래 펼친다(그린 다이어그램 뒤가 아니라).
-            if expanded {
-                let source_lines = self.source_lines(block);
-                cumulative_offset += source_lines.len();
-                lines.extend(source_lines);
+        for (start, end, block_ref) in blocks {
+            lines.extend(self.document.lines[cursor..start].iter().cloned());
+            let shown_start = lines.len();
+            match block_ref {
+                BlockRef::Diagram(index) => {
+                    let block = &self.document.diagrams[index];
+                    // 캡션 줄은 항상 그대로, 원문은 그 바로 아래 "덧붙인다"(그린 다이어그램은
+                    // 안 지운다) — 기존 동작 그대로(회귀 없음).
+                    lines.push(self.document.lines[start].clone());
+                    if self.expanded[index] {
+                        let source_lines = self.source_lines(block);
+                        cumulative_offset += source_lines.len() as isize;
+                        lines.extend(source_lines);
+                    }
+                    lines.extend(self.document.lines[start + 1..end].iter().cloned());
+                }
+                BlockRef::Text(index) => {
+                    // 텍스트 블록은 펼치면 그 구간을 원문으로 "바꾼다"(둘을 같이 보여주면
+                    // 중복이라 다이어그램과 다르게 대체 방식을 쓴다 — design.md 참조).
+                    if self.text_expanded[index] {
+                        let block = &self.document.text_blocks[index];
+                        let replacement = self.text_source_lines(block);
+                        cumulative_offset += replacement.len() as isize - (end - start) as isize;
+                        lines.extend(replacement);
+                    } else {
+                        lines.extend(self.document.lines[start..end].iter().cloned());
+                    }
+                }
             }
-            lines.extend(self.document.lines[block.start + 1..block.end].iter().cloned());
-            shown.push(ShownBlock { start, end: lines.len(), index });
-            offsets.push((block.end, cumulative_offset));
-            cursor = block.end;
+            shown.push(ShownBlock { start: shown_start, end: lines.len(), block: block_ref });
+            offsets.push((end, cumulative_offset));
+            cursor = end;
         }
         lines.extend(self.document.lines[cursor..].iter().cloned());
         self.lines = lines;
@@ -455,7 +501,7 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             .iter()
             .map(|(slug, original)| {
                 let offset = offsets.iter().rev().find(|(end, _)| *end <= *original).map(|(_, o)| *o).unwrap_or(0);
-                (slug.clone(), original + offset)
+                (slug.clone(), (*original as isize + offset).max(0) as usize)
             })
             .collect();
         self.link_positions = links::locate_links(&self.lines);
@@ -467,6 +513,10 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         let mut lines = markdown::render_source_block(&block.lang, &block.source, self.theme, self.rendered_columns.max(10));
         lines.insert(0, Line::empty());
         lines
+    }
+
+    fn text_source_lines(&self, block: &TextBlock) -> Vec<Line> {
+        markdown::render_source_text(&block.source, self.theme, self.rendered_columns.max(10))
     }
 
     fn refresh_matches(&mut self) {
@@ -598,6 +648,7 @@ mod tests {
         let render = (|_: &str, _, _| Document::default()) as fn(&str, usize, usize) -> Document;
         let mut pager = Pager::new("t", theme, 80, String::new(), render, None, None);
         pager.expanded = vec![false; document.diagrams.len()];
+        pager.text_expanded = vec![false; document.text_blocks.len()];
         pager.document = document;
         pager.rendered_columns = 80;
         pager.rebuild_lines();
@@ -623,6 +674,52 @@ mod tests {
         assert!(pager.toggle_block_at(block.start));
         let collapsed: Vec<String> = pager.lines.iter().map(Line::plain).collect();
         assert!(!collapsed.iter().any(|line| line.contains("flowchart TB")), "접으면 원문이 사라져야 한다");
+    }
+
+    /// 2.1~2.3(markdown-source-view) `toggle_block_at`가 다이어그램·텍스트 블록을 가리지 않고
+    /// 같은 좌표계로 다룬다. 텍스트 블록은 대체(원문으로 바뀜), 다이어그램은 기존처럼 덧붙임
+    /// (회귀 없음) — 서로 상태가 안 섞인다.
+    #[test]
+    fn block_toggle_generalizes_across_diagram_and_text_blocks() {
+        let theme = Theme::none();
+        let block = DiagramBlock { start: 2, end: 5, lang: "mermaid".to_string(), source: "flowchart TB\n A --> B".to_string() };
+        let text_block = TextBlock { start: 0, end: 1, source: "**굵게** 문단".to_string() };
+        let lines = vec![
+            Line::single("굵게 문단", Style::PLAIN),
+            Line::single("본문", Style::PLAIN),
+            Line::single("◈ mermaid · flowchart ─", Style::PLAIN),
+            Line::single("그림 줄 1", Style::PLAIN),
+            Line::single("그림 줄 2", Style::PLAIN),
+        ];
+        let document = Document { lines, diagrams: vec![block], text_blocks: vec![text_block], ..Document::default() };
+        let mut pager = pager(document, &theme);
+
+        // 텍스트 블록(줄 0) 토글 → 원문으로 대체.
+        assert!(pager.toggle_block_at(0));
+        assert!(pager.lines[0].plain().contains("**굵게**"), "{:?}", pager.lines[0].plain());
+        assert!(pager.text_expanded[0]);
+        assert!(!pager.expanded[0], "텍스트 블록 토글이 다이어그램 상태를 건드리면 안 된다");
+
+        // 다시 토글하면 원래 렌더로 복귀.
+        assert!(pager.toggle_block_at(0));
+        assert_eq!(pager.lines[0].plain(), "굵게 문단");
+
+        // 다이어그램(캡션 줄) 토글 → 기존처럼 원문이 캡션 아래 덧붙여지고 그린 그림도 남는다.
+        let caption_row = pager.lines.iter().position(|l| l.plain().contains('◈')).unwrap();
+        assert!(pager.toggle_block_at(caption_row));
+        let plain: Vec<String> = pager.lines.iter().map(Line::plain).collect();
+        assert!(plain.iter().any(|l| l.contains("flowchart TB")), "원문이 덧붙여져야 한다: {plain:?}");
+        assert!(plain.iter().any(|l| l.contains("그림 줄 1")), "그린 그림도 남아 있어야 한다(회귀 없음): {plain:?}");
+        assert!(!pager.text_expanded[0], "다이어그램 토글이 텍스트 블록 상태를 건드리면 안 된다");
+    }
+
+    /// 2.4 토글 가능한 블록 경계가 없는 위치(빈 줄 등)에서는 화면이 바뀌지 않는다.
+    #[test]
+    fn toggle_at_line_with_no_block_is_noop() {
+        let theme = Theme::none();
+        let document = Document { lines: vec![Line::single("그냥 본문", Style::PLAIN)], ..Document::default() };
+        let mut pager = pager(document, &theme);
+        assert!(!pager.toggle_block_at(0));
     }
 
     struct TempFile {
