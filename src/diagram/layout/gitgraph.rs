@@ -26,6 +26,14 @@ fn branch_style(theme: &Theme, track: usize) -> (Style, LineKind) {
     (colors[track % colors.len()], patterns[track % patterns.len()])
 }
 
+/// 세로 모드 분기 연결선을 시작할 x 좌표. 부모 트랙의 x 좌표(`parent_x`)와 그 행에 있는 부모
+/// 커밋 id의 렌더 폭(`parent_id_width`)으로 구한다. id가 비어 있으면 밀지 않는다(점 글자
+/// 바로 뒤에 이어지는 대시는 기존처럼 자연스럽다). 비어 있지 않으면 텍스트 폭 + 공백 1칸만큼
+/// 밀어, 분기선이 커밋 id 글자에 바로 붙어 보이지 않게 한다(gitgraph-junction-polish).
+fn fork_connector_start(parent_x: usize, parent_id_width: usize) -> usize {
+    if parent_id_width == 0 { parent_x } else { parent_x + 1 + parent_id_width + 1 }
+}
+
 pub fn render(graph: &GitGraph, theme: &Theme, width: usize) -> Option<Vec<Line>> {
     if graph.tracks.is_empty() || graph.events.is_empty() {
         return None;
@@ -154,10 +162,14 @@ fn build(graph: &GitGraph, plan: &Plan, theme: &Theme, cap: usize, width: usize)
     for (parent, child, column) in &plan.forks {
         let (color, pattern) = branch_style(theme, *child);
         canvas.vline(x(*column), *parent, *child, pattern, color);
+        // 자식 트랙이 시작되는 끝점을 둥글게(gitgraph-junction-polish).
+        canvas.join(x(*column), *child, 0, pattern, color, true);
     }
     for (source, target, column) in &plan.merges {
         let (color, pattern) = branch_style(theme, *source);
         canvas.vline(x(*column), *source, *target, pattern, color);
+        // 합류해 들어오는(source) 트랙 쪽 끝점을 둥글게.
+        canvas.join(x(*column), *source, 0, pattern, color, true);
     }
     canvas.set_edge_mode(false);
     for (row, name) in names.iter().enumerate() {
@@ -213,11 +225,19 @@ fn build_vertical(graph: &GitGraph, plan: &Plan, theme: &Theme, cap: usize, widt
     }
     for (parent, child, step) in &plan.forks {
         let (color, pattern) = branch_style(theme, *child);
-        canvas.hline(x(*parent), x(*child), top + step, pattern, color);
+        // 부모의 가장 최근 커밋(이 분기의 anchor 행)에 id가 있으면 그 글자에 바로 붙지 않도록
+        // 시작 좌표를 밀어낸다(gitgraph-junction-polish).
+        let parent_id_width = plan.dots.iter().zip(&ids).find(|(dot, _)| dot.column == *step).map(|(_, id)| width_of(id)).unwrap_or(0);
+        let start = fork_connector_start(x(*parent), parent_id_width);
+        canvas.hline(start, x(*child), top + step, pattern, color);
+        // 자식 트랙이 시작되는 끝점을 둥글게.
+        canvas.join(x(*child), top + step, 0, pattern, color, true);
     }
     for (source, target, step) in &plan.merges {
         let (color, pattern) = branch_style(theme, *source);
         canvas.hline(x(*source), x(*target), top + step, pattern, color);
+        // 합류해 들어오는(source) 트랙 쪽 끝점을 둥글게.
+        canvas.join(x(*source), top + step, 0, pattern, color, true);
     }
     canvas.set_edge_mode(false);
     for (track, name) in names.iter().enumerate() {
@@ -268,14 +288,15 @@ mod tests {
         assert_eq!(out[1].matches(COMMIT_DOT).count(), 1);
     }
 
-    /// 3.1 `merge`는 두 트랙 사이에 연결선을 긋고 병합 커밋을 남긴다.
+    /// 3.1 `merge`는 두 트랙 사이에 연결선을 긋고 병합 커밋을 남긴다. 연결선 끝점 모서리는
+    /// 둥글게 그려진다(gitgraph-junction-polish).
     #[test]
     fn merge_draws_a_connector_between_tracks() {
         let out = rows("gitGraph\n commit\n branch develop\n commit\n checkout main\n merge develop\n", 80);
         let joined = out.join("\n");
         assert!(joined.contains(MERGE_DOT), "{joined}");
-        assert!(out[1].contains('└'), "{joined}");
-        assert!(out[1].contains('┘'), "{joined}");
+        assert!(out[1].contains('╰'), "{joined}");
+        assert!(out[1].contains('╯'), "{joined}");
     }
 
     /// 3.2 없는 브랜치를 병합해도 연결선만 빠지고 나머지는 그대로 그린다.
@@ -461,11 +482,76 @@ mod tests {
         let source = "gitGraph\n commit\n branch develop\n commit\n checkout main\n merge develop\n";
         let lines = render(&parse(source), &theme, 80).unwrap();
         let corner_styles: Vec<Style> =
-            lines[1].runs().filter(|(text, _)| text.contains(['└', '┘'])).map(|(_, s)| s).collect();
+            lines[1].runs().filter(|(text, _)| text.contains(['╰', '╯'])).map(|(_, s)| s).collect();
         assert!(!corner_styles.is_empty(), "{lines:?}");
         assert!(
             corner_styles.iter().all(|s| *s == theme.diagram_box),
             "분기는 child(develop), 병합은 source(develop) 색을 따라야 한다(main 색 accent 아님): {lines:?}"
         );
+    }
+
+    /// 3.1(gitgraph-junction-polish) `fork_connector_start`: id가 비어 있으면 밀지 않고, 있으면
+    /// 텍스트 폭 + 공백 1칸만큼만 민다.
+    #[test]
+    fn fork_connector_start_gap_only_when_id_is_not_empty() {
+        assert_eq!(fork_connector_start(10, 0), 10, "빈 id면 밀지 않는다");
+        assert_eq!(fork_connector_start(10, 1), 13, "폭 1인 id: 10 + 1(점 뒤) + 1(글자) + 1(공백)");
+        assert_eq!(fork_connector_start(10, 12), 24, "긴 id도 같은 규칙: 10 + 1 + 12 + 1");
+    }
+
+    /// 1.1/1.2 가로 모드 분기·병합 연결선의 끝점 모서리가 둥글게 그려지고, 각진 모서리는 남지
+    /// 않는다.
+    #[test]
+    fn horizontal_fork_and_merge_corners_are_rounded() {
+        let out = rows("gitGraph\n commit\n branch develop\n commit\n checkout main\n merge develop\n", 80);
+        let joined = out.join("\n");
+        assert!(joined.contains('╰'), "분기 모서리는 둥글어야 한다: {joined}");
+        assert!(joined.contains('╯'), "병합 모서리는 둥글어야 한다: {joined}");
+        assert!(!joined.contains(['└', '┘']), "각진 모서리가 남아있으면 안 된다: {joined}");
+    }
+
+    /// 1.3/1.4 세로 모드 분기·병합 연결선의 끝점 모서리가 둥글게 그려지고, 각진 모서리는 남지
+    /// 않는다.
+    #[test]
+    fn vertical_fork_and_merge_corners_are_rounded() {
+        let out = rows("gitGraph TB:\n commit\n branch develop\n commit\n checkout main\n merge develop\n", 80);
+        let joined = out.join("\n");
+        assert!(joined.contains('╮'), "분기 모서리는 둥글어야 한다: {joined}");
+        assert!(joined.contains('╯'), "병합 모서리는 둥글어야 한다: {joined}");
+        assert!(!joined.contains(['┌', '┘']), "각진 모서리가 남아있으면 안 된다: {joined}");
+    }
+
+    /// 1.5 한 지점에서 브랜치 3개 이상이 갈라지는 T자 지점은 둥글게 바뀌지 않고 기존과 같은
+    /// 문자(T자/교차)로 남는다 — `canvas.rs`의 `line_char`가 3비트 이상 조합에는 `round`를 반영
+    /// 하지 않기 때문에 자동으로 보장된다.
+    #[test]
+    fn t_junction_at_a_shared_fork_point_is_not_rounded() {
+        let source = "gitGraph\n commit id: \"root\"\n branch one\n branch two\n commit id: \"verylongcommitid\"\n checkout main\n merge two\n checkout one\n commit id: \"x\"\n";
+        let out = rows(source, 100);
+        let joined = out.join("\n");
+        assert!(joined.contains('┣'), "T자 지점은 그대로 있어야 한다: {joined}");
+        // 같은 줄의 실제 연결선 끝점(two 쪽)은 둥글게 바뀐다.
+        assert!(joined.contains('╰'), "{joined}");
+        assert!(joined.contains('╯'), "{joined}");
+    }
+
+    /// 2.1 세로 모드에서 분기가 부모의 최근 커밋과 같은 행에서 일어나고 그 커밋에 id가 있으면,
+    /// id 글자와 분기 연결선 사이에 공백이 생긴다.
+    #[test]
+    fn vertical_fork_leaves_a_gap_after_a_labeled_parent_commit() {
+        let out = rows("gitGraph TB:\n commit id: \"root-long-id\"\n branch develop\n commit id: \"dev1\"\n", 100);
+        let row = out.iter().find(|l| l.contains("root-long-id")).expect("부모 커밋 줄이 있어야 한다");
+        let after_id = row.split("root-long-id").nth(1).expect("id 뒤 내용이 있어야 한다");
+        assert!(after_id.starts_with(' '), "id 글자 뒤에 공백이 있어야 한다: {row}");
+    }
+
+    /// 2.2 회귀: id가 없는 커밋(`commit`만)이면 기존처럼 점 글자 바로 뒤에 연결선이 이어진다
+    /// (공백을 새로 넣지 않음).
+    #[test]
+    fn vertical_fork_does_not_shift_when_parent_commit_has_no_id() {
+        let out = rows("gitGraph TB:\n commit\n branch develop\n commit\n", 100);
+        let row = out.iter().find(|l| l.starts_with(COMMIT_DOT)).expect("main 커밋 줄이 있어야 한다");
+        let after_dot: String = row.chars().skip(1).collect();
+        assert!(after_dot.starts_with(['╌', '━', '─']), "빈 id면 점 바로 뒤에 선이 이어져야 한다: {row}");
     }
 }

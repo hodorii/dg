@@ -1,83 +1,75 @@
-# Brief: 다이어그램 표기 식별성 개선
+# Brief: gitGraph 분기·병합 지점 시각 정리
 
 ## Problem
-시퀀스 다이어그램에서 `alt`/`opt`/`loop` 등 프래그먼트 테두리가 메시지·생명선(흐름)과 똑같은
-굵기·선 종류로 그려져 한눈에 구분되지 않는다는 사용자 보고가 있었다. 같은 문제(구조가 다른
-요소인데 선패턴이 같아 식별이 어려움)가 다른 다이어그램에도 있는지 검토가 필요했다.
+사용자가 gitGraph에서 두 가지를 보고했다: (1) 분기·병합 지점에 둥근 모서리를 적용해 달라,
+(2) 커밋 id 글자가 분기·병합 지점과 겹쳐(정확히는 간격 없이 붙어) 읽기 어렵다. 둘 다 실제로
+재현된다.
 
 ## Current State
-- 실제 재현(`sequenceDiagram` + `alt`/`else`): 프래그먼트 테두리가 `LineKind::Solid` +
-  `theme.diagram_group`(회색 계열)로 그려진다(`layout/sequence.rs:497`). 메시지·생명선도
-  `LineKind::Solid`(또는 파싱된 화살표 종류) + `theme.diagram_group`과 아주 가까운 회색
-  `theme.diagram_line`으로 그려진다 — 즉 프레임과 흐름이 **같은 선 종류**이고 색도 둘 다
-  회색 계열이라 명도 차이가 작다. `--style none`에서는 색이 아예 빠지므로 완전히 동일한
-  글자(`─`/`│`/`┌`)로만 보여 구분 수단이 없다.
-- 같은 파일 안에 이미 반례가 있다: 노트(`Note`)는 `LineKind::Dashed` + `theme.diagram_note`로
-  (line 470), 활성화 막대(activation bar)는 `LineKind::Heavy` + `theme.diagram_accent`로(line 439)
-  이미 흐름과 다른 선패턴을 쓴다 — "구조가 다른 요소는 선패턴도 다르게" 원칙이 부분적으로만
-  적용돼 있다.
-- 같은 원칙의 선례가 두 군데 더 있다: `block-beta`의 중첩 그룹은 깊이별로
-  `Solid→Dashed→Heavy`를 순환하는 `border_kind(depth)`(`layout/block.rs:176`)를 쓰고,
-  방금 완료된 `gitgraph-branch-distinction` 스펙은 트랙(브랜치)별로 같은 3종 `LineKind`를
-  순환하는 `branch_style()`을 `gitgraph.rs`에 추가했다 — 새 렌더링 로직 없이 기존
-  `canvas.rs`의 `LineKind` 3종만 재배정하는 방식이 이미 두 번 검증됐다.
-- 다른 다이어그램형도 검토했다: `flowchart`/`classDiagram`/`stateDiagram`/`erDiagram`/컴포넌트는
-  전부 `layout/graph.rs` 하나를 공유한다(README). 여기서 서브그래프·합성 상태·패키지 같은
-  "그룹" 테두리는 `LineKind::Solid` + `theme.diagram_group`(회색)을 쓰고, 일반 노드 테두리는
-  `LineKind::Solid` + `theme.diagram_box`(파란 계열, `layout/shape.rs:46`)를 쓴다 — **선패턴은
-  똑같이 Solid**지만 **색상 계열 자체가 다르다**(회색 대 파랑). 색이 있는 테마에서는 구분되고,
-  `--style none`에서만 모호해진다 — 시퀀스의 "회색끼리 부딪히는" 상황보다는 덜 심각하다.
-  `xychart`/`pie`/`quadrant`/`gantt`는 그룹·프레임 개념이 없어 해당 없음.
+- **모서리**: gitGraph의 분기·병합 연결선(`canvas.hline`/`vline`)은 `round` 인자를 받지 않는
+  공개 함수만 쓴다(`layout/gitgraph.rs`). `canvas.rect()`/`canvas.join()`은 이미 `round: bool`을
+  받아 모서리를 `╭╮╰╯`로 그릴 수 있지만(`canvas.rs:187,192`), gitGraph는 이 경로를 안 쓴다 —
+  분기·병합 연결선이 트랙 선과 만나는 지점은 전부 각진 모서리(`┌┐└┘`, 굵은선이면 `┏┓┗┛`)다.
+- **글자 겹침(정확히는 간격 없음)**: 세로 모드(`gitGraph TB:`)에서 재현된다. `branch`(분기)는
+  새 스텝(행)을 쓰지 않고 부모의 **가장 최근 커밋과 같은 행**에서 갈라진다(`anchor =
+  tips[parent]`, `layout/gitgraph.rs`의 `plan()`). 그 결과 분기 연결선(가로선)이 **부모 커밋의
+  id 글자와 같은 행**에 그려지는데, 연결선이 글자보다 먼저 그려지고 글자가 나중에 그 위를
+  덮어써서 실제 겹침(글자 훼손)은 없지만, 글자가 끝나자마자 간격 없이 바로 선(`╌`/`━`)이
+  시작돼 시각적으로 붙어 보인다. 실제 재현:
+  ```
+  ●root-long-id╌╌╌╌┐     ← "id" 바로 뒤에 공백 없이 파선 시작
+  │                ●dev1
+  ◉╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘
+  ```
+  가로 모드(기본)는 이 문제가 없다 — 분기 연결선이 세로선이라 부모 행의 글자(가로로 이어짐)와
+  겹치는 열이 다르다(글자는 열 anchor+1부터, 연결선은 열 anchor 하나뿐).
+- 병합(`merge`)은 항상 새 스텝을 쓰므로(`next_column` 증가) 기존 커밋 행과 겹치지 않는다 —
+  이 문제는 **분기** 시점에서만 재현된다. 다만 사용자 표현("머지 시")은 분기·병합을 아우르는
+  "브랜치 구조가 바뀌는 지점" 정도의 넓은 의미로 보인다.
+- 직전 스펙(`gitgraph-branch-distinction`)에서 트랙별 색+선패턴을 이미 넣었고, 이번 항목은 그
+  위에 얹는 순수 시각 정리(모서리 둥글기, 간격)라 겹치는 로직은 없다.
 
 ## Desired Outcome
-- 시퀀스 `alt`/`opt`/`loop`/`par`/`critical`/`break` 프래그먼트 테두리가 메시지·생명선과
-  선패턴으로 뚜렷이 구분되어, `--style none`에서도 "이건 흐름이고 이건 프레임 경계"를 글자
-  모양만으로 알 수 있다.
-- (검토 결과) `graph.rs` 공유 그룹 vs 노드 구분은 색상으로 이미 되고 있어 이번 라운드의
-  실행 범위에는 넣지 않는다 — 심각도가 낮고, `graph.rs`는 5개 다이어그램형이 공유하는
-  핵심 파일이라 건드리면 블라스트 반경이 크다. 후속 검토 항목으로만 기록한다.
+- gitGraph의 분기·병합 연결선이 트랙 선과 만나는 지점이 둥근 모서리로 그려진다(가로·세로 모드
+  모두, 기존 `canvas.rect()`가 쓰는 것과 같은 `round` 메커니즘 재사용).
+- 세로 모드에서 분기가 부모의 최근 커밋 행과 같은 행에 그려질 때, 커밋 id 글자와 분기 연결선
+  사이에 최소 한 칸 공백이 생겨 글자와 선이 시각적으로 붙지 않는다.
 
 ## Approach
-`block-beta`의 `border_kind(depth)`, `gitgraph-branch-distinction`의 `branch_style()`과 같은
-패턴을 재사용해 시퀀스 프래그먼트 테두리에 아직 그 파일에서 안 쓰는 `LineKind::Heavy`를
-적용한다(노트가 이미 `Dashed`를 쓰므로 재사용하면 "프레임인지 노트인지" 새 혼동이 생김 —
-`Heavy`가 남는 선택지). 새 렌더링 로직을 만들지 않고 기존 `canvas.rs`의 `LineKind` 3종 안에서
-재배정만 한다.
+두 항목 다 `layout/gitgraph.rs` 안에서 끝나는 작은 렌더링 정리이고 신규 의존성이 없다. 서로
+다른 메커니즘(모서리는 `canvas.join(..., round: true)` 호출 추가, 간격은 연결선의 시작 좌표
+계산 조정)이지만 같은 파일·같은 "분기·병합 연결선" 영역을 다듬는 하나의 작업이라 스펙 하나로
+묶는다(둘 다 따로 스펙 게이트를 거치기엔 각각 몇 줄 안 되는 변경). SRP상 분리할지는
+requirements에서 최종 확인.
 
 ## Scope
-- **In**: 시퀀스 프래그먼트(`alt`/`opt`/`loop`/`par`/`critical`/`break`) 바깥 테두리의
-  `LineKind` 변경, `else`/`option`/`and` 구분선과의 관계 정리(프레임과 같은 패턴으로 통일할지
-  기존 `Dashed`를 유지해 "프레임=Heavy, 분기=Dashed"로 이원화할지는 requirements에서 결정)
-- **Out**: `graph.rs` 공유 레이아웃(서브그래프·합성 상태·패키지 그룹 vs 노드) 선패턴 변경,
-  `theme.rs`의 색상 값 자체 변경(SSoT 유지 — `LineKind`만 바꾼다), `xychart`/`pie`/`quadrant`/
-  `gantt`(그룹·프레임 개념 없음, 해당 없음)
+- **In**: gitGraph 분기·병합 연결선의 모서리를 둥글게(가로·세로 모드 모두), 세로 모드에서
+  분기 연결선과 부모 커밋 id 글자 사이 최소 간격 확보
+- **Out**: 다른 다이어그램형(block-beta, sequence 등)의 모서리 둥글기(요청 밖), gitGraph
+  배치·색상 로직 자체 변경(`gitgraph-vertical-mode`/`gitgraph-branch-distinction` 소관, 이미
+  완료), 가로 모드의 간격 문제(재현 안 됨 — 애초에 해당 없음)
 
 ## Boundary Candidates
-- 시퀀스 프래그먼트 테두리 `LineKind`
-- (참고, 이번 스코프 아님) `graph.rs` 그룹 테두리 vs 노드 테두리의 선패턴 구분 — 색상만으로도
-  이미 구분되므로 우선순위 낮음
+- gitGraph 분기·병합 연결선 모서리 둥글기
+- 세로 모드 분기 연결선-커밋 id 글자 간격
 
 ## Out of Boundary
-- `graph.rs` 공유 레이아웃의 그룹/노드 선패턴 변경 — 심각도 낮고 블라스트 반경 큼, 별도 라운드에서
-  다시 검토
-- `theme.rs` 색상 값(RGB/인덱스) 자체를 바꾸는 것 — 이번 문제는 선패턴(`LineKind`) 재배정으로
-  풀리고, 색상 SSoT는 건드릴 이유가 없음
+- 다른 다이어그램형의 모서리 스타일 일괄 변경 — 요청 범위 밖, 별도 검토 필요
+- 가로 모드 간격 문제 — 재현되지 않아 대상 아님
 
 ## Upstream / Downstream
-- **Upstream**: `diagram/layout/sequence.rs`(프래그먼트 렌더, `draw_message`/`draw_self_message`),
-  `diagram/layout/block.rs`(`border_kind` 선례), `diagram/layout/gitgraph.rs`(`branch_style` 선례),
-  `diagram/canvas.rs`(`LineKind` 정의)
-- **Downstream**: 기존 시퀀스 테스트 중 프레임 테두리 글자(`┌`/`─`/`│` 등)를 골든 텍스트로 직접
-  비교하는 테스트가 있으면 새 글자(`┏`/`━`/`┃`)에 맞춰 조정 필요
+- **Upstream**: `diagram::layout::gitgraph`(`build`/`build_vertical`, `plan()`의 `anchor` 계산),
+  `diagram::canvas`(`join`/`rect`의 기존 `round` 메커니즘, 신규 API 불필요할 가능성 높음)
+- **Downstream**: 기존 gitgraph 테스트 중 정확한 모서리 글자(`┘`/`└` 등)를 비교하는 테스트가
+  있으면 둥근 글자(`╯`/`╰`)로 조정 필요, `examples/architecture.txt`의 gitGraph 절 재생성
+  가능성
 
 ## Existing Spec Touchpoints
 - **Extends**: 없음(신규 스펙)
-- **Adjacent**: `sequence-self-message-clearance`(같은 `sequence.rs`, 다른 관심사 — 자기 메시지
-  여백 vs 프래그먼트 테두리 선패턴, 서로 겹치지 않음), `gitgraph-branch-distinction`(같은
-  `LineKind` 재배정 기법의 선례)
+- **Adjacent**: `gitgraph-vertical-mode`(세로 모드 배치, 이번에 간격 문제가 나는 위치),
+  `gitgraph-branch-distinction`(트랙별 색+선패턴, 이번 항목과 같은 파일이지만 독립적)
 
 ## Constraints
-- 신규 의존성 없음(현재 4개 유지)
-- panic 금지(`panic = "abort"`) 계약 유지
-- `edition = "2024"`, `rust-version = "1.88"` 유지
-- 기존 `canvas.rs`의 `LineKind`(Solid/Dashed/Heavy) 3종 안에서만 해결 — 새 선 종류를 추가하지 않음
+- 신규 의존성 없음
+- panic 금지 계약 유지
+- 기존 `canvas.rs`의 `round`/`LineKind` 메커니즘 재사용 — 새 셀 필드·새 글자 추가하지 않음
