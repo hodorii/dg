@@ -59,7 +59,7 @@ fn run() -> io::Result<()> {
                 match diagram::render(language, source, &theme, block_width, diagram_options) {
                     Some(lines) => {
                         let block = DiagramBlock { start: 0, end: lines.len(), lang: lang.to_string(), source: source.to_string() };
-                        Document { lines, diagrams: vec![block] }
+                        Document { lines, diagrams: vec![block], ..Document::default() }
                     }
                     None => markdown::render_document(&format!("```{lang}\n{}\n```\n", source.trim_end()), &theme, width, block_width, diagram_options),
                 }
@@ -67,11 +67,13 @@ fn run() -> io::Result<()> {
             None => markdown::render_document(source, &theme, width, block_width, diagram_options),
         }
     };
+    // 표준입력(경로 없음)이면 None — 상대 링크 해석·다른 파일 이동·히스토리 전부 자연히 꺼진다.
+    let current_path = cli.file.as_deref().filter(|f| *f != "-").map(std::path::PathBuf::from);
     let use_pager = stdout_is_tty && !cli.print;
     if use_pager {
         let max_width = cli.width.unwrap_or(MAX_WIDTH);
         let watcher = cli.watch.then(|| Watcher::new(cli.file.as_deref().expect("--watch는 위에서 파일 경로 유무를 이미 검증함")));
-        return pager::Pager::new(&title, &theme, max_width, source, render, watcher).run();
+        return pager::Pager::new(&title, &theme, max_width, source, render, watcher, current_path).run();
     }
     let columns = crossterm::terminal::size().map(|(c, _)| c as usize).unwrap_or(80);
     let width = cli.width.unwrap_or(columns.min(MAX_WIDTH));

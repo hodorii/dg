@@ -1,10 +1,12 @@
 //! crossterm 기반 페이저: 스크롤·검색·창 크기 대응.
 
 use crate::line::Line;
+use crate::links::{self, HistoryEntry, LinkKind, LinkPosition};
 use crate::markdown::{self, DiagramBlock, Document};
-use crate::style::Theme;
+use crate::style::{Style, Theme};
 use crate::text::char_width;
 use crate::watch::{self, PollResult, Watcher};
+use std::path::PathBuf;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use crossterm::{cursor, event, execute, queue, terminal};
 use std::io::{self, Write};
@@ -35,6 +37,15 @@ pub struct Pager<'a, F: Fn(&str, usize, usize) -> Document> {
     /// 실제로 보여 주는 줄(펼친 원문 포함).
     lines: Vec<Line>,
     shown_blocks: Vec<ShownBlock>,
+    /// (슬러그, 최종 표시 줄 번호) — 다이어그램 펼침에 따른 줄 밀림이 보정된 값.
+    heading_lines: Vec<(String, usize)>,
+    /// 화면에 그려진 링크들의 위치(밑줄 스캔, `rebuild_lines`마다 갱신).
+    link_positions: Vec<LinkPosition>,
+    /// 키보드로 포커스된 링크(`link_positions`의 인덱스).
+    focused_link: Option<usize>,
+    /// 지금 보고 있는 파일의 경로(표준입력이면 `None` — 상대 링크·히스토리 둘 다 못 씀).
+    current_path: Option<PathBuf>,
+    history: links::History,
     rendered_width: usize,
     rendered_columns: usize,
     top: usize,
@@ -45,7 +56,16 @@ pub struct Pager<'a, F: Fn(&str, usize, usize) -> Document> {
 }
 
 impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
-    pub fn new(title: &str, theme: &'a Theme, max_width: usize, source: String, render: F, watcher: Option<Watcher>) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        title: &str,
+        theme: &'a Theme,
+        max_width: usize,
+        source: String,
+        render: F,
+        watcher: Option<Watcher>,
+        current_path: Option<PathBuf>,
+    ) -> Self {
         Pager {
             title: title.to_string(),
             theme,
@@ -54,10 +74,15 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             source,
             watcher,
             watch_error: None,
-            document: Document { lines: Vec::new(), diagrams: Vec::new() },
+            document: Document::default(),
             expanded: Vec::new(),
             lines: Vec::new(),
             shown_blocks: Vec::new(),
+            heading_lines: Vec::new(),
+            link_positions: Vec::new(),
+            focused_link: None,
+            current_path,
+            history: links::History::default(),
             rendered_width: 0,
             rendered_columns: 0,
             top: 0,
@@ -141,7 +166,7 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
                     self.top = self.top.saturating_sub(3);
                     true
                 }
-                MouseEventKind::Down(MouseButton::Left) => self.toggle_block_at(self.top + mouse.row as usize),
+                MouseEventKind::Down(MouseButton::Left) => self.click_at(self.top + mouse.row as usize, mouse.column as usize, page),
                 _ => false,
             }),
             Event::Resize(_, _) => Some(true),
@@ -222,7 +247,14 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
                 self.query.clear();
                 self.refresh_matches();
             }
-            KeyCode::Char('j') | KeyCode::Down | KeyCode::Enter => self.top += 1,
+            KeyCode::Char('j') | KeyCode::Down => self.top += 1,
+            KeyCode::Enter => {
+                if self.focused_link.is_some() {
+                    self.follow_focused_link(page);
+                } else {
+                    self.top += 1;
+                }
+            }
             KeyCode::Char('k') | KeyCode::Up => self.top = self.top.saturating_sub(1),
             KeyCode::Char('d') if control => self.top += page / 2,
             KeyCode::Char('u') if control => self.top = self.top.saturating_sub(page / 2),
@@ -249,6 +281,10 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             }
             // 감시 중이 아니면 아무 일도 하지 않는다.
             KeyCode::Char('r') => self.manual_refresh(),
+            KeyCode::Tab => self.focus_next_link(true, page),
+            KeyCode::BackTab => self.focus_next_link(false, page),
+            KeyCode::Char('[') => self.go_back(),
+            KeyCode::Char(']') => self.go_forward(),
             _ => {}
         }
         false
@@ -263,10 +299,136 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         true
     }
 
+    /// 클릭 좌표가 링크 위면 그 링크를 따라가고, 아니면 기존처럼 다이어그램 원문을 토글한다.
+    /// 둘 다 아니면 무동작(false).
+    fn click_at(&mut self, line: usize, col: usize, page: usize) -> bool {
+        let hit = self.link_positions.iter().find(|p| p.line == line && col >= p.col_start && col < p.col_end);
+        if let Some(position) = hit {
+            let link_index = position.link_index;
+            if let Some(dest) = self.document.links.get(link_index).cloned() {
+                self.follow_link(&dest, page);
+            }
+            return true;
+        }
+        self.toggle_block_at(line)
+    }
+
+    /// 현재 뷰포트(`top..top+page`) 안의 링크 사이에서 포커스를 옮긴다. 보이는 링크가 없으면
+    /// 무동작.
+    fn focus_next_link(&mut self, forward: bool, page: usize) {
+        let visible: Vec<usize> =
+            self.link_positions.iter().enumerate().filter(|(_, p)| p.line >= self.top && p.line < self.top + page).map(|(i, _)| i).collect();
+        if visible.is_empty() {
+            return;
+        }
+        let current = self.focused_link.and_then(|idx| visible.iter().position(|&i| i == idx));
+        let next = match current {
+            Some(pos) if forward => (pos + 1) % visible.len(),
+            Some(pos) => (pos + visible.len() - 1) % visible.len(),
+            None => 0,
+        };
+        self.focused_link = Some(visible[next]);
+    }
+
+    /// 포커스된 링크를 따라가고 포커스를 지운다. 포커스가 없으면 무동작.
+    fn follow_focused_link(&mut self, page: usize) {
+        let Some(index) = self.focused_link.take() else { return };
+        let Some(position) = self.link_positions.get(index) else { return };
+        let link_index = position.link_index;
+        let Some(dest) = self.document.links.get(link_index).cloned() else { return };
+        self.follow_link(&dest, page);
+    }
+
+    /// 링크 목적지를 종류별로 따라간다: 앵커 점프·외부 브라우저 열기·다른 파일로 이동.
+    fn follow_link(&mut self, dest: &str, page: usize) {
+        match links::classify(dest) {
+            LinkKind::Anchor(slug) => match self.heading_lines.iter().find(|(s, _)| *s == slug) {
+                Some((_, line)) => {
+                    self.top = *line;
+                    self.clamp(page);
+                    self.message.clear();
+                }
+                None => self.message = format!("'{slug}' 헤딩을 찾을 수 없습니다"),
+            },
+            LinkKind::External(url) => match links::open_external(&url) {
+                Ok(()) => self.message.clear(),
+                Err(error) => self.message = format!("열기 실패: {error}"),
+            },
+            LinkKind::File(path) => self.follow_file_link(&path),
+        }
+    }
+
+    /// 다른 마크다운 파일로 이동한다. 표준입력으로 열었으면(`current_path`가 없으면) 상대
+    /// 경로를 풀 기준이 없어 조용히 거부한다.
+    fn follow_file_link(&mut self, relative: &str) {
+        let Some(current_path) = self.current_path.clone() else {
+            self.message = "표준입력에서는 파일 이동을 할 수 없습니다".to_string();
+            return;
+        };
+        let base_dir = current_path.parent().unwrap_or(std::path::Path::new(""));
+        let target = links::resolve_file_path(base_dir, relative);
+        match std::fs::read_to_string(&target) {
+            Ok(source) => {
+                self.history.record(HistoryEntry { path: current_path, top: self.top });
+                self.load_path(target, source);
+            }
+            Err(error) => self.message = format!("{}: {error}", target.display()),
+        }
+    }
+
+    /// 뒤로/앞으로 히스토리로 이전/다음 파일·위치를 복원한다. 히스토리가 없거나 표준입력이면
+    /// 무동작.
+    fn go_back(&mut self) {
+        let Some(current_path) = self.current_path.clone() else { return };
+        let current = HistoryEntry { path: current_path, top: self.top };
+        if let Some(entry) = self.history.go_back(current) {
+            self.load_history_entry(entry);
+        }
+    }
+
+    fn go_forward(&mut self) {
+        let Some(current_path) = self.current_path.clone() else { return };
+        let current = HistoryEntry { path: current_path, top: self.top };
+        if let Some(entry) = self.history.go_forward(current) {
+            self.load_history_entry(entry);
+        }
+    }
+
+    fn load_history_entry(&mut self, entry: HistoryEntry) {
+        let top = entry.top;
+        match std::fs::read_to_string(&entry.path) {
+            Ok(source) => {
+                let path = entry.path;
+                self.load_path(path, source);
+                self.top = top;
+            }
+            Err(error) => self.message = format!("{}: {error}", entry.path.display()),
+        }
+    }
+
+    /// 새 파일 내용으로 전환한다: `source`/`title`/`current_path`를 갱신하고 감시 중이면
+    /// `Watcher`도 새 경로로 다시 만들고 나서 다시 그린다.
+    fn load_path(&mut self, path: PathBuf, source: String) {
+        self.title = path.display().to_string();
+        if self.watcher.is_some() {
+            self.watcher = Some(Watcher::new(&path));
+        }
+        self.watch_error = None;
+        self.current_path = Some(path);
+        self.source = source;
+        self.top = 0;
+        self.message.clear();
+        let (width, columns) = (self.rendered_width, self.rendered_columns);
+        self.rerender(width, columns);
+    }
+
     /// 문서 줄에 펼친 원문을 끼워 넣어 표시 줄을 만든다.
     fn rebuild_lines(&mut self) {
         let mut lines: Vec<Line> = Vec::with_capacity(self.document.lines.len());
         let mut shown = Vec::new();
+        // (원본 block.end, 그 시점까지 펼침으로 늘어난 누적 줄 수) — 헤딩 위치 보정에 쓴다.
+        let mut offsets: Vec<(usize, usize)> = Vec::new();
+        let mut cumulative_offset = 0usize;
         let mut cursor = 0;
         for (index, block) in self.document.diagrams.iter().enumerate() {
             lines.extend(self.document.lines[cursor..block.start].iter().cloned());
@@ -275,15 +437,29 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             lines.push(self.document.lines[block.start].clone());
             // 원문은 캡션 줄 바로 아래 펼친다(그린 다이어그램 뒤가 아니라).
             if expanded {
-                lines.extend(self.source_lines(block));
+                let source_lines = self.source_lines(block);
+                cumulative_offset += source_lines.len();
+                lines.extend(source_lines);
             }
             lines.extend(self.document.lines[block.start + 1..block.end].iter().cloned());
             shown.push(ShownBlock { start, end: lines.len(), index });
+            offsets.push((block.end, cumulative_offset));
             cursor = block.end;
         }
         lines.extend(self.document.lines[cursor..].iter().cloned());
         self.lines = lines;
         self.shown_blocks = shown;
+        self.heading_lines = self
+            .document
+            .headings
+            .iter()
+            .map(|(slug, original)| {
+                let offset = offsets.iter().rev().find(|(end, _)| *end <= *original).map(|(_, o)| *o).unwrap_or(0);
+                (slug.clone(), original + offset)
+            })
+            .collect();
+        self.link_positions = links::locate_links(&self.lines);
+        self.focused_link = None;
         self.refresh_matches();
     }
 
@@ -326,10 +502,17 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         // 동기화 갱신 안에서 줄을 쓴 뒤 남은 부분만 지워 깜빡임을 줄인다.
         queue!(out, terminal::BeginSynchronizedUpdate, cursor::MoveTo(0, 0))?;
         let page = rows.saturating_sub(1);
+        let focused_position = self.focused_link.and_then(|index| self.link_positions.get(index));
         for row in 0..page {
             queue!(out, cursor::MoveTo(0, row as u16))?;
-            if let Some(line) = self.lines.get(self.top + row) {
-                let line = if self.query.is_empty() { line.clone() } else { line.highlight(&self.query, self.theme.search_hit) };
+            let absolute = self.top + row;
+            if let Some(line) = self.lines.get(absolute) {
+                let mut line = if self.query.is_empty() { line.clone() } else { line.highlight(&self.query, self.theme.search_hit) };
+                if let Some(position) = focused_position
+                    && position.line == absolute
+                {
+                    line = line.highlight_span(position.col_start, position.col_end, Style::PLAIN.reverse());
+                }
                 let truncated = truncate_line(&line, columns);
                 queue!(out, crossterm::style::Print(truncated.to_ansi(self.theme)))?;
             }
@@ -352,12 +535,13 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             };
             let extra = if self.message.is_empty() { String::new() } else { format!("  {}", self.message) };
             let hint = if self.shown_blocks.is_empty() { "" } else { "  o/클릭 원문" };
+            let link_hint = if self.link_positions.is_empty() { "" } else { "  Tab 링크  [/] 이동기록" };
             let watch = match (&self.watcher, &self.watch_error) {
                 (Some(_), Some(message)) => format!("  감시 불가: {message}"),
                 (Some(_), None) => "  감시 중".to_string(),
                 (None, _) => String::new(),
             };
-            format!(" {}  {}%{}{}  ·  j/k 이동  / 검색{}  q 종료", self.title, percent, extra, watch, hint)
+            format!(" {}  {}%{}{}  ·  j/k 이동  / 검색{}{}  q 종료", self.title, percent, extra, watch, hint, link_hint)
         };
         let mut padded = text;
         let mut used = crate::text::width_of(&padded);
@@ -407,12 +591,12 @@ mod tests {
             Line::single("그림 줄 2", Style::PLAIN),
             Line::single("이후 본문", Style::PLAIN),
         ];
-        (Document { lines, diagrams: vec![block.clone()] }, block)
+        (Document { lines, diagrams: vec![block.clone()], ..Document::default() }, block)
     }
 
     fn pager(document: Document, theme: &Theme) -> Pager<'_, fn(&str, usize, usize) -> Document> {
-        let render = (|_: &str, _, _| Document { lines: Vec::new(), diagrams: Vec::new() }) as fn(&str, usize, usize) -> Document;
-        let mut pager = Pager::new("t", theme, 80, String::new(), render, None);
+        let render = (|_: &str, _, _| Document::default()) as fn(&str, usize, usize) -> Document;
+        let mut pager = Pager::new("t", theme, 80, String::new(), render, None, None);
         pager.expanded = vec![false; document.diagrams.len()];
         pager.document = document;
         pager.rendered_columns = 80;
@@ -466,7 +650,7 @@ mod tests {
     #[test]
     fn apply_poll_result_updates_source_and_error_state() {
         let theme = Theme::none();
-        let mut pager = pager(Document { lines: Vec::new(), diagrams: Vec::new() }, &theme);
+        let mut pager = pager(Document::default(), &theme);
 
         assert!(pager.apply_poll_result(PollResult::Changed("새 내용".to_string())));
         assert_eq!(pager.source, "새 내용");
@@ -486,9 +670,9 @@ mod tests {
         let theme = Theme::none();
         let render = (|source: &str, _: usize, _: usize| Document {
             lines: (0..10).map(|i| Line::single(format!("{source}-{i}"), Style::PLAIN)).collect(),
-            diagrams: Vec::new(),
+            ..Document::default()
         }) as fn(&str, usize, usize) -> Document;
-        let mut pager = Pager::new("t", &theme, 80, "a".to_string(), render, None);
+        let mut pager = Pager::new("t", &theme, 80, "a".to_string(), render, None, None);
         pager.rerender(80, 80);
         pager.top = 4;
 
@@ -504,7 +688,7 @@ mod tests {
     #[test]
     fn status_line_shows_watch_state() {
         let theme = Theme::none();
-        let mut pager = pager(Document { lines: Vec::new(), diagrams: Vec::new() }, &theme);
+        let mut pager = pager(Document::default(), &theme);
         assert!(!pager.status(80).plain().contains("감시"), "감시 중이 아니면 표시가 없어야 한다");
 
         pager.watcher = Some(Watcher::new("/dg-watch-mode-test-does-not-exist"));
@@ -522,20 +706,215 @@ mod tests {
     fn r_key_forces_reread_through_handle_key() {
         let theme = Theme::none();
         let temp = TempFile::with_content("원본");
-        let render = (|source: &str, _: usize, _: usize| Document { lines: vec![Line::single(source.to_string(), Style::PLAIN)], diagrams: Vec::new() })
+        let render = (|source: &str, _: usize, _: usize| Document { lines: vec![Line::single(source.to_string(), Style::PLAIN)], ..Document::default() })
             as fn(&str, usize, usize) -> Document;
 
         // 감시 중이 아니면 'r'은 아무 효과가 없다(6.1 회귀 없음).
-        let mut not_watching = Pager::new("t", &theme, 80, "원본".to_string(), render, None);
+        let mut not_watching = Pager::new("t", &theme, 80, "원본".to_string(), render, None, None);
         not_watching.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE), 10);
         assert_eq!(not_watching.source, "원본");
 
-        let mut pager = Pager::new("t", &theme, 80, "원본".to_string(), render, Some(Watcher::new(&temp.path)));
+        let mut pager = Pager::new("t", &theme, 80, "원본".to_string(), render, Some(Watcher::new(&temp.path)), None);
         pager.rerender(80, 80);
 
         std::fs::write(&temp.path, "바뀐 내용").unwrap();
         pager.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE), 10);
         assert_eq!(pager.source, "바뀐 내용");
         assert!(pager.lines.iter().any(|l| l.plain().contains("바뀐 내용")));
+    }
+
+    /// 4.1 다이어그램 원문을 펼치면(`o`/클릭 토글) 헤딩·링크 위치가 밀린 줄만큼 함께 보정된다.
+    #[test]
+    fn heading_and_link_positions_stay_correct_after_expanding_a_diagram() {
+        let theme = Theme::none();
+        let block = DiagramBlock { start: 1, end: 3, lang: "mermaid".to_string(), source: "flowchart TB\n A --> B".to_string() };
+        let mut link_line = Line::empty();
+        link_line.push_str("링크", Style::PLAIN.underline());
+        let lines = vec![
+            Line::single("본문", Style::PLAIN),
+            Line::single("◈ mermaid", Style::PLAIN),
+            Line::single("그림", Style::PLAIN),
+            Line::single("헤딩 줄", Style::PLAIN),
+            link_line,
+        ];
+        let document = Document { lines, diagrams: vec![block], links: vec!["#target".into()], headings: vec![("target".into(), 3)] };
+        let mut pager = pager(document, &theme);
+        assert_eq!(pager.heading_lines, vec![("target".to_string(), 3)]);
+        let link_line_before = pager.link_positions[0].line;
+        assert_eq!(link_line_before, 4);
+
+        assert!(pager.toggle_block_at(1));
+        let pushed = pager.heading_lines[0].1;
+        assert!(pushed > 3, "다이어그램을 펼치면 헤딩 줄 번호도 밀려야 한다");
+        assert_eq!(pager.link_positions[0].line, link_line_before + (pushed - 3), "링크 위치도 같은 만큼 밀려야 한다");
+    }
+
+    /// 5.1 Tab/Shift-Tab은 현재 뷰포트 안의 링크 사이에서만 순환하고, 뷰포트에 링크가 없으면
+    /// 무동작이다.
+    #[test]
+    fn tab_focuses_only_links_visible_in_current_viewport() {
+        let theme = Theme::none();
+        let mut lines = Vec::new();
+        for i in 0..20 {
+            let mut line = Line::empty();
+            if i == 0 {
+                line.push_str("첫 링크", Style::PLAIN.underline());
+            } else if i == 15 {
+                line.push_str("둘째 링크", Style::PLAIN.underline());
+            } else {
+                line.push_str(&format!("줄 {i}"), Style::PLAIN);
+            }
+            lines.push(line);
+        }
+        let document = Document { lines, links: vec!["#a".into(), "#b".into()], ..Document::default() };
+        let mut pager = pager(document, &theme);
+        pager.top = 0;
+
+        // 뷰포트(0..10)엔 첫 링크만 보인다 — 둘째 링크(줄 15)는 제외된다.
+        pager.focus_next_link(true, 10);
+        assert_eq!(pager.focused_link, Some(0));
+        pager.focus_next_link(true, 10);
+        assert_eq!(pager.focused_link, Some(0), "뷰포트 안엔 링크가 하나뿐이라 그대로 순환한다");
+    }
+
+    #[test]
+    fn tab_is_noop_when_viewport_has_no_links() {
+        let theme = Theme::none();
+        let document = Document { lines: vec![Line::single("링크 없는 줄", Style::PLAIN)], ..Document::default() };
+        let mut pager = pager(document, &theme);
+        pager.focus_next_link(true, 10);
+        assert_eq!(pager.focused_link, None);
+    }
+
+    /// 5.2 Enter는 포커스된 링크가 있으면 따라가고 포커스를 지우며, 없으면 기존처럼 한 줄
+    /// 스크롤한다(회귀 5.1).
+    #[test]
+    fn enter_follows_focused_link_then_clears_focus_and_otherwise_scrolls() {
+        let theme = Theme::none();
+        // 문서가 뷰포트(page)보다 길어야 앵커 점프가 실제로 스크롤을 일으킨다 — 전부 한 화면에
+        // 들어오면 클램프가 top을 다시 0으로 되돌려 점프 여부를 구별할 수 없다.
+        let mut link_line = Line::empty();
+        link_line.push_str("헤딩보기", Style::PLAIN.underline());
+        let mut lines = vec![link_line];
+        lines.extend((1..5).map(|i| Line::single(format!("본문 {i}"), Style::PLAIN)));
+        lines.push(Line::single("대상 헤딩", Style::PLAIN));
+        lines.extend((0..5).map(|i| Line::single(format!("뒷내용 {i}"), Style::PLAIN)));
+        let target_line = 5;
+        let document = Document { lines, links: vec!["#target".into()], headings: vec![("target".into(), target_line)], ..Document::default() };
+        let mut pager = pager(document, &theme);
+        let page = 3;
+        pager.focus_next_link(true, page);
+        assert_eq!(pager.focused_link, Some(0));
+
+        pager.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), page);
+        assert_eq!(pager.top, target_line, "포커스된 앵커 링크를 따라가 헤딩 줄로 이동해야 한다");
+        assert_eq!(pager.focused_link, None, "따라간 뒤에는 포커스가 풀려야 한다");
+
+        // 포커스가 없으면 기존처럼 한 줄 스크롤(회귀 5.1).
+        let before = pager.top;
+        pager.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), page);
+        assert_eq!(pager.top, before + 1);
+    }
+
+    /// 6.1 마우스 왼쪽 클릭은 좌표가 링크 범위 안이면 그 링크를 따라가고, 밖이면 기존
+    /// `toggle_block_at`으로 넘어간다(다이어그램 클릭 토글 회귀 없음).
+    #[test]
+    fn click_on_link_follows_it_instead_of_toggling() {
+        let theme = Theme::none();
+        let mut link_line = Line::empty();
+        link_line.push_str("앵커", Style::PLAIN.underline());
+        let document = Document { lines: vec![link_line], links: vec!["#없음".into()], ..Document::default() };
+        let mut pager = pager(document, &theme);
+        assert!(pager.click_at(0, 0, 10));
+        assert!(pager.message.contains("없음"), "{}", pager.message);
+    }
+
+    #[test]
+    fn click_outside_any_link_falls_back_to_existing_toggle_behavior() {
+        let theme = Theme::none();
+        let (document, block) = fixture();
+        let mut pager = pager(document, &theme);
+        assert!(pager.click_at(block.start, 0, 10));
+        assert!(pager.expanded[0], "링크가 없는 자리 클릭은 기존처럼 다이어그램을 펼쳐야 한다");
+    }
+
+    /// 7.1 앵커 점프: 찾으면 그 헤딩 줄로, 못 찾으면 위치를 유지하고 상태 메시지를 남긴다.
+    #[test]
+    fn follow_link_anchor_jumps_to_heading_line_or_sets_message_if_missing() {
+        let theme = Theme::none();
+        // 클램프가 top을 되돌리지 않도록 문서를 뷰포트(page)보다 길게 만든다.
+        let lines: Vec<Line> = (0..10).map(|i| Line::single(format!("줄 {i}"), Style::PLAIN)).collect();
+        let document = Document { lines, headings: vec![("heading".into(), 5)], ..Document::default() };
+        let mut pager = pager(document, &theme);
+        let page = 3;
+        pager.follow_link("#heading", page);
+        assert_eq!(pager.top, 5);
+        assert!(pager.message.is_empty());
+
+        pager.top = 0;
+        pager.follow_link("#missing", page);
+        assert_eq!(pager.top, 0, "못 찾으면 위치를 유지해야 한다");
+        assert!(pager.message.contains("missing"), "{}", pager.message);
+    }
+
+    /// 7.3 다른 파일로 이동: 성공하면 히스토리에 기록하고 내용·경로·스크롤 위치를 갱신하며,
+    /// 실패하면 기존 화면을 유지한 채 상태 메시지만 남긴다. 표준입력(경로 없음)에서는 파일
+    /// 이동이 조용히 꺼진다(4.2).
+    #[test]
+    fn follow_link_file_navigates_records_history_and_reports_failure() {
+        let theme = Theme::none();
+        let a = TempFile::with_content("# A\n");
+        let dir = a.path.parent().unwrap().to_path_buf();
+        let b_path = dir.join(format!("dg-pager-link-test-{}-b.md", std::process::id()));
+        std::fs::write(&b_path, "# B\n").unwrap();
+        let render = (|source: &str, _: usize, _: usize| Document { lines: vec![Line::single(source.to_string(), Style::PLAIN)], ..Document::default() })
+            as fn(&str, usize, usize) -> Document;
+
+        let mut pager = Pager::new("A", &theme, 80, "# A".to_string(), render, None, Some(a.path.clone()));
+        pager.rerender(80, 80);
+
+        pager.follow_link(b_path.file_name().unwrap().to_str().unwrap(), 10);
+        assert_eq!(pager.current_path.as_deref(), Some(b_path.as_path()));
+        assert!(pager.source.contains("# B"));
+        assert_eq!(pager.top, 0);
+
+        let before_source = pager.source.clone();
+        pager.follow_link("없는-파일.md", 10);
+        assert_eq!(pager.source, before_source, "실패하면 기존 화면을 유지해야 한다");
+        assert!(!pager.message.is_empty());
+
+        let mut stdin_pager = Pager::new("stdin", &theme, 80, "# A".to_string(), render, None, None);
+        stdin_pager.rerender(80, 80);
+        stdin_pager.follow_link(b_path.file_name().unwrap().to_str().unwrap(), 10);
+        assert_eq!(stdin_pager.current_path, None, "표준입력에서는 파일 이동이 꺼져야 한다");
+        assert!(stdin_pager.message.contains("표준입력"), "{}", stdin_pager.message);
+
+        let _ = std::fs::remove_file(&b_path);
+    }
+
+    /// 7.4 `[`/`]`는 히스토리로 이전/다음 파일·위치를 복원하고, 히스토리가 없으면 무동작이다.
+    #[test]
+    fn bracket_keys_go_back_and_forward_through_history() {
+        let theme = Theme::none();
+        let a = TempFile::with_content("문서 A");
+        let b = TempFile::with_content("문서 B");
+        let render = (|source: &str, _: usize, _: usize| Document { lines: vec![Line::single(source.to_string(), Style::PLAIN)], ..Document::default() })
+            as fn(&str, usize, usize) -> Document;
+        let mut pager = Pager::new("A", &theme, 80, "문서 A".to_string(), render, None, Some(a.path.clone()));
+        pager.rerender(80, 80);
+
+        // 히스토리가 비어 있으면 무동작(4.7).
+        pager.handle_key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE), 10);
+        assert_eq!(pager.current_path.as_deref(), Some(a.path.as_path()));
+
+        let b_name = b.path.file_name().unwrap().to_str().unwrap().to_string();
+        pager.follow_link(&b_name, 10);
+        assert_eq!(pager.current_path.as_deref(), Some(b.path.as_path()));
+
+        pager.handle_key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE), 10);
+        assert_eq!(pager.current_path.as_deref(), Some(a.path.as_path()), "뒤로 가면 A로 돌아가야 한다");
+
+        pager.handle_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE), 10);
+        assert_eq!(pager.current_path.as_deref(), Some(b.path.as_path()), "앞으로 가면 다시 B로 가야 한다");
     }
 }
