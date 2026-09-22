@@ -45,6 +45,9 @@ pub struct Pager<'a, F: Fn(&str, usize, usize) -> Document> {
     expanded: Vec<bool>,
     /// 텍스트 블록(문단·헤딩·인용·목록 등)마다 원문으로 바꿔 보여주는지(markdown-source-view).
     text_expanded: Vec<bool>,
+    /// 전역 원문 토글(`s` 키) — 켜져 있으면 `self.lines`는 문서 전체의 원문 하이라이팅이고,
+    /// 블록별 펼침 상태(`expanded`/`text_expanded`)는 건드리지 않아 꺼도 그대로 유지된다.
+    viewing_source: bool,
     /// 실제로 보여 주는 줄(펼친 원문 포함).
     lines: Vec<Line>,
     shown_blocks: Vec<ShownBlock>,
@@ -88,6 +91,7 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             document: Document::default(),
             expanded: Vec::new(),
             text_expanded: Vec::new(),
+            viewing_source: false,
             lines: Vec::new(),
             shown_blocks: Vec::new(),
             heading_lines: Vec::new(),
@@ -193,7 +197,7 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         self.text_expanded.resize(self.document.text_blocks.len(), false);
         self.rendered_width = width;
         self.rendered_columns = columns;
-        self.rebuild_lines();
+        self.refresh_lines();
     }
 
     /// `r` 키: mtime과 무관하게 즉시 다시 읽는다. 감시 중이 아니면 아무 것도 하지 않는다.
@@ -298,6 +302,10 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             KeyCode::BackTab => self.focus_next_link(false, page),
             KeyCode::Char('[') => self.go_back(),
             KeyCode::Char(']') => self.go_forward(),
+            KeyCode::Char('s') => {
+                self.viewing_source = !self.viewing_source;
+                self.refresh_lines();
+            }
             _ => {}
         }
         false
@@ -436,6 +444,22 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         self.message.clear();
         let (width, columns) = (self.rendered_width, self.rendered_columns);
         self.rerender(width, columns);
+    }
+
+    /// 다시 그려야 할 때(재렌더링·전역 원문 토글 전환) `self.lines`를 채운다. 전역 원문
+    /// 보기가 켜져 있으면 문서 전체를 원문 하이라이팅으로 바꾸고(블록·헤딩·링크 인식은 이
+    /// 동안 의미가 없어 비운다), 아니면 기존 블록 인식 경로(`rebuild_lines`)를 쓴다.
+    fn refresh_lines(&mut self) {
+        if self.viewing_source {
+            self.lines = markdown::render_source_text(&self.source, self.theme, self.rendered_columns.max(10));
+            self.shown_blocks = Vec::new();
+            self.heading_lines = Vec::new();
+            self.link_positions = Vec::new();
+            self.focused_link = None;
+            self.refresh_matches();
+        } else {
+            self.rebuild_lines();
+        }
     }
 
     /// 문서 줄에 펼친/대체된 원문을 끼워 넣어 표시 줄을 만든다. 다이어그램과 텍스트 블록을
@@ -722,6 +746,38 @@ mod tests {
         assert!(!pager.toggle_block_at(0));
     }
 
+    /// 1.1/1.2/1.5(markdown-source-view) `s` 키는 문서 전체를 원문 하이라이팅으로 전환하고,
+    /// 다시 누르면 스크롤 위치를 유지한 채 렌더 화면으로 돌아가며, 그 사이 블록별 펼침 상태는
+    /// 건드리지 않는다.
+    #[test]
+    fn global_source_toggle_round_trips_and_preserves_scroll_and_block_state() {
+        let theme = Theme::none();
+        let source = "# 제목\n\n**굵게** 문단\n".to_string();
+        let render = (|src: &str, _: usize, _: usize| Document {
+            lines: vec![Line::single("렌더된 줄", Style::PLAIN)],
+            text_blocks: vec![TextBlock { start: 0, end: 1, source: src.to_string() }],
+            ..Document::default()
+        }) as fn(&str, usize, usize) -> Document;
+        let mut pager = Pager::new("t", &theme, 80, source.clone(), render, None, None);
+        pager.rerender(80, 80);
+        pager.top = 1;
+        pager.text_expanded[0] = true;
+        pager.rebuild_lines();
+        let rendered_before: Vec<String> = pager.lines.iter().map(Line::plain).collect();
+
+        pager.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), 10);
+        assert!(pager.viewing_source);
+        let shown: Vec<String> = pager.lines.iter().map(Line::plain).collect();
+        assert_eq!(shown.join("\n"), source.trim_end_matches('\n'), "원문이 그대로 보여야 한다");
+        assert!(pager.shown_blocks.is_empty());
+
+        pager.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), 10);
+        assert!(!pager.viewing_source);
+        assert_eq!(pager.top, 1, "스크롤 위치가 유지돼야 한다");
+        let rendered_after: Vec<String> = pager.lines.iter().map(Line::plain).collect();
+        assert_eq!(rendered_after, rendered_before, "렌더 화면·블록 펼침 상태가 왕복 후에도 그대로여야 한다");
+    }
+
     struct TempFile {
         path: std::path::PathBuf,
     }
@@ -818,6 +874,26 @@ mod tests {
         pager.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE), 10);
         assert_eq!(pager.source, "바뀐 내용");
         assert!(pager.lines.iter().any(|l| l.plain().contains("바뀐 내용")));
+    }
+
+    /// 1.4 감시 모드에서 전역 원문 보기 중 파일이 바뀌면 원문 내용도 최신으로 갱신되고,
+    /// 전역 보기 모드 자체는 꺼지지 않는다.
+    #[test]
+    fn global_source_toggle_updates_on_watch_reload() {
+        let theme = Theme::none();
+        let temp = TempFile::with_content("# A\n");
+        let render =
+            (|source: &str, _: usize, _: usize| Document { lines: vec![Line::single(source.to_string(), Style::PLAIN)], ..Document::default() })
+                as fn(&str, usize, usize) -> Document;
+        let mut pager = Pager::new("t", &theme, 80, "# A\n".to_string(), render, Some(Watcher::new(&temp.path)), None);
+        pager.rerender(80, 80);
+        pager.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), 10);
+        assert!(pager.lines.iter().any(|l| l.plain().contains('A')));
+
+        std::fs::write(&temp.path, "# B\n").unwrap();
+        pager.manual_refresh();
+        assert!(pager.viewing_source, "감시 갱신이 전역 원문 모드를 꺼서는 안 된다");
+        assert!(pager.lines.iter().any(|l| l.plain().contains('B')), "{:?}", pager.lines.iter().map(Line::plain).collect::<Vec<_>>());
     }
 
     /// 4.1 다이어그램 원문을 펼치면(`o`/클릭 토글) 헤딩·링크 위치가 밀린 줄만큼 함께 보정된다.
