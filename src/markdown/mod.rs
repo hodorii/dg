@@ -25,9 +25,41 @@ struct TableState {
 }
 
 /// 렌더링된 문서. 다이어그램 블록의 위치와 원문을 함께 돌려주어 페이저가 원문을 펼칠 수 있게 한다.
+#[derive(Default)]
 pub struct Document {
     pub lines: Vec<Line>,
     pub diagrams: Vec<DiagramBlock>,
+    /// 링크 목적지(등장 순서). 화면 위치는 `links::locate_links`가 밑줄 스타일로 찾아 이
+    /// 목록과 순서대로 짝짓는다(markdown-link-navigation).
+    pub links: Vec<String>,
+    /// (슬러그, 원본 줄 번호) — 다이어그램 원문이 펼쳐져 줄이 밀리기 전 기준.
+    pub headings: Vec<(String, usize)>,
+}
+
+/// GitHub 스타일 헤딩 슬러그 생성기. 같은 슬러그가 다시 나오면 `-1`/`-2`를 붙인다.
+#[derive(Default)]
+struct Slugger {
+    seen: std::collections::HashMap<String, u32>,
+}
+
+impl Slugger {
+    /// 소문자화, 공백·밑줄·하이픈을 하이픈으로, 그 외 영숫자 아닌 문자는 제거한다.
+    fn slug(&mut self, heading_text: &str) -> String {
+        let mut base = String::new();
+        for c in heading_text.chars() {
+            if c.is_alphanumeric() {
+                base.extend(c.to_lowercase());
+            } else if c == ' ' || c == '-' || c == '_' {
+                base.push('-');
+            }
+        }
+        let base = base.trim_matches('-');
+        let base = if base.is_empty() { "section" } else { base };
+        let count = self.seen.entry(base.to_string()).or_insert(0);
+        let slug = if *count == 0 { base.to_string() } else { format!("{base}-{count}") };
+        *count += 1;
+        slug
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -50,6 +82,9 @@ pub struct Renderer<'a> {
     block_width: usize,
     lines: Vec<Line>,
     diagrams: Vec<DiagramBlock>,
+    links: Vec<String>,
+    headings: Vec<(String, usize)>,
+    slugger: Slugger,
     inline: Vec<Span>,
     style_stack: Vec<Style>,
     indents: Vec<Indent>,
@@ -108,7 +143,7 @@ pub fn render_document(source: &str, theme: &Theme, width: usize, block_width: u
     while renderer.lines.last().is_some_and(Line::is_blank) {
         renderer.lines.pop();
     }
-    Document { lines: renderer.lines, diagrams: renderer.diagrams }
+    Document { lines: renderer.lines, diagrams: renderer.diagrams, links: renderer.links, headings: renderer.headings }
 }
 
 impl<'a> Renderer<'a> {
@@ -120,6 +155,9 @@ impl<'a> Renderer<'a> {
             block_width: block_width.max(width).max(10),
             lines: Vec::new(),
             diagrams: Vec::new(),
+            links: Vec::new(),
+            headings: Vec::new(),
+            slugger: Slugger::default(),
             inline: Vec::new(),
             style_stack: vec![theme.text],
             indents: Vec::new(),
@@ -369,6 +407,9 @@ impl<'a> Renderer<'a> {
             Tag::Strikethrough => self.push_style(self.theme.strike),
             Tag::Link { dest_url, .. } => {
                 self.link_url = Some(dest_url.to_string());
+                // 렌더 순서대로 쌓는다 — `links::locate_links`가 화면의 밑줄 구간과 순서대로
+                // 짝짓는다(markdown-link-navigation).
+                self.links.push(dest_url.to_string());
                 self.push_style(self.theme.link);
             }
             Tag::Image { dest_url, .. } => {
@@ -397,6 +438,9 @@ impl<'a> Renderer<'a> {
             }
             TagEnd::Heading(level) => {
                 let spans = std::mem::take(&mut self.inline);
+                // 이 헤딩이 그려질 첫 줄(원본 기준) + 슬러그를 기록한다(markdown-link-navigation).
+                let heading_text: String = spans.iter().map(|s| s.text.as_str()).collect();
+                self.headings.push((self.slugger.slug(&heading_text), self.lines.len()));
                 let available = self.available();
                 let wrapped = wrap::wrap_spans(&spans, available);
                 let text_width = wrapped.iter().map(|w| w.iter().map(Span::width).sum::<usize>()).max().unwrap_or(0);
@@ -636,6 +680,19 @@ mod tests {
         let out = plain("> [!UNKNOWN]\n> 내용\n", 40);
         assert!(out.join(" ").contains("[!UNKNOWN]"), "{out:?}");
         assert!(!out.iter().any(|l| l == "│ UNKNOWN" || l == "│ Unknown"), "라벨로 오인되면 안 된다: {out:?}");
+    }
+
+    /// 1.1/2.1~2.3(markdown-link-navigation) `Document.links`/`headings`이 실제 등장 순서와
+    /// 일치하고, 중복 헤딩은 GitHub 스타일로 슬러그가 갈린다.
+    #[test]
+    fn document_collects_links_and_heading_slugs_in_order() {
+        let source = "# 시작\n\n[첫 링크](https://a.example) 그리고 [둘째](#끝)\n\n## 시작\n\n끝\n";
+        let doc = render_document(source, &Theme::none(), 40, 40, DiagramOptions::default());
+        assert_eq!(doc.links, vec!["https://a.example".to_string(), "#끝".to_string()]);
+        assert_eq!(doc.headings.len(), 2);
+        assert_eq!(doc.headings[0].0, "시작");
+        assert_eq!(doc.headings[1].0, "시작-1");
+        assert!(doc.headings[0].1 < doc.headings[1].1, "헤딩 줄 번호는 등장 순서대로 증가해야 한다");
     }
 
     /// 1.7 `--style none`에서도 라벨 텍스트만으로 다섯 종류가 서로 구분된다.
