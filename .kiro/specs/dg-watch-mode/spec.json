@@ -1,0 +1,26 @@
+{
+  "feature_name": "dg-watch-mode",
+  "created_at": "2026-09-22T00:38:49Z",
+  "updated_at": "2026-09-22T02:00:00Z",
+  "language": "ko",
+  "phase": "completed",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "bizProcess": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": true
+}
