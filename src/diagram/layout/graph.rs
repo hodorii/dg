@@ -1912,7 +1912,11 @@ fn marker_glyphs(marker: Marker, direction: Direction, at_top: bool) -> Vec<char
     // ∧/∨/</> 로 바꿨다 — 넷 다 기본 폰트에 있고, `one`(╪/╫) 뒤에만 붙어
     // 나오므로 단독 `OpenArrow`와 헷갈리지 않는다.
     let one = ['╪', '╪', '╫', '╫'][index];
-    let many = ['∧', '∨', '<', '>'][index];
+    // 까치발("many")은 노드 쪽으로 벌어지고 선 쪽으로 좁아져야 한다(OpenArrow와 반대 방향
+    // 관례 — OpenArrow는 뾰족한 끝이 노드에 닿아야 하고, 까치발은 벌어진 끝이 노드에 닿아야
+    // 한다). 문자 네 개는 OpenArrow와 같은 걸 재사용하되(폰트 폴백 이유는 위와 동일), 위/아래
+    // 그리고 왼쪽/오른쪽을 서로 맞바꿔 벌어진 쪽이 노드에 닿게 한다(diagram-crow-foot-orientation).
+    let many = ['∨', '∧', '>', '<'][index];
     let glyphs: Vec<char> = match marker {
         Marker::None => return Vec::new(),
         Marker::Arrow => vec![['▲', '▼', '◀', '▶'][index]],
@@ -2085,5 +2089,19 @@ mod tests {
         let joined = text.join("\n");
         let crow_lines = text.iter().filter(|l| l.trim() == "╪" || l.trim() == "╫").count();
         assert_eq!(crow_lines, 2, "간선 양 끝에 각각 한 줄씩만 있어야 한다(합쳐서 2줄): {joined}");
+    }
+
+    /// (diagram-crow-foot-orientation) "many" 까치발은 벌어진 끝이 그 표식이 닿는 개체
+    /// 쪽을 향해야 한다 — 뾰족한 끝이 개체를 향하면 방향이 뒤집힌 것(화살표와 반대 관례).
+    #[test]
+    fn crow_many_marker_opens_toward_the_node_it_touches() {
+        // top-down: 아래 개체 쪽(at_top=false)은 아래로 벌어지는 `∧`, 위 개체 쪽
+        // (at_top=true)은 위로 벌어지는 `∨`.
+        assert_eq!(marker_glyphs(Marker::CrowMany, Direction::TopDown, false), vec!['╪', '∧']);
+        assert_eq!(marker_glyphs(Marker::CrowMany, Direction::TopDown, true), vec!['╪', '∨']);
+        // left-right: 왼쪽 개체 쪽(at_top=true)은 왼쪽으로 벌어지는 `>`, 오른쪽 개체 쪽
+        // (at_top=false)은 오른쪽으로 벌어지는 `<`.
+        assert_eq!(marker_glyphs(Marker::CrowMany, Direction::LeftRight, true), vec!['╫', '>']);
+        assert_eq!(marker_glyphs(Marker::CrowMany, Direction::LeftRight, false), vec!['╫', '<']);
     }
 }
