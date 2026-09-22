@@ -7,7 +7,7 @@ use crate::diagram::{self, DiagramOptions};
 use crate::line::{Line, Span};
 use crate::style::{Style, Theme};
 use crate::text::{char_width, width_of};
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// 들여쓰기 한 단: 첫 줄에 쓸 조각과 그 뒤 줄에 쓸 조각.
 struct Indent {
@@ -66,6 +66,21 @@ pub fn render(source: &str, theme: &Theme, width: usize) -> Vec<Line> {
     render_document(source, theme, width, width, DiagramOptions::default()).lines
 }
 
+/// GFM 알림 종류별 (라벨, 스타일). `xychart`/`gitgraph`와 같은 4색 카테고리 팔레트
+/// (`diagram_accent`/`diagram_box`/`diagram_group`/`diagram_note`)를 재사용한다 — dg는
+/// 마크다운 요소에 새 원색을 들이지 않고 명도·굵기로 구분하는 색상 철학을 쓰므로, 5종 전부에
+/// 새 색을 배정하는 대신 기존 팔레트를 한 바퀴 돌리고 다섯 번째(Caution)만 굵게 더해 Note와
+/// 구분한다. 참 구분 기준은 항상 라벨 텍스트다(`--style none`에서도 유효).
+fn alert_style(theme: &Theme, kind: BlockQuoteKind) -> (&'static str, Style) {
+    match kind {
+        BlockQuoteKind::Note => ("Note", theme.diagram_accent),
+        BlockQuoteKind::Tip => ("Tip", theme.diagram_box),
+        BlockQuoteKind::Important => ("Important", theme.diagram_group),
+        BlockQuoteKind::Warning => ("Warning", theme.diagram_note),
+        BlockQuoteKind::Caution => ("Caution", theme.diagram_accent.bold()),
+    }
+}
+
 /// 다이어그램 원문을 코드블록으로 그린다(펼쳐 보기용).
 pub fn render_source_block(lang: &str, source: &str, theme: &Theme, width: usize) -> Vec<Line> {
     let mut renderer = Renderer::new(theme, width, width, DiagramOptions::default());
@@ -82,6 +97,8 @@ pub fn render_document(source: &str, theme: &Theme, width: usize, block_width: u
     options.insert(Options::ENABLE_FOOTNOTES);
     options.insert(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
     options.insert(Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS);
+    // GitHub 스타일 알림 블록(`> [!NOTE]` 등)의 종류를 파싱해 준다(markdown-gfm-alerts).
+    options.insert(Options::ENABLE_GFM);
     let parser = Parser::new_ext(source, options);
     let mut renderer = Renderer::new(theme, width, block_width, diagram_options);
     for event in parser {
@@ -281,7 +298,7 @@ impl<'a> Renderer<'a> {
                 let index = (level as usize).saturating_sub(1).min(5);
                 self.push_style(self.theme.heading[index]);
             }
-            Tag::BlockQuote(_) => {
+            Tag::BlockQuote(kind) => {
                 self.flush_paragraph();
                 self.emit_blank();
                 self.indents.push(Indent {
@@ -290,6 +307,13 @@ impl<'a> Renderer<'a> {
                     first_used: true,
                 });
                 self.push_style(self.theme.quote);
+                // GFM 알림(`> [!NOTE]` 등)이면 라벨 줄을 먼저 그린다 — pulldown-cmark가 이미
+                // `[!NOTE]` 마커 자체는 본문에서 제거해 주므로 라벨만 추가하면 된다
+                // (markdown-gfm-alerts).
+                if let Some(kind) = kind {
+                    let (label, style) = alert_style(self.theme, kind);
+                    self.emit(Line::single(label, style));
+                }
             }
             Tag::CodeBlock(kind) => {
                 self.flush_paragraph();
@@ -567,5 +591,60 @@ mod tests {
     fn front_matter_is_hidden() {
         let out = plain("---\ntitle: x\n---\n\nbody\n", 40);
         assert_eq!(out, vec!["body"]);
+    }
+
+    /// 1.1~1.6(markdown-gfm-alerts) `alert_style`가 5종 전부에 라벨을 주고, Note·Caution만
+    /// 같은 색이며 Caution만 굵다.
+    #[test]
+    fn alert_style_covers_all_kinds_and_bolds_caution() {
+        let theme = Theme::dark();
+        let (note_label, note_style) = alert_style(&theme, BlockQuoteKind::Note);
+        let (tip_label, tip_style) = alert_style(&theme, BlockQuoteKind::Tip);
+        let (important_label, important_style) = alert_style(&theme, BlockQuoteKind::Important);
+        let (warning_label, warning_style) = alert_style(&theme, BlockQuoteKind::Warning);
+        let (caution_label, caution_style) = alert_style(&theme, BlockQuoteKind::Caution);
+        assert_eq!([note_label, tip_label, important_label, warning_label, caution_label], ["Note", "Tip", "Important", "Warning", "Caution"]);
+        assert_eq!(note_style.fg, caution_style.fg, "팔레트가 4색뿐이라 다섯 번째는 첫 색을 재사용한다");
+        assert!(!note_style.bold && caution_style.bold, "Caution만 굵어야 Note와 구분된다");
+        let colors = [note_style.fg, tip_style.fg, important_style.fg, warning_style.fg];
+        for (i, a) in colors.iter().enumerate() {
+            for b in &colors[i + 1..] {
+                assert_ne!(a, b, "Note/Tip/Important/Warning은 서로 다른 색이어야 한다: {colors:?}");
+            }
+        }
+    }
+
+    /// 3.1/3.2 GFM 알림은 라벨 줄이 먼저 나오고, 원본 `[!NOTE]` 마커는 본문에 남지 않는다.
+    #[test]
+    fn gfm_alert_shows_label_without_leaking_the_marker() {
+        let out = plain("> [!NOTE]\n> 내용입니다.\n", 40);
+        assert_eq!(out[0], "│ Note");
+        assert_eq!(out[1], "│ 내용입니다.");
+        assert!(!out.join("\n").contains("[!NOTE]"), "원본 마커가 본문에 남으면 안 된다: {out:?}");
+    }
+
+    /// 2.1 마커 없는 일반 인용문은 기존과 동일하다(회귀).
+    #[test]
+    fn plain_quote_is_unaffected_by_gfm_alerts() {
+        let out = plain("> 그냥 인용문\n", 40);
+        assert_eq!(out, vec!["│ 그냥 인용문"]);
+    }
+
+    /// 2.2 다섯 종류에 없는 마커는 일반 인용문으로 그려지고 마커 텍스트가 본문에 그대로 남는다.
+    #[test]
+    fn unsupported_alert_marker_falls_back_to_plain_quote() {
+        let out = plain("> [!UNKNOWN]\n> 내용\n", 40);
+        assert!(out.join(" ").contains("[!UNKNOWN]"), "{out:?}");
+        assert!(!out.iter().any(|l| l == "│ UNKNOWN" || l == "│ Unknown"), "라벨로 오인되면 안 된다: {out:?}");
+    }
+
+    /// 1.7 `--style none`에서도 라벨 텍스트만으로 다섯 종류가 서로 구분된다.
+    #[test]
+    fn alert_labels_are_distinct_without_color() {
+        let source = "> [!NOTE]\n> a\n\n> [!TIP]\n> b\n\n> [!IMPORTANT]\n> c\n\n> [!WARNING]\n> d\n\n> [!CAUTION]\n> e\n";
+        let out = plain(source, 40);
+        for label in ["Note", "Tip", "Important", "Warning", "Caution"] {
+            assert!(out.contains(&format!("│ {label}")), "{label} 라벨이 있어야 한다: {out:?}");
+        }
     }
 }
