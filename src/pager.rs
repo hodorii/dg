@@ -737,7 +737,8 @@ mod tests {
             Line::single("헤딩 줄", Style::PLAIN),
             link_line,
         ];
-        let document = Document { lines, diagrams: vec![block], links: vec!["#target".into()], headings: vec![("target".into(), 3)] };
+        let document =
+            Document { lines, diagrams: vec![block], links: vec!["#target".into()], headings: vec![("target".into(), 3)], ..Document::default() };
         let mut pager = pager(document, &theme);
         assert_eq!(pager.heading_lines, vec![("target".to_string(), 3)]);
         let link_line_before = pager.link_positions[0].line;

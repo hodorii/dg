@@ -8,6 +8,7 @@ use crate::line::{Line, Span};
 use crate::style::{Style, Theme};
 use crate::text::{char_width, width_of};
 use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::ops::Range;
 
 /// 들여쓰기 한 단: 첫 줄에 쓸 조각과 그 뒤 줄에 쓸 조각.
 struct Indent {
@@ -29,6 +30,10 @@ struct TableState {
 pub struct Document {
     pub lines: Vec<Line>,
     pub diagrams: Vec<DiagramBlock>,
+    /// 다이어그램이 아닌 최상위 블록(문단·헤딩·인용·목록·표·각주·일반 코드펜스 등)의 위치와
+    /// 원문(markdown-source-view). 중첩된 하위 블록은 별도로 기록하지 않고 가장 바깥쪽 블록
+    /// 하나로 묶는다.
+    pub text_blocks: Vec<TextBlock>,
     /// 링크 목적지(등장 순서). 화면 위치는 `links::locate_links`가 밑줄 스타일로 찾아 이
     /// 목록과 순서대로 짝짓는다(markdown-link-navigation).
     pub links: Vec<String>,
@@ -73,6 +78,25 @@ pub struct DiagramBlock {
     pub source: String,
 }
 
+/// 다이어그램이 아닌 최상위 블록 하나(markdown-source-view).
+#[derive(Clone, Debug)]
+pub struct TextBlock {
+    /// 그 블록의 렌더된 첫 줄 번호.
+    pub start: usize,
+    /// 마지막 줄 다음 번호.
+    pub end: usize,
+    /// 원본 바이트 범위로 슬라이스한 마크다운 원문 그대로(가공 없음).
+    pub source: String,
+}
+
+/// 최상위 블록 추적 중 열려 있는 항목 — 깊이가 0으로 돌아올 때 `TextBlock`으로 확정된다.
+struct PendingTextBlock {
+    start_line: usize,
+    source_range: Range<usize>,
+    is_code_block: bool,
+    diagrams_before: usize,
+}
+
 pub struct Renderer<'a> {
     theme: &'a Theme,
     diagram_options: DiagramOptions,
@@ -80,8 +104,14 @@ pub struct Renderer<'a> {
     width: usize,
     /// 다이어그램·표·코드블록에 허용하는 폭(보통 터미널 전체 폭).
     block_width: usize,
+    /// 오프셋 슬라이싱용 원본 마크다운 전체(`render_source_block`처럼 파서 루프를 안 쓰는
+    /// 호출은 빈 문자열 — 그 경로는 블록 추적을 안 한다).
+    source: &'a str,
     lines: Vec<Line>,
     diagrams: Vec<DiagramBlock>,
+    text_blocks: Vec<TextBlock>,
+    text_block_depth: u32,
+    pending_text_block: Option<PendingTextBlock>,
     links: Vec<String>,
     headings: Vec<(String, usize)>,
     slugger: Slugger,
@@ -118,7 +148,7 @@ fn alert_style(theme: &Theme, kind: BlockQuoteKind) -> (&'static str, Style) {
 
 /// 다이어그램 원문을 코드블록으로 그린다(펼쳐 보기용).
 pub fn render_source_block(lang: &str, source: &str, theme: &Theme, width: usize) -> Vec<Line> {
-    let mut renderer = Renderer::new(theme, width, width, DiagramOptions::default());
+    let mut renderer = Renderer::new(theme, "", width, width, DiagramOptions::default());
     renderer.emit_code_block(lang, source, false);
     renderer.lines
 }
@@ -134,27 +164,39 @@ pub fn render_document(source: &str, theme: &Theme, width: usize, block_width: u
     options.insert(Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS);
     // GitHub 스타일 알림 블록(`> [!NOTE]` 등)의 종류를 파싱해 준다(markdown-gfm-alerts).
     options.insert(Options::ENABLE_GFM);
-    let parser = Parser::new_ext(source, options);
-    let mut renderer = Renderer::new(theme, width, block_width, diagram_options);
-    for event in parser {
-        renderer.handle(event);
+    // 오프셋 반복자를 쓰면 이벤트마다 원본 바이트 범위가 같이 나와, 블록별 원문을 재구성이
+    // 아니라 그대로 슬라이스할 수 있다(markdown-source-view) — 렌더링 로직 자체는 그대로다.
+    let parser = Parser::new_ext(source, options).into_offset_iter();
+    let mut renderer = Renderer::new(theme, source, width, block_width, diagram_options);
+    for (event, range) in parser {
+        renderer.handle(event, range);
     }
     renderer.flush_paragraph();
     while renderer.lines.last().is_some_and(Line::is_blank) {
         renderer.lines.pop();
     }
-    Document { lines: renderer.lines, diagrams: renderer.diagrams, links: renderer.links, headings: renderer.headings }
+    Document {
+        lines: renderer.lines,
+        diagrams: renderer.diagrams,
+        text_blocks: renderer.text_blocks,
+        links: renderer.links,
+        headings: renderer.headings,
+    }
 }
 
 impl<'a> Renderer<'a> {
-    fn new(theme: &'a Theme, width: usize, block_width: usize, diagram_options: DiagramOptions) -> Renderer<'a> {
+    fn new(theme: &'a Theme, source: &'a str, width: usize, block_width: usize, diagram_options: DiagramOptions) -> Renderer<'a> {
         Renderer {
             theme,
             diagram_options,
             width: width.max(10),
             block_width: block_width.max(width).max(10),
+            source,
             lines: Vec::new(),
             diagrams: Vec::new(),
+            text_blocks: Vec::new(),
+            text_block_depth: 0,
+            pending_text_block: None,
             links: Vec::new(),
             headings: Vec::new(),
             slugger: Slugger::default(),
@@ -263,10 +305,16 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    fn handle(&mut self, event: Event<'_>) {
+    fn handle(&mut self, event: Event<'_>, range: Range<usize>) {
         match event {
-            Event::Start(tag) => self.start(tag),
-            Event::End(tag) => self.end(tag),
+            Event::Start(tag) => {
+                self.enter_text_block(&tag, &range);
+                self.start(tag);
+            }
+            Event::End(tag) => {
+                self.end(tag);
+                self.exit_text_block(tag);
+            }
             Event::Text(text) => {
                 if let Some((_, buffer)) = &mut self.code {
                     buffer.push_str(&text);
@@ -547,6 +595,76 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    /// 최상위 블록 토글 대상 여부(markdown-source-view). 중첩 여부는 `text_block_depth`가
+    /// 판단하므로 여기서는 종류만 가린다.
+    fn is_text_block_tag(tag: &Tag) -> bool {
+        matches!(
+            tag,
+            Tag::Paragraph
+                | Tag::Heading { .. }
+                | Tag::BlockQuote(_)
+                | Tag::List(_)
+                | Tag::Table(_)
+                | Tag::FootnoteDefinition(_)
+                | Tag::CodeBlock(_)
+                | Tag::HtmlBlock
+        )
+    }
+
+    fn is_text_block_tag_end(tag: &TagEnd) -> bool {
+        matches!(
+            tag,
+            TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::BlockQuote(_)
+                | TagEnd::List(_)
+                | TagEnd::Table
+                | TagEnd::FootnoteDefinition
+                | TagEnd::CodeBlock
+                | TagEnd::HtmlBlock
+        )
+    }
+
+    /// 최상위(깊이 0→1) 블록만 시작 위치·원본 범위를 기억해 둔다. 중첩된 블록(리스트 항목 안
+    /// 문단 등)은 깊이만 늘리고 별도로 기억하지 않아, 끝날 때 가장 바깥쪽 블록 하나로 묶인다.
+    fn enter_text_block(&mut self, tag: &Tag, range: &Range<usize>) {
+        if !Self::is_text_block_tag(tag) {
+            return;
+        }
+        if self.text_block_depth == 0 {
+            self.pending_text_block = Some(PendingTextBlock {
+                start_line: self.lines.len(),
+                source_range: range.clone(),
+                is_code_block: matches!(tag, Tag::CodeBlock(_)),
+                diagrams_before: self.diagrams.len(),
+            });
+        }
+        self.text_block_depth += 1;
+    }
+
+    /// 깊이가 0으로 돌아오면 기억해 둔 시작점으로 `TextBlock`을 확정한다. 코드펜스가 다이어그램
+    /// 으로 인식돼 이미 `self.diagrams`에 들어갔다면 중복으로 만들지 않는다.
+    fn exit_text_block(&mut self, tag: TagEnd) {
+        if !Self::is_text_block_tag_end(&tag) {
+            return;
+        }
+        self.text_block_depth = self.text_block_depth.saturating_sub(1);
+        if self.text_block_depth != 0 {
+            return;
+        }
+        let Some(pending) = self.pending_text_block.take() else { return };
+        if pending.is_code_block && self.diagrams.len() > pending.diagrams_before {
+            return;
+        }
+        let mut end_line = self.lines.len();
+        while end_line > pending.start_line && self.lines[end_line - 1].is_blank() {
+            end_line -= 1;
+        }
+        if end_line > pending.start_line {
+            self.text_blocks.push(TextBlock { start: pending.start_line, end: end_line, source: self.source[pending.source_range].to_string() });
+        }
+    }
+
     fn emit_code_block(&mut self, lang: &str, buffer: &str, allow_diagram: bool) {
         let available = self.available_block();
         if allow_diagram
@@ -693,6 +811,42 @@ mod tests {
         assert_eq!(doc.headings[0].0, "시작");
         assert_eq!(doc.headings[1].0, "시작-1");
         assert!(doc.headings[0].1 < doc.headings[1].1, "헤딩 줄 번호는 등장 순서대로 증가해야 한다");
+    }
+
+    /// 2.1/2.3/2.4(markdown-source-view) 최상위 블록마다 원문이 그대로(마크업 포함) 슬라이스
+    /// 되고, 서로 겹치지 않는다.
+    #[test]
+    fn text_blocks_collect_top_level_blocks_with_raw_source() {
+        let source = "# 제목\n\n**굵게** 문단.\n\n- 목록1\n- 목록2\n";
+        let doc = render_document(source, &Theme::none(), 40, 40, DiagramOptions::default());
+        assert_eq!(doc.text_blocks.len(), 3, "{:?}", doc.text_blocks.iter().map(|b| &b.source).collect::<Vec<_>>());
+        assert_eq!(doc.text_blocks[0].source, "# 제목\n");
+        assert_eq!(doc.text_blocks[1].source, "**굵게** 문단.\n");
+        assert_eq!(doc.text_blocks[2].source, "- 목록1\n- 목록2\n");
+        for pair in doc.text_blocks.windows(2) {
+            assert!(pair[0].end <= pair[1].start, "블록이 겹치면 안 된다: {:?}", doc.text_blocks.iter().map(|b| (b.start, b.end)).collect::<Vec<_>>());
+        }
+    }
+
+    /// 2.1/2.4 중첩된 블록(리스트 항목 안 하위 리스트)은 가장 바깥쪽 블록 하나로 묶인다.
+    #[test]
+    fn text_blocks_merge_nested_blocks_into_outer() {
+        let source = "- 항목1\n  - 하위1\n  - 하위2\n- 항목2\n";
+        let doc = render_document(source, &Theme::none(), 40, 40, DiagramOptions::default());
+        assert_eq!(doc.text_blocks.len(), 1, "{:?}", doc.text_blocks.iter().map(|b| &b.source).collect::<Vec<_>>());
+        assert_eq!(doc.text_blocks[0].source, source);
+    }
+
+    /// 2.1 다이어그램으로 인식된 코드펜스는 `diagrams`에만 들어가고 `text_blocks`에는 중복으로
+    /// 들어가지 않는다. 인식 안 되는 일반 코드펜스는 `text_blocks`에 들어간다.
+    #[test]
+    fn text_blocks_exclude_recognized_diagrams_but_include_plain_code_fences() {
+        let source = "```mermaid\nflowchart TB\n A --> B\n```\n\n```rust\nfn f() {}\n```\n";
+        let doc = render_document(source, &Theme::none(), 40, 40, DiagramOptions::default());
+        assert_eq!(doc.diagrams.len(), 1, "mermaid 펜스는 다이어그램으로 인식돼야 한다");
+        assert_eq!(doc.text_blocks.len(), 1, "{:?}", doc.text_blocks.iter().map(|b| &b.source).collect::<Vec<_>>());
+        assert!(doc.text_blocks[0].source.contains("fn f() {}"), "{:?}", doc.text_blocks[0].source);
+        assert!(!doc.text_blocks[0].source.contains("flowchart"), "다이어그램 원문이 중복되면 안 된다");
     }
 
     /// 1.7 `--style none`에서도 라벨 텍스트만으로 다섯 종류가 서로 구분된다.
