@@ -24,7 +24,7 @@
 - [x] sequence-self-message-clearance -- 재귀(self-message) 루프의 화살촉과 생명선 사이에 최소 1칸 여백 확보. 재현된 결함, 설계 이견 없음. Dependencies: none
 - [x] gitgraph-vertical-mode -- gitGraph에 `--direction tb|lr` 세로/가로 배치 추가. 기존 패턴 확장, 설계 이견 없음. Dependencies: none
 - [x] gitgraph-branch-distinction -- 브랜치별 색+선패턴 이중 구분(`--style none`에서도 식별 가능). 같은 그래프 축이지만 색·패턴 선택은 논란거리라 세로 모드 뒤로. Dependencies: gitgraph-vertical-mode
-- [ ] dg-watch-mode -- 파일 변경 감지 후 자동 재렌더링(페이저·print 양쪽 지원). 그래프 배치 로직이 아닌 뷰어 UX라 그래프 스펙들 뒤로. Dependencies: none
+- [x] dg-watch-mode -- 파일 변경 감지 후 자동 재렌더링(페이저·print 양쪽 지원). 그래프 배치 로직이 아닌 뷰어 UX라 그래프 스펙들 뒤로. Dependencies: none
 - [ ] markdown-source-view -- 마크다운 원문을 마크업 신택스 하이라이팅과 함께 보여주는 모드(기존 `o` 다이어그램 원문 토글을 문서 전체로 일반화). "md full support" 축의 스코프 자체가 논란거리라 맨 뒤. Dependencies: none
 
 ## Existing Spec Updates
