@@ -286,6 +286,8 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
 
     /// 종료하면 true.
     fn handle_key(&mut self, key: KeyEvent, page: usize) -> bool {
+        // 어떤 키든 눌리면 남아 있던 드래그 선택 강조를 지운다(markdown-source-view).
+        self.drag = None;
         if self.typing {
             match key.code {
                 KeyCode::Esc => {
@@ -704,7 +706,7 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
                 (Some(_), None) => "  감시 중".to_string(),
                 (None, _) => String::new(),
             };
-            format!(" {}  {}%{}{}  ·  j/k 이동  / 검색{}{}  q 종료", self.title, percent, extra, watch, hint, link_hint)
+            format!(" {}  {}%{}{}  ·  j/k 이동  / 검색  s 원문{}{}  q 종료", self.title, percent, extra, watch, hint, link_hint)
         };
         let mut padded = text;
         let mut used = crate::text::width_of(&padded);
@@ -946,6 +948,30 @@ mod tests {
         let status = pager.status(80).plain();
         assert!(status.contains("감시 불가"), "{status}");
         assert!(status.contains("test: 없음"), "{status}");
+    }
+
+    /// 4.2(markdown-source-view) 상태 표시줄에 전역 원문 토글 키 힌트가 보인다.
+    #[test]
+    fn status_line_shows_global_source_toggle_hint() {
+        let theme = Theme::none();
+        let document = Document { lines: vec![Line::single("본문", Style::PLAIN)], ..Document::default() };
+        let pager = pager(document, &theme);
+        assert!(pager.status(80).plain().contains('s'), "{}", pager.status(80).plain());
+        assert!(pager.status(80).plain().contains("원문"), "{}", pager.status(80).plain());
+    }
+
+    /// 4.1(Integration) 드래그 강조가 남아 있는 상태에서 임의의 키를 누르면 강조가 사라진다.
+    #[test]
+    fn any_key_press_clears_lingering_drag_selection() {
+        let theme = Theme::none();
+        let document = Document { lines: vec![Line::single("hello world", Style::PLAIN)], ..Document::default() };
+        let mut pager = pager(document, &theme);
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5), 10);
+        pager.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 0, 5), 10);
+        assert!(pager.drag.is_some(), "선택 강조가 남아 있어야 한다");
+        pager.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), 10);
+        assert!(pager.drag.is_none(), "키 입력 뒤엔 강조가 지워져야 한다");
     }
 
     /// 3.5 `r` 키는 mtime과 무관하게 즉시 다시 읽고(`poll_forced`), 감시 중이 아니면 아무 일도
