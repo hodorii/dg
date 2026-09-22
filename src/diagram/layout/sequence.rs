@@ -494,7 +494,9 @@ impl<'a> SequenceLayout<'a> {
             let x_lo = fragment.x_lo.min(self.centers[fragment.lo]).saturating_sub(pad + 1);
             let x_hi = (fragment.x_hi.max(self.centers[fragment.hi]) + pad + 1).min(self.total_width - 1);
             let height = fragment.end_row + 1 - fragment.start_row;
-            canvas.rect(x_lo, fragment.start_row, x_hi - x_lo + 1, height, LineKind::Solid, theme.diagram_group, false);
+            // 메시지·생명선(Solid)·노트(Dashed)와 겹치지 않도록 프레임 테두리만 Heavy로 그린다
+            // (sequence-fragment-frame-distinction).
+            canvas.rect(x_lo, fragment.start_row, x_hi - x_lo + 1, height, LineKind::Heavy, theme.diagram_group, false);
             // 폭 계산이 빗나가도(둥근 폭·희귀 경로) 테두리를 뚫고 나가지 않도록 안쪽 폭에 맞춰 자른다.
             let inner_width = x_hi.saturating_sub(x_lo + 1);
             let title = truncate(&frame_title(&fragment.kind, &fragment.label), inner_width);
@@ -609,6 +611,55 @@ mod tests {
         assert!(joined.contains("[fail]"), "{joined}");
         assert!(joined.contains("retry"), "{joined}");
         assert!(joined.contains("done"), "{joined}");
+    }
+
+    /// 1.1/1.2 프래그먼트 바깥 테두리는 굵은선이라 메시지·생명선(가는 실선)과 겹치지 않는
+    /// 글자로 그려진다. 1.3 `else` 구분선은 여전히 파선이고, 생명선과 만나는 지점은 굵은선이
+    /// 아닌 평범한 교차(`┼`)라 프레임 테두리(굵은 교차 `╋`)와 헷갈리지 않는다.
+    #[test]
+    fn fragment_border_uses_heavy_line_distinct_from_flow() {
+        let out = render(&sample(), &Theme::none(), 80).unwrap();
+        let text: Vec<String> = out.iter().map(Line::plain).collect();
+        let joined = text.join("\n");
+        assert!(joined.contains(['┏', '┓', '┗', '┛', '━', '┃']), "테두리는 굵은선이어야 한다: {joined}");
+        // else 구분선(파선)이 생명선과 만나는 지점은 가는 교차(┼)여야 한다 — 굵은 교차(╋)와 다름.
+        let else_row = text.iter().find(|l| l.contains("[fail]")).expect("else 구분선이 있어야 한다");
+        assert!(else_row.contains('┼'), "else 구분선-생명선 교차는 가는 교차여야 한다: {else_row}");
+        assert!(else_row.contains('╌'), "else 구분선은 파선이어야 한다: {else_row}");
+    }
+
+    /// 2.2 프래그먼트가 중첩돼도(예: `loop` 안에 `alt`) 깊이와 무관하게 모두 같은 굵은선으로
+    /// 그려진다(block-beta처럼 깊이별로 패턴이 바뀌지 않음).
+    #[test]
+    fn nested_fragments_share_the_same_heavy_border() {
+        let mut s = Sequence::default();
+        let a = s.intern("A", "A", ParticipantKind::Box);
+        let b = s.intern("B", "B", ParticipantKind::Box);
+        s.items.push(SequenceItem::FragmentStart { kind: "loop".into(), label: "재시도".into() });
+        s.items.push(SequenceItem::FragmentStart { kind: "alt".into(), label: "조건".into() });
+        s.items.push(SequenceItem::Message { from: a, to: b, label: "hi".into(), kind: LineKind::Solid, head: Marker::Arrow, activate_target: false, deactivate_source: false });
+        s.items.push(SequenceItem::FragmentEnd);
+        s.items.push(SequenceItem::FragmentEnd);
+        let out = render(&s, &Theme::none(), 80).unwrap();
+        let text: Vec<String> = out.iter().map(Line::plain).collect();
+        let joined = text.join("\n");
+        assert!(joined.contains("loop [재시도]"), "{joined}");
+        assert!(joined.contains("alt [조건]"), "{joined}");
+        // 두 프레임 다 같은 굵은선 문자 집합만 쓴다(깊이별로 다른 LineKind로 순환하지 않음).
+        let heavy_rows = text.iter().filter(|l| l.contains(['┏', '┓', '┗', '┛', '━', '┃'])).count();
+        assert!(heavy_rows >= 2, "안쪽·바깥쪽 프레임 모두 굵은선 줄이 있어야 한다: {joined}");
+    }
+
+    /// 2.1 메시지 화살표·생명선이 프래그먼트 경계(위/아래 테두리)를 지나는 교차 지점이 패닉 없이
+    /// 유효한 문자로 그려진다.
+    #[test]
+    fn messages_crossing_fragment_border_do_not_panic() {
+        let out = render(&sample(), &Theme::none(), 80);
+        assert!(out.is_some(), "패닉 없이 렌더링돼야 한다");
+        let text: Vec<String> = out.unwrap().iter().map(Line::plain).collect();
+        let joined = text.join("\n");
+        // 프레임 위/아래 테두리와 생명선이 만나는 지점은 굵은 십자(╋)로 이어진다.
+        assert!(joined.contains('╋'), "생명선-테두리 교차가 있어야 한다: {joined}");
     }
 
     #[test]

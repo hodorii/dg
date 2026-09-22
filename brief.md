@@ -1,50 +1,83 @@
-# Brief: dg 정체성 확립과 다이어그램·마크다운 품질 개선
+# Brief: 다이어그램 표기 식별성 개선
 
 ## Problem
-dg의 정체성을 "다이어그램 렌더링 + 마크다운 완전 지원"의 두 축으로 재정의하려는데, 그 기준으로 1차 discovery(dg-mdview 구현분석)의 Out of Boundary 판단 일부가 재검토돼야 하고, 별도로 시퀀스·gitGraph 다이어그램 렌더링의 구체적 결함·개선 요구가 여러 건 확인됐다. 이걸 하나의 로드맵으로 정리할 근거가 없었다.
+시퀀스 다이어그램에서 `alt`/`opt`/`loop` 등 프래그먼트 테두리가 메시지·생명선(흐름)과 똑같은
+굵기·선 종류로 그려져 한눈에 구분되지 않는다는 사용자 보고가 있었다. 같은 문제(구조가 다른
+요소인데 선패턴이 같아 식별이 어려움)가 다른 다이어그램에도 있는지 검토가 필요했다.
 
 ## Current State
-- (1차 discovery 유지) dg는 IR 하나 + 배치기 2개로 mermaid+PlantUML을 처리하고, `dg-watch-mode`/`diagram-panic-audit`/`graph-swap-threshold-reference` 세 항목이 이미 로드맵에 있다.
-- dg는 이미 lib+bin 이중 구조(`[lib]` + `cli` feature 게이팅)라 spec-viewer 같은 외부 소비자가 `default-features = false`로 순수 렌더러만 가져다 쓸 수 있다(`Cargo.toml`, `src/lib.rs`). mdview는 `[lib]`/`src/lib.rs`가 없는 bin 전용 크레이트라, spec-viewer의 `engine-mdview`가 실제 의존이 아니라 코드를 통째로 포팅해 쓴다(SSoT 위반 소지 — 다만 mdview 저장소 소관).
-- dg 페이저의 `o` 토글은 다이어그램 블록 하나의 원문만 캡션 아래 펼쳐 보여주고(`markdown::render_source_block`), 마크다운 마크업(`#`/`##`/`**` 등) 자체를 하이라이팅하는 기능은 없다.
-- 시퀀스 다이어그램 재귀(self-message) 루프(`layout/sequence.rs:556~573`, `draw_self_message`)는 폭이 정확히 2칸으로 고정돼 있고, 화살촉과 생명선 사이 여백이 0칸이다. 실제 재현(`sequenceDiagram` + `B->>B: retry`) 결과 `│◀╯`처럼 화살촉이 생명선에 간격 없이 바로 붙어 렌더링된다.
-- gitGraph는 가로 모드(브랜치=행, 시간=열)만 있고 `--direction tb|lr`가 연결돼 있지 않다(`layout/gitgraph.rs`). 브랜치별 색 구분도 전혀 없어(`diagram_line`/`diagram_accent` 단일 스타일만 사용) 라벨 텍스트로만 브랜치를 구분한다.
+- 실제 재현(`sequenceDiagram` + `alt`/`else`): 프래그먼트 테두리가 `LineKind::Solid` +
+  `theme.diagram_group`(회색 계열)로 그려진다(`layout/sequence.rs:497`). 메시지·생명선도
+  `LineKind::Solid`(또는 파싱된 화살표 종류) + `theme.diagram_group`과 아주 가까운 회색
+  `theme.diagram_line`으로 그려진다 — 즉 프레임과 흐름이 **같은 선 종류**이고 색도 둘 다
+  회색 계열이라 명도 차이가 작다. `--style none`에서는 색이 아예 빠지므로 완전히 동일한
+  글자(`─`/`│`/`┌`)로만 보여 구분 수단이 없다.
+- 같은 파일 안에 이미 반례가 있다: 노트(`Note`)는 `LineKind::Dashed` + `theme.diagram_note`로
+  (line 470), 활성화 막대(activation bar)는 `LineKind::Heavy` + `theme.diagram_accent`로(line 439)
+  이미 흐름과 다른 선패턴을 쓴다 — "구조가 다른 요소는 선패턴도 다르게" 원칙이 부분적으로만
+  적용돼 있다.
+- 같은 원칙의 선례가 두 군데 더 있다: `block-beta`의 중첩 그룹은 깊이별로
+  `Solid→Dashed→Heavy`를 순환하는 `border_kind(depth)`(`layout/block.rs:176`)를 쓰고,
+  방금 완료된 `gitgraph-branch-distinction` 스펙은 트랙(브랜치)별로 같은 3종 `LineKind`를
+  순환하는 `branch_style()`을 `gitgraph.rs`에 추가했다 — 새 렌더링 로직 없이 기존
+  `canvas.rs`의 `LineKind` 3종만 재배정하는 방식이 이미 두 번 검증됐다.
+- 다른 다이어그램형도 검토했다: `flowchart`/`classDiagram`/`stateDiagram`/`erDiagram`/컴포넌트는
+  전부 `layout/graph.rs` 하나를 공유한다(README). 여기서 서브그래프·합성 상태·패키지 같은
+  "그룹" 테두리는 `LineKind::Solid` + `theme.diagram_group`(회색)을 쓰고, 일반 노드 테두리는
+  `LineKind::Solid` + `theme.diagram_box`(파란 계열, `layout/shape.rs:46`)를 쓴다 — **선패턴은
+  똑같이 Solid**지만 **색상 계열 자체가 다르다**(회색 대 파랑). 색이 있는 테마에서는 구분되고,
+  `--style none`에서만 모호해진다 — 시퀀스의 "회색끼리 부딪히는" 상황보다는 덜 심각하다.
+  `xychart`/`pie`/`quadrant`/`gantt`는 그룹·프레임 개념이 없어 해당 없음.
 
 ## Desired Outcome
-- dg의 정체성이 "다이어그램 렌더링"과 "마크다운 완전 지원" 두 축으로 명시되고, 각 축에 맞는 스펙이 로드맵에 배치된다.
-- 마크다운 원문을 마크업 하이라이팅과 함께 보는 기능이 생긴다.
-- 시퀀스 재귀 메시지의 화살촉과 생명선 사이에 시각적으로 구분되는 여백이 생긴다.
-- gitGraph에 세로 모드가 생기고, 브랜치 구분이 색+선패턴 이중화로 `--style none`에서도 식별 가능해진다.
-- mdview로 이식해야 할 항목·mdview 자체 구조 개선 필요성은 dg 스펙 시스템 밖에 기록만 되고 실행되지 않는다.
+- 시퀀스 `alt`/`opt`/`loop`/`par`/`critical`/`break` 프래그먼트 테두리가 메시지·생명선과
+  선패턴으로 뚜렷이 구분되어, `--style none`에서도 "이건 흐름이고 이건 프레임 경계"를 글자
+  모양만으로 알 수 있다.
+- (검토 결과) `graph.rs` 공유 그룹 vs 노드 구분은 색상으로 이미 되고 있어 이번 라운드의
+  실행 범위에는 넣지 않는다 — 심각도가 낮고, `graph.rs`는 5개 다이어그램형이 공유하는
+  핵심 파일이라 건드리면 블라스트 반경이 크다. 후속 검토 항목으로만 기록한다.
 
 ## Approach
-1차 discovery의 세 항목(watch 모드, panic 감사, 문턱값 레퍼런스)은 그대로 유지하고, 이번에 나온 항목을 정체성 두 축에 맞춰 분류한다: "md full support" 축(마크다운 원문 하이라이팅)과 "diagram" 축(시퀀스 재귀 여백, gitGraph 세로 모드, gitGraph 브랜치 구분) 스펙 후보를 추가한다. 신규 의존성이 필요한 항목(syntect 기반 코드펜스 언어 하이라이팅, 이미지 프로토콜 등)은 여전히 배제한다 — "md full support"는 CommonMark/GFM 완성도와 dg 자체 마크업 표현의 문제이지, 서드파티 렌더러를 들이는 문제가 아니다.
+`block-beta`의 `border_kind(depth)`, `gitgraph-branch-distinction`의 `branch_style()`과 같은
+패턴을 재사용해 시퀀스 프래그먼트 테두리에 아직 그 파일에서 안 쓰는 `LineKind::Heavy`를
+적용한다(노트가 이미 `Dashed`를 쓰므로 재사용하면 "프레임인지 노트인지" 새 혼동이 생김 —
+`Heavy`가 남는 선택지). 새 렌더링 로직을 만들지 않고 기존 `canvas.rs`의 `LineKind` 3종 안에서
+재배정만 한다.
 
 ## Scope
-- **In**: 마크다운 원문 하이라이팅 모드, 시퀀스 재귀 여백 수정, gitGraph 세로 모드, gitGraph 브랜치 색+패턴 구분, (1차 유지) watch 모드·panic 감사·문턱값 레퍼런스.
-- **Out**: mdview 리포지토리 수정 전반(PlantUML/방향재시도/ER표기법 이식, lib 분리), dg에 syntect 코드펜스 언어 하이라이팅·이미지 프로토콜·파일브라우저·GitHub 소스 fetch·스태시.
+- **In**: 시퀀스 프래그먼트(`alt`/`opt`/`loop`/`par`/`critical`/`break`) 바깥 테두리의
+  `LineKind` 변경, `else`/`option`/`and` 구분선과의 관계 정리(프레임과 같은 패턴으로 통일할지
+  기존 `Dashed`를 유지해 "프레임=Heavy, 분기=Dashed"로 이원화할지는 requirements에서 결정)
+- **Out**: `graph.rs` 공유 레이아웃(서브그래프·합성 상태·패키지 그룹 vs 노드) 선패턴 변경,
+  `theme.rs`의 색상 값 자체 변경(SSoT 유지 — `LineKind`만 바꾼다), `xychart`/`pie`/`quadrant`/
+  `gantt`(그룹·프레임 개념 없음, 해당 없음)
 
 ## Boundary Candidates
-- 마크다운 원문 하이라이팅(신택스 컬러링)
-- 시퀀스 다이어그램 재귀 메시지 레이아웃
-- gitGraph 방향(세로/가로) 배치
-- gitGraph 브랜치 시각 구분(색+패턴)
+- 시퀀스 프래그먼트 테두리 `LineKind`
+- (참고, 이번 스코프 아님) `graph.rs` 그룹 테두리 vs 노드 테두리의 선패턴 구분 — 색상만으로도
+  이미 구분되므로 우선순위 낮음
 
 ## Out of Boundary
-- mdview 저장소 수정 전부(PlantUML/방향재시도/ER표기법 이식, lib 분리) — 다른 리포지토리, dg 스펙 시스템 소관 아님
-- dg에 syntect 기반 코드펜스 "언어" 하이라이팅, 이미지 프로토콜(sixel), 파일브라우저, GitHub 소스 fetch, 스태시 — 의존성 최소화 원칙과 충돌(마크다운 마크업 자체 하이라이팅과는 다른 문제)
+- `graph.rs` 공유 레이아웃의 그룹/노드 선패턴 변경 — 심각도 낮고 블라스트 반경 큼, 별도 라운드에서
+  다시 검토
+- `theme.rs` 색상 값(RGB/인덱스) 자체를 바꾸는 것 — 이번 문제는 선패턴(`LineKind`) 재배정으로
+  풀리고, 색상 SSoT는 건드릴 이유가 없음
 
 ## Upstream / Downstream
-- **Upstream**: `markdown::render_source_block`/`pager.rs`(원문 하이라이팅이 얹힐 기존 경로), `diagram::layout::sequence`(재귀 레이아웃), `diagram::layout::gitgraph`(방향·색 배치), `diagram::mermaid::gitgraph`(방향 지시자 파싱, 기존 `direction` 지시자 재사용), `style::Theme`(브랜치 색·`LineKind` 패턴).
-- **Downstream**: README 지원 문법/옵션 표, robustness 테스트 패턴.
+- **Upstream**: `diagram/layout/sequence.rs`(프래그먼트 렌더, `draw_message`/`draw_self_message`),
+  `diagram/layout/block.rs`(`border_kind` 선례), `diagram/layout/gitgraph.rs`(`branch_style` 선례),
+  `diagram/canvas.rs`(`LineKind` 정의)
+- **Downstream**: 기존 시퀀스 테스트 중 프레임 테두리 글자(`┌`/`─`/`│` 등)를 골든 텍스트로 직접
+  비교하는 테스트가 있으면 새 글자(`┏`/`━`/`┃`)에 맞춰 조정 필요
 
 ## Existing Spec Touchpoints
-- **Extends**: 없음 — 기존 `mermaid-*` 7개 스펙은 완료 상태.
-- **Adjacent**: `diagram/layout/sequence.rs`(`draw_self_message`), `diagram/layout/gitgraph.rs`, `diagram/mermaid/gitgraph.rs`, `markdown/mod.rs`(`render_source_block`), `pager.rs`(`o` 토글 패턴).
+- **Extends**: 없음(신규 스펙)
+- **Adjacent**: `sequence-self-message-clearance`(같은 `sequence.rs`, 다른 관심사 — 자기 메시지
+  여백 vs 프래그먼트 테두리 선패턴, 서로 겹치지 않음), `gitgraph-branch-distinction`(같은
+  `LineKind` 재배정 기법의 선례)
 
 ## Constraints
-- 신규 의존성 최소화 원칙 유지(현재 4개: pulldown-cmark, crossterm, unicode-width, clap) — 원문 하이라이팅은 dg 자체 `Style`/`Theme`만으로 구현.
-- panic 금지(`panic = "abort"` 프로필) 계약 유지.
-- `edition = "2024"`, `rust-version = "1.88"` 유지.
-- 기존 `--direction tb|lr` 지시자/CLI 플래그 메커니즘을 gitGraph에도 재사용(새 플래그 체계 만들지 않음).
-- mdview 리포지토리에는 이번 스펙 시스템에서 아무 것도 쓰지 않는다(경계 밖).
+- 신규 의존성 없음(현재 4개 유지)
+- panic 금지(`panic = "abort"`) 계약 유지
+- `edition = "2024"`, `rust-version = "1.88"` 유지
+- 기존 `canvas.rs`의 `LineKind`(Solid/Dashed/Heavy) 3종 안에서만 해결 — 새 선 종류를 추가하지 않음
