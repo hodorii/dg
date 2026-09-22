@@ -9,13 +9,22 @@ use crate::diagram::canvas::{Canvas, LineKind};
 use crate::diagram::ir::Direction;
 use crate::diagram::mermaid::gitgraph::{GitEvent, GitGraph};
 use crate::line::Line;
-use crate::style::Theme;
+use crate::style::{Style, Theme};
 use crate::text::{truncate, width_of};
 
 const COMMIT_DOT: char = '●';
 const MERGE_DOT: char = '◉';
 /// 커밋 한 칸이 점과 아이디 말고 따로 차지하는 폭(`●───`).
 const SLOT_PADDING: usize = 4;
+
+/// 트랙(브랜치) 순번에 대응하는 (색, 선패턴). 색은 `xychart.rs`와 같은 4개 테마 역할을, 선패턴은
+/// `block.rs`의 `border_kind`와 같은 실선→파선→굵은선 3종을 각각 독립적으로 순환한다. 두 길이가
+/// 서로 달라 조합 수가 늘고, 트랙 0은 항상 `(diagram_accent, Solid)`라 단일 브랜치는 기존과 같다.
+fn branch_style(theme: &Theme, track: usize) -> (Style, LineKind) {
+    let colors = [theme.diagram_accent, theme.diagram_box, theme.diagram_group, theme.diagram_note];
+    let patterns = [LineKind::Solid, LineKind::Dashed, LineKind::Heavy];
+    (colors[track % colors.len()], patterns[track % patterns.len()])
+}
 
 pub fn render(graph: &GitGraph, theme: &Theme, width: usize) -> Option<Vec<Line>> {
     if graph.tracks.is_empty() || graph.events.is_empty() {
@@ -138,22 +147,25 @@ fn build(graph: &GitGraph, plan: &Plan, theme: &Theme, cap: usize, width: usize)
         if let Some((first, last)) = span
             && last > first
         {
-            canvas.hline(x(*first), x(*last), row, LineKind::Solid, theme.diagram_line);
+            let (color, pattern) = branch_style(theme, row);
+            canvas.hline(x(*first), x(*last), row, pattern, color);
         }
     }
     for (parent, child, column) in &plan.forks {
-        canvas.vline(x(*column), *parent, *child, LineKind::Solid, theme.diagram_line);
+        let (color, pattern) = branch_style(theme, *child);
+        canvas.vline(x(*column), *parent, *child, pattern, color);
     }
     for (source, target, column) in &plan.merges {
-        canvas.vline(x(*column), *source, *target, LineKind::Solid, theme.diagram_line);
+        let (color, pattern) = branch_style(theme, *source);
+        canvas.vline(x(*column), *source, *target, pattern, color);
     }
     canvas.set_edge_mode(false);
     for (row, name) in names.iter().enumerate() {
-        canvas.text(0, row, name, theme.diagram_label);
+        canvas.text(0, row, name, branch_style(theme, row).0);
     }
     for (dot, id) in plan.dots.iter().zip(&ids) {
         let glyph = if dot.is_merge { MERGE_DOT } else { COMMIT_DOT };
-        canvas.put(x(dot.column), dot.row, glyph, theme.diagram_accent);
+        canvas.put(x(dot.column), dot.row, glyph, branch_style(theme, dot.row).0);
         if !id.is_empty() {
             canvas.text(x(dot.column) + 1, dot.row, id, theme.diagram_text);
         }
@@ -195,22 +207,25 @@ fn build_vertical(graph: &GitGraph, plan: &Plan, theme: &Theme, cap: usize, widt
         if let Some((first, last)) = span
             && last > first
         {
-            canvas.vline(x(track), top + first, top + last, LineKind::Solid, theme.diagram_line);
+            let (color, pattern) = branch_style(theme, track);
+            canvas.vline(x(track), top + first, top + last, pattern, color);
         }
     }
     for (parent, child, step) in &plan.forks {
-        canvas.hline(x(*parent), x(*child), top + step, LineKind::Solid, theme.diagram_line);
+        let (color, pattern) = branch_style(theme, *child);
+        canvas.hline(x(*parent), x(*child), top + step, pattern, color);
     }
     for (source, target, step) in &plan.merges {
-        canvas.hline(x(*source), x(*target), top + step, LineKind::Solid, theme.diagram_line);
+        let (color, pattern) = branch_style(theme, *source);
+        canvas.hline(x(*source), x(*target), top + step, pattern, color);
     }
     canvas.set_edge_mode(false);
     for (track, name) in names.iter().enumerate() {
-        canvas.text(x(track), 0, name, theme.diagram_label);
+        canvas.text(x(track), 0, name, branch_style(theme, track).0);
     }
     for (dot, id) in plan.dots.iter().zip(&ids) {
         let glyph = if dot.is_merge { MERGE_DOT } else { COMMIT_DOT };
-        canvas.put(x(dot.row), top + dot.column, glyph, theme.diagram_accent);
+        canvas.put(x(dot.row), top + dot.column, glyph, branch_style(theme, dot.row).0);
         if !id.is_empty() {
             canvas.text(x(dot.row) + 1, top + dot.column, id, theme.diagram_text);
         }
@@ -358,7 +373,9 @@ mod tests {
         let out = rows("gitGraph TB:\n commit\n branch develop\n commit\n checkout main\n merge develop\n", 80);
         let joined = out.join("\n");
         assert!(joined.contains(MERGE_DOT), "{joined}");
-        assert!(joined.contains('─'), "가로 연결선이 있어야 한다: {joined}");
+        // 연결선은 이제 트랙(브랜치)별 선패턴을 따르므로(gitgraph-branch-distinction), 실선/파선/
+        // 굵은선 중 어느 것이든 가로 연결선 글자면 통과한다.
+        assert!(joined.contains(['─', '╌', '━']), "가로 연결선이 있어야 한다: {joined}");
     }
 
     /// `DiagramOptions.direction`(CLI·소스 지시자)이 헤더보다 우선한다 — 다른 그래프형과 같은 계약.
@@ -377,5 +394,78 @@ mod tests {
         let h_joined: Vec<String> = horizontal.iter().map(Line::plain).collect();
         assert!(h_joined.join("\n").contains("●───●───●"), "{h_joined:?}");
         assert!(forced_vertical.len() > horizontal.len(), "강제 세로 모드는 줄이 더 많아야 한다");
+    }
+
+    /// 1.2/2.1/2.2/3.2 팔레트(4)·선패턴(3)이 각각 독립적으로 `track % len` 순환하고, 트랙 0은 항상
+    /// 고정된 조합이라 단일 브랜치 회귀(2.2, 5.1)가 규칙에서 보장된다.
+    #[test]
+    fn branch_style_cycles_color_and_pattern_independently() {
+        let theme = Theme::dark();
+        let colors = [theme.diagram_accent, theme.diagram_box, theme.diagram_group, theme.diagram_note];
+        let patterns = [LineKind::Solid, LineKind::Dashed, LineKind::Heavy];
+        for track in [0usize, 1, 2, 3, 4, 6, 7] {
+            let (color, pattern) = branch_style(&theme, track);
+            assert_eq!(color, colors[track % 4], "track {track} 색");
+            assert_eq!(pattern, patterns[track % 3], "track {track} 패턴");
+        }
+        assert_eq!(branch_style(&theme, 0), (theme.diagram_accent, LineKind::Solid), "트랙 0은 항상 고정값");
+    }
+
+    /// 1.1/1.3 트랙 선·커밋 점·브랜치 이름 라벨이 트랙마다 같은 색으로 묶여 나온다(가로 모드).
+    #[test]
+    fn tracks_get_distinct_colors_when_style_is_enabled() {
+        let theme = Theme::dark();
+        let lines = render(&parse("gitGraph\n commit\n branch develop\n commit\n"), &theme, 80).unwrap();
+        let style_of = |line: &Line, needle: char| -> Style {
+            line.runs().find(|(text, _)| text.contains(needle)).map(|(_, style)| style).unwrap()
+        };
+        let main_dot = style_of(&lines[0], COMMIT_DOT);
+        let main_label = style_of(&lines[0], 'm');
+        let develop_dot = style_of(&lines[1], COMMIT_DOT);
+        let develop_label = style_of(&lines[1], 'd');
+        assert_eq!(main_dot, theme.diagram_accent, "{lines:?}");
+        assert_eq!(main_label, main_dot, "이름 라벨도 트랙 색을 따라야 한다: {lines:?}");
+        assert_eq!(develop_dot, theme.diagram_box, "{lines:?}");
+        assert_eq!(develop_label, develop_dot, "이름 라벨도 트랙 색을 따라야 한다: {lines:?}");
+    }
+
+    /// 2.1/3.1 트랙마다 선패턴이 달라 `--style none`에서도 색 없이 구분된다(가로 모드).
+    #[test]
+    fn horizontal_tracks_get_distinct_line_patterns_without_color() {
+        let source = "gitGraph\n commit\n commit\n branch develop\n commit\n commit\n branch feature\n commit\n commit\n";
+        let out = rows(source, 80);
+        assert_eq!(out.len(), 3);
+        assert!(out[0].contains('─'), "main(트랙0)은 실선: {out:?}");
+        assert!(out[1].contains('╌'), "develop(트랙1)은 파선: {out:?}");
+        assert!(out[2].contains('━'), "feature(트랙2)는 굵은선: {out:?}");
+    }
+
+    /// 1.3/2.1/3.1 세로 모드에서도 가로 모드와 같은 색·선패턴 규칙이 적용된다. main이 다른 두
+    /// 트랙(develop·feature)의 커밋 여러 개를 사이에 두고 뒤늦게 다시 커밋해, main 자신의 세로선이
+    /// 커밋 점에 가리지 않고 중간 줄에 그대로 드러나게 한다.
+    #[test]
+    fn vertical_tracks_get_distinct_line_patterns_without_color() {
+        let source = "gitGraph TB:\n commit\n commit\n branch develop\n commit\n commit\n branch feature\n commit\n commit\n checkout main\n commit\n";
+        let joined = rows(source, 80).join("\n");
+        assert!(joined.contains('│'), "main(트랙0)은 실선: {joined}");
+        assert!(joined.contains('╌'), "develop(트랙1)에서 갈라지는 파선 연결선: {joined}");
+        assert!(joined.contains('━'), "feature(트랙2)에서 갈라지는 굵은선 연결선: {joined}");
+    }
+
+    /// 4.1/4.2 분기 연결선은 부모가 아니라 자식(새로 생기는) 트랙, 병합 연결선은 대상이 아니라
+    /// source(합류해 들어오는) 트랙의 색을 따른다 — 여기선 둘 다 develop(트랙1)이라 main(트랙0)의
+    /// `diagram_accent`가 아니라 develop의 `diagram_box`여야 한다.
+    #[test]
+    fn fork_and_merge_connectors_follow_owning_track_not_the_other_side() {
+        let theme = Theme::dark();
+        let source = "gitGraph\n commit\n branch develop\n commit\n checkout main\n merge develop\n";
+        let lines = render(&parse(source), &theme, 80).unwrap();
+        let corner_styles: Vec<Style> =
+            lines[1].runs().filter(|(text, _)| text.contains(['└', '┘'])).map(|(_, s)| s).collect();
+        assert!(!corner_styles.is_empty(), "{lines:?}");
+        assert!(
+            corner_styles.iter().all(|s| *s == theme.diagram_box),
+            "분기는 child(develop), 병합은 source(develop) 색을 따라야 한다(main 색 accent 아님): {lines:?}"
+        );
     }
 }
