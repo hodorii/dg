@@ -28,10 +28,11 @@ fn branch_style(theme: &Theme, track: usize) -> (Style, LineKind) {
 
 /// 세로 모드 분기 연결선을 시작할 x 좌표. 부모 트랙의 x 좌표(`parent_x`)와 그 행에 있는 부모
 /// 커밋 id의 렌더 폭(`parent_id_width`)으로 구한다. id가 비어 있으면 밀지 않는다(점 글자
-/// 바로 뒤에 이어지는 대시는 기존처럼 자연스럽다). 비어 있지 않으면 텍스트 폭 + 공백 1칸만큼
-/// 밀어, 분기선이 커밋 id 글자에 바로 붙어 보이지 않게 한다(gitgraph-junction-polish).
+/// 바로 뒤에 이어지는 대시는 기존처럼 자연스럽다). 비어 있지 않으면 텍스트가 시작되는 자리
+/// (점 뒤 2칸, `gitgraph-dot-id-gap`) + 텍스트 폭 + 공백 1칸만큼 밀어, 분기선이 커밋 id 글자에
+/// 바로 붙어 보이지 않게 한다(gitgraph-junction-polish).
 fn fork_connector_start(parent_x: usize, parent_id_width: usize) -> usize {
-    if parent_id_width == 0 { parent_x } else { parent_x + 1 + parent_id_width + 1 }
+    if parent_id_width == 0 { parent_x } else { parent_x + 2 + parent_id_width + 1 }
 }
 
 pub fn render(graph: &GitGraph, theme: &Theme, width: usize) -> Option<Vec<Line>> {
@@ -142,7 +143,8 @@ fn build(graph: &GitGraph, plan: &Plan, theme: &Theme, cap: usize, width: usize)
         total = total.max(x(*last) + 1);
     }
     for (dot, id) in plan.dots.iter().zip(&ids) {
-        total = total.max(x(dot.column) + 1 + width_of(id));
+        // 점과 id 사이에 한 칸 공백을 두므로(gitgraph-dot-id-gap) 텍스트는 +2에서 시작한다.
+        total = total.max(x(dot.column) + 2 + width_of(id));
     }
     if total > width {
         return None;
@@ -179,7 +181,11 @@ fn build(graph: &GitGraph, plan: &Plan, theme: &Theme, cap: usize, width: usize)
         let glyph = if dot.is_merge { MERGE_DOT } else { COMMIT_DOT };
         canvas.put(x(dot.column), dot.row, glyph, branch_style(theme, dot.row).0);
         if !id.is_empty() {
-            canvas.text(x(dot.column) + 1, dot.row, id, theme.diagram_text);
+            // 점 바로 다음 칸은 비워 둔다(gitgraph-dot-id-gap) — 점 글자의 실제 터미널 렌더
+            // 폭이 1칸을 넘는 환경에서 id 첫 글자가 가려지는 것을 막는다. 트랙 선(대시)이 이미
+            // 그 칸을 지나갈 수 있으므로 명시적으로 비워 진짜 공백을 보장한다.
+            canvas.clear_rect(x(dot.column) + 1, dot.row, 1, 1);
+            canvas.text(x(dot.column) + 2, dot.row, id, theme.diagram_text);
         }
     }
     Some(canvas)
@@ -196,8 +202,11 @@ fn build_vertical(graph: &GitGraph, plan: &Plan, theme: &Theme, cap: usize, widt
     let top = 1; // 브랜치 이름을 적는 머리글 줄.
     let name_width = names.iter().map(|name| width_of(name)).max().unwrap_or(0);
     let id_width = ids.iter().map(|id| width_of(id)).max().unwrap_or(0);
-    // 트랙(열) 사이 간격: 이름과 "점+아이디" 중 더 넓은 쪽 + 여백.
-    let col = name_width.max(id_width + 1).saturating_add(SLOT_PADDING);
+    // 점과 id 사이 한 칸 공백(gitgraph-dot-id-gap) — id가 어디에도 없으면 기존처럼 점 한 칸만
+    // 예약해 불필요한 여백을 만들지 않는다.
+    let id_reserve = if id_width == 0 { 1 } else { id_width + 2 };
+    // 트랙(열) 사이 간격: 이름과 "점+공백+아이디" 중 더 넓은 쪽 + 여백.
+    let col = name_width.max(id_reserve).saturating_add(SLOT_PADDING);
     let last_track = names.len() - 1;
     // 폭이 넘칠 게 뻔하면 칸 좌표를 만들기 전에 접는다. 곱셈이 넘치는 것도 여기서 막는다.
     let span = last_track.checked_mul(col);
@@ -247,7 +256,9 @@ fn build_vertical(graph: &GitGraph, plan: &Plan, theme: &Theme, cap: usize, widt
         let glyph = if dot.is_merge { MERGE_DOT } else { COMMIT_DOT };
         canvas.put(x(dot.row), top + dot.column, glyph, branch_style(theme, dot.row).0);
         if !id.is_empty() {
-            canvas.text(x(dot.row) + 1, top + dot.column, id, theme.diagram_text);
+            // 점 바로 다음 칸은 비워 둔다(가로 모드와 동일한 이유, gitgraph-dot-id-gap).
+            canvas.clear_rect(x(dot.row) + 1, top + dot.column, 1, 1);
+            canvas.text(x(dot.row) + 2, top + dot.column, id, theme.diagram_text);
         }
     }
     Some(canvas)
@@ -321,7 +332,33 @@ mod tests {
     #[test]
     fn commit_id_is_shown_next_to_its_dot() {
         let out = rows("gitGraph\n commit id: \"init\"\n commit id: \"next\"\n", 80);
-        assert_eq!(out[0], "main  ●init───●next");
+        assert_eq!(out[0], "main  ● init──● next");
+    }
+
+    /// 1.1/2.1(gitgraph-dot-id-gap) 가로 모드: 점 글자와 id 글자 사이에 최소 한 칸 공백이 있어야
+    /// 한다 — 터미널 폰트에 따라 점 글자의 시각적 폭이 1칸을 넘어 id 첫 글자를 가릴 수 있기
+    /// 때문(사용자 스크린샷으로 재현됨). 빈 id 커밋은 여백을 새로 만들지 않는다(3.1).
+    #[test]
+    fn horizontal_dot_and_id_have_a_gap() {
+        let out = rows("gitGraph\n commit id: \"root-long-id\"\n", 80);
+        assert_eq!(out[0].chars().nth(6), Some(COMMIT_DOT));
+        assert_eq!(out[0].chars().nth(7), Some(' '), "점과 id 사이에 공백이 있어야 한다: {}", out[0]);
+        assert_eq!(out[0].chars().nth(8), Some('r'), "공백 다음이 id 첫 글자여야 한다: {}", out[0]);
+
+        // 빈 id는 기존처럼 여백 없이 붙는다(회귀 없음).
+        let empty = rows("gitGraph\n commit\n commit\n commit\n", 80);
+        assert_eq!(empty[0], "main  ●───●───●");
+    }
+
+    /// 1.2/2.2(gitgraph-dot-id-gap) 세로 모드: 점 글자와 id 글자 사이에 최소 한 칸 공백이 있어야
+    /// 한다.
+    #[test]
+    fn vertical_dot_and_id_have_a_gap() {
+        let out = rows("gitGraph TB:\n commit id: \"root-long-id\"\n", 80);
+        let row = &out[1];
+        assert_eq!(row.chars().next(), Some(COMMIT_DOT));
+        assert_eq!(row.chars().nth(1), Some(' '), "점과 id 사이에 공백이 있어야 한다: {row}");
+        assert_eq!(row.chars().nth(2), Some('r'), "공백 다음이 id 첫 글자여야 한다: {row}");
     }
 
     /// 5.1 폭에 들어가지 않으면 `None`을 돌려 평범한 코드블록으로 물러난다.
@@ -491,12 +528,12 @@ mod tests {
     }
 
     /// 3.1(gitgraph-junction-polish) `fork_connector_start`: id가 비어 있으면 밀지 않고, 있으면
-    /// 텍스트 폭 + 공백 1칸만큼만 민다.
+    /// 텍스트 시작 자리(점 뒤 2칸, gitgraph-dot-id-gap) + 텍스트 폭 + 공백 1칸만큼 민다.
     #[test]
     fn fork_connector_start_gap_only_when_id_is_not_empty() {
         assert_eq!(fork_connector_start(10, 0), 10, "빈 id면 밀지 않는다");
-        assert_eq!(fork_connector_start(10, 1), 13, "폭 1인 id: 10 + 1(점 뒤) + 1(글자) + 1(공백)");
-        assert_eq!(fork_connector_start(10, 12), 24, "긴 id도 같은 규칙: 10 + 1 + 12 + 1");
+        assert_eq!(fork_connector_start(10, 1), 14, "폭 1인 id: 10 + 2(점 뒤 공백+텍스트 시작) + 1(글자) + 1(공백)");
+        assert_eq!(fork_connector_start(10, 12), 25, "긴 id도 같은 규칙: 10 + 2 + 12 + 1");
     }
 
     /// 1.1/1.2 가로 모드 분기·병합 연결선의 끝점 모서리가 둥글게 그려지고, 각진 모서리는 남지
