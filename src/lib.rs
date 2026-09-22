@@ -25,6 +25,8 @@ pub mod markdown;
 pub mod pager;
 pub mod style;
 pub mod text;
+#[cfg(feature = "cli")]
+pub mod watch;
 
 pub use diagram::{DiagramOptions, ErNotation, Language};
 pub use line::{Line, Span};

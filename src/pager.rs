@@ -4,6 +4,7 @@ use crate::line::Line;
 use crate::markdown::{self, DiagramBlock, Document};
 use crate::style::Theme;
 use crate::text::char_width;
+use crate::watch::{self, PollResult, Watcher};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use crossterm::{cursor, event, execute, queue, terminal};
 use std::io::{self, Write};
@@ -18,11 +19,16 @@ struct ShownBlock {
     index: usize,
 }
 
-pub struct Pager<'a, F: Fn(usize, usize) -> Document> {
+pub struct Pager<'a, F: Fn(&str, usize, usize) -> Document> {
     title: String,
     theme: &'a Theme,
     max_width: usize,
     render: F,
+    /// 현재 그릴 원문. 감시 모드에서는 파일이 바뀔 때마다 갱신된다.
+    source: String,
+    watcher: Option<Watcher>,
+    /// 감시 중 마지막으로 겪은 읽기 오류(있으면 상태 표시줄에 보여줌).
+    watch_error: Option<String>,
     document: Document,
     /// 다이어그램마다 원문을 펼쳤는지.
     expanded: Vec<bool>,
@@ -38,13 +44,16 @@ pub struct Pager<'a, F: Fn(usize, usize) -> Document> {
     message: String,
 }
 
-impl<'a, F: Fn(usize, usize) -> Document> Pager<'a, F> {
-    pub fn new(title: &str, theme: &'a Theme, max_width: usize, render: F) -> Self {
+impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
+    pub fn new(title: &str, theme: &'a Theme, max_width: usize, source: String, render: F, watcher: Option<Watcher>) -> Self {
         Pager {
             title: title.to_string(),
             theme,
             max_width,
             render,
+            source,
+            watcher,
+            watch_error: None,
             document: Document { lines: Vec::new(), diagrams: Vec::new() },
             expanded: Vec::new(),
             lines: Vec::new(),
@@ -78,12 +87,14 @@ impl<'a, F: Fn(usize, usize) -> Document> Pager<'a, F> {
             let (columns, rows) = (columns as usize, rows as usize);
             // 문단은 읽기 좋은 폭까지만 접고, 다이어그램·표·코드는 터미널 폭을 다 쓴다.
             let width = columns.min(self.max_width).max(10);
-            if width != self.rendered_width || columns != self.rendered_columns {
-                self.document = (self.render)(width, columns.max(10));
-                self.expanded.resize(self.document.diagrams.len(), false);
-                self.rendered_width = width;
-                self.rendered_columns = columns;
-                self.rebuild_lines();
+
+            let mut force_render = false;
+            if let Some(watcher) = &mut self.watcher {
+                let result = watcher.poll();
+                force_render = self.apply_poll_result(result);
+            }
+            if width != self.rendered_width || columns != self.rendered_columns || force_render {
+                self.rerender(width, columns);
                 needs_redraw = true;
             }
             let page = rows.saturating_sub(1).max(1);
@@ -91,29 +102,85 @@ impl<'a, F: Fn(usize, usize) -> Document> Pager<'a, F> {
             if needs_redraw {
                 self.draw(out, columns, rows)?;
             }
-            // 상태가 바뀐 이벤트만 다시 그린다. 마우스 이동·버튼은 무시.
-            needs_redraw = match event::read()? {
-                Event::Key(key) => {
-                    if self.handle_key(key, page) {
-                        return Ok(());
+            // 감시 중이 아니면 기존과 동일하게 블로킹 대기. 감시 중이면 짧은 타임아웃으로 대기해
+            // 키 입력엔 즉시 반응하면서 다음 루프에서 다시 파일을 확인한다.
+            needs_redraw = if self.watcher.is_some() {
+                if event::poll(watch::POLL_INTERVAL)? {
+                    match self.handle_event(event::read()?, page) {
+                        Some(redraw) => redraw,
+                        None => return Ok(()),
                     }
+                } else {
+                    false
+                }
+            } else {
+                match self.handle_event(event::read()?, page) {
+                    Some(redraw) => redraw,
+                    None => return Ok(()),
+                }
+            };
+        }
+    }
+
+    /// 크로스텀 이벤트 하나를 처리한다. 종료해야 하면 `None`, 계속하면 다시 그려야 하는지를
+    /// `Some(bool)`로 돌려준다. 마우스 이동·버튼 등 상태가 안 바뀌는 이벤트는 무시한다.
+    fn handle_event(&mut self, event: Event, page: usize) -> Option<bool> {
+        match event {
+            Event::Key(key) => {
+                if self.handle_key(key, page) {
+                    return None;
+                }
+                Some(true)
+            }
+            Event::Mouse(mouse) => Some(match mouse.kind {
+                MouseEventKind::ScrollDown => {
+                    self.top += 3;
                     true
                 }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollDown => {
-                        self.top += 3;
-                        true
-                    }
-                    MouseEventKind::ScrollUp => {
-                        self.top = self.top.saturating_sub(3);
-                        true
-                    }
-                    MouseEventKind::Down(MouseButton::Left) => self.toggle_block_at(self.top + mouse.row as usize),
-                    _ => false,
-                },
-                Event::Resize(_, _) => true,
+                MouseEventKind::ScrollUp => {
+                    self.top = self.top.saturating_sub(3);
+                    true
+                }
+                MouseEventKind::Down(MouseButton::Left) => self.toggle_block_at(self.top + mouse.row as usize),
                 _ => false,
-            };
+            }),
+            Event::Resize(_, _) => Some(true),
+            _ => Some(false),
+        }
+    }
+
+    /// 현재 소스를 주어진 폭·칸으로 다시 그린다(폭 변경·감시 갱신·수동 갱신에서 공유).
+    fn rerender(&mut self, width: usize, columns: usize) {
+        self.document = (self.render)(&self.source, width, columns.max(10));
+        self.expanded.resize(self.document.diagrams.len(), false);
+        self.rendered_width = width;
+        self.rendered_columns = columns;
+        self.rebuild_lines();
+    }
+
+    /// `r` 키: mtime과 무관하게 즉시 다시 읽는다. 감시 중이 아니면 아무 것도 하지 않는다.
+    fn manual_refresh(&mut self) {
+        let Some(watcher) = self.watcher.as_mut() else { return };
+        let result = watcher.poll_forced();
+        if self.apply_poll_result(result) {
+            let (width, columns) = (self.rendered_width, self.rendered_columns);
+            self.rerender(width, columns);
+        }
+    }
+
+    /// 감시 폴 결과를 `source`/`watch_error`에 반영한다. 다시 그려야 하면(내용이 바뀌었으면) true.
+    fn apply_poll_result(&mut self, result: PollResult) -> bool {
+        match result {
+            PollResult::Changed(new_source) => {
+                self.source = new_source;
+                self.watch_error = None;
+                true
+            }
+            PollResult::ReadError(message) => {
+                self.watch_error = Some(message);
+                false
+            }
+            PollResult::Unchanged => false,
         }
     }
 
@@ -180,6 +247,8 @@ impl<'a, F: Fn(usize, usize) -> Document> Pager<'a, F> {
                     self.toggle_block_at(start);
                 }
             }
+            // 감시 중이 아니면 아무 일도 하지 않는다.
+            KeyCode::Char('r') => self.manual_refresh(),
             _ => {}
         }
         false
@@ -283,7 +352,12 @@ impl<'a, F: Fn(usize, usize) -> Document> Pager<'a, F> {
             };
             let extra = if self.message.is_empty() { String::new() } else { format!("  {}", self.message) };
             let hint = if self.shown_blocks.is_empty() { "" } else { "  o/클릭 원문" };
-            format!(" {}  {}%{}  ·  j/k 이동  / 검색{}  q 종료", self.title, percent, extra, hint)
+            let watch = match (&self.watcher, &self.watch_error) {
+                (Some(_), Some(message)) => format!("  감시 불가: {message}"),
+                (Some(_), None) => "  감시 중".to_string(),
+                (None, _) => String::new(),
+            };
+            format!(" {}  {}%{}{}  ·  j/k 이동  / 검색{}  q 종료", self.title, percent, extra, watch, hint)
         };
         let mut padded = text;
         let mut used = crate::text::width_of(&padded);
@@ -336,8 +410,9 @@ mod tests {
         (Document { lines, diagrams: vec![block.clone()] }, block)
     }
 
-    fn pager(document: Document, theme: &Theme) -> Pager<'_, fn(usize, usize) -> Document> {
-        let mut pager = Pager::new("t", theme, 80, (|_, _| Document { lines: Vec::new(), diagrams: Vec::new() }) as fn(usize, usize) -> Document);
+    fn pager(document: Document, theme: &Theme) -> Pager<'_, fn(&str, usize, usize) -> Document> {
+        let render = (|_: &str, _, _| Document { lines: Vec::new(), diagrams: Vec::new() }) as fn(&str, usize, usize) -> Document;
+        let mut pager = Pager::new("t", theme, 80, String::new(), render, None);
         pager.expanded = vec![false; document.diagrams.len()];
         pager.document = document;
         pager.rendered_columns = 80;
@@ -364,5 +439,103 @@ mod tests {
         assert!(pager.toggle_block_at(block.start));
         let collapsed: Vec<String> = pager.lines.iter().map(Line::plain).collect();
         assert!(!collapsed.iter().any(|line| line.contains("flowchart TB")), "접으면 원문이 사라져야 한다");
+    }
+
+    struct TempFile {
+        path: std::path::PathBuf,
+    }
+
+    impl TempFile {
+        fn with_content(content: &str) -> TempFile {
+            static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!("dg-pager-watch-test-{}-{n}", std::process::id()));
+            std::fs::write(&path, content).unwrap();
+            TempFile { path }
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    /// 2.1/5.1 `Changed`는 소스를 갱신하고 오류를 지우며 다시 그리라고 알린다. `ReadError`는
+    /// 오류만 기록하고 마지막 성공 소스는 그대로 둔다. `Unchanged`는 아무 것도 건드리지 않는다.
+    #[test]
+    fn apply_poll_result_updates_source_and_error_state() {
+        let theme = Theme::none();
+        let mut pager = pager(Document { lines: Vec::new(), diagrams: Vec::new() }, &theme);
+
+        assert!(pager.apply_poll_result(PollResult::Changed("새 내용".to_string())));
+        assert_eq!(pager.source, "새 내용");
+        assert!(pager.watch_error.is_none());
+
+        assert!(!pager.apply_poll_result(PollResult::ReadError("파일 없음".to_string())));
+        assert_eq!(pager.watch_error.as_deref(), Some("파일 없음"));
+        assert_eq!(pager.source, "새 내용", "오류 중에도 마지막 성공 소스를 유지해야 한다");
+
+        assert!(!pager.apply_poll_result(PollResult::Unchanged));
+        assert_eq!(pager.watch_error.as_deref(), Some("파일 없음"), "Unchanged는 오류 상태를 건드리지 않는다");
+    }
+
+    /// 3.1 감시로 내용이 갱신돼도 스크롤 위치(top)는 그대로 유지된다.
+    #[test]
+    fn watch_update_preserves_scroll_position() {
+        let theme = Theme::none();
+        let render = (|source: &str, _: usize, _: usize| Document {
+            lines: (0..10).map(|i| Line::single(format!("{source}-{i}"), Style::PLAIN)).collect(),
+            diagrams: Vec::new(),
+        }) as fn(&str, usize, usize) -> Document;
+        let mut pager = Pager::new("t", &theme, 80, "a".to_string(), render, None);
+        pager.rerender(80, 80);
+        pager.top = 4;
+
+        assert!(pager.apply_poll_result(PollResult::Changed("b".to_string())));
+        pager.rerender(80, 80);
+
+        assert_eq!(pager.top, 4, "감시로 갱신돼도 스크롤 위치는 그대로 유지돼야 한다");
+        assert!(pager.lines[0].plain().contains("b-0"));
+    }
+
+    /// 3.4 상태 표시줄은 감시 중이 아니면 아무 표시가 없고, 감시 중이면 "감시 중", 오류가 있으면
+    /// "감시 불가: …"를 보여준다.
+    #[test]
+    fn status_line_shows_watch_state() {
+        let theme = Theme::none();
+        let mut pager = pager(Document { lines: Vec::new(), diagrams: Vec::new() }, &theme);
+        assert!(!pager.status(80).plain().contains("감시"), "감시 중이 아니면 표시가 없어야 한다");
+
+        pager.watcher = Some(Watcher::new("/dg-watch-mode-test-does-not-exist"));
+        assert!(pager.status(80).plain().contains("감시 중"));
+
+        pager.watch_error = Some("test: 없음".to_string());
+        let status = pager.status(80).plain();
+        assert!(status.contains("감시 불가"), "{status}");
+        assert!(status.contains("test: 없음"), "{status}");
+    }
+
+    /// 3.5 `r` 키는 mtime과 무관하게 즉시 다시 읽고(`poll_forced`), 감시 중이 아니면 아무 일도
+    /// 하지 않는다.
+    #[test]
+    fn r_key_forces_reread_through_handle_key() {
+        let theme = Theme::none();
+        let temp = TempFile::with_content("원본");
+        let render = (|source: &str, _: usize, _: usize| Document { lines: vec![Line::single(source.to_string(), Style::PLAIN)], diagrams: Vec::new() })
+            as fn(&str, usize, usize) -> Document;
+
+        // 감시 중이 아니면 'r'은 아무 효과가 없다(6.1 회귀 없음).
+        let mut not_watching = Pager::new("t", &theme, 80, "원본".to_string(), render, None);
+        not_watching.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE), 10);
+        assert_eq!(not_watching.source, "원본");
+
+        let mut pager = Pager::new("t", &theme, 80, "원본".to_string(), render, Some(Watcher::new(&temp.path)));
+        pager.rerender(80, 80);
+
+        std::fs::write(&temp.path, "바뀐 내용").unwrap();
+        pager.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE), 10);
+        assert_eq!(pager.source, "바뀐 내용");
+        assert!(pager.lines.iter().any(|l| l.plain().contains("바뀐 내용")));
     }
 }
