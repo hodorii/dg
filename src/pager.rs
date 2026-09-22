@@ -8,6 +8,8 @@ use crate::text::char_width;
 use crate::watch::{self, PollResult, Watcher};
 use std::path::PathBuf;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+#[cfg(test)]
+use crossterm::event::MouseEvent;
 use crossterm::{cursor, event, execute, queue, terminal};
 use std::io::{self, Write};
 
@@ -33,6 +35,14 @@ struct ShownBlock {
     block: BlockRef,
 }
 
+/// 진행 중이거나 막 끝난 드래그 선택(절대 줄 번호, 열) — `draw()`가 이 구간에 강조를
+/// 덧씌운다(markdown-source-view). 스트림(읽기 순서) 선택만 지원 — 사각형 선택은 없다.
+#[derive(Clone, Copy)]
+struct DragSelection {
+    origin: (usize, usize),
+    current: (usize, usize),
+}
+
 pub struct Pager<'a, F: Fn(&str, usize, usize) -> Document> {
     title: String,
     theme: &'a Theme,
@@ -51,6 +61,13 @@ pub struct Pager<'a, F: Fn(&str, usize, usize) -> Document> {
     /// 전역 원문 토글(`s` 키) — 켜져 있으면 `self.lines`는 문서 전체의 원문 하이라이팅이고,
     /// 블록별 펼침 상태(`expanded`/`text_expanded`)는 건드리지 않아 꺼도 그대로 유지된다.
     viewing_source: bool,
+    /// 가장 최근 `MouseDown` 좌표 — `Drag`가 오면 이 위치가 드래그의 시작점이 된다.
+    mouse_down_at: Option<(usize, usize)>,
+    /// 진행 중이거나 방금 끝난 드래그 선택(강조 표시용).
+    drag: Option<DragSelection>,
+    /// 다음 `draw()`에서 출력할 클립보드 시퀀스(있으면). 마우스 이벤트 시점엔 출력 스트림이
+    /// 없어 `draw()`까지 미룬다.
+    pending_clipboard: Option<String>,
     /// 실제로 보여 주는 줄(펼친 원문 포함).
     lines: Vec<Line>,
     shown_blocks: Vec<ShownBlock>,
@@ -95,6 +112,9 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             expanded: Vec::new(),
             text_expanded: Vec::new(),
             viewing_source: false,
+            mouse_down_at: None,
+            drag: None,
+            pending_clipboard: None,
             lines: Vec::new(),
             shown_blocks: Vec::new(),
             heading_lines: Vec::new(),
@@ -177,18 +197,47 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
                 }
                 Some(true)
             }
-            Event::Mouse(mouse) => Some(match mouse.kind {
-                MouseEventKind::ScrollDown => {
-                    self.top += 3;
-                    true
-                }
-                MouseEventKind::ScrollUp => {
-                    self.top = self.top.saturating_sub(3);
-                    true
-                }
-                MouseEventKind::Down(MouseButton::Left) => self.click_at(self.top + mouse.row as usize, mouse.column as usize, page),
-                _ => false,
-            }),
+            Event::Mouse(mouse) => {
+                let row = self.top + mouse.row as usize;
+                let col = mouse.column as usize;
+                Some(match mouse.kind {
+                    MouseEventKind::ScrollDown => {
+                        self.top += 3;
+                        true
+                    }
+                    MouseEventKind::ScrollUp => {
+                        self.top = self.top.saturating_sub(3);
+                        true
+                    }
+                    // 새 제스처 시작 — 아직 클릭인지 드래그인지 모른다. 이전 선택 강조가
+                    // 있었다면(이전 드래그가 남긴 것) 여기서 지워진다.
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        self.mouse_down_at = Some((row, col));
+                        self.drag = None;
+                        false
+                    }
+                    // 버튼을 누른 채 움직였다 — 클릭이 아니라 드래그 선택으로 확정.
+                    MouseEventKind::Drag(MouseButton::Left) => {
+                        let origin = self.mouse_down_at.unwrap_or((row, col));
+                        self.drag = Some(DragSelection { origin, current: (row, col) });
+                        true
+                    }
+                    MouseEventKind::Up(MouseButton::Left) => {
+                        self.mouse_down_at = None;
+                        match self.drag {
+                            // 드래그가 있었으면 클릭 액션 대신 선택을 마무리한다(텍스트 추출·
+                            // 클립보드 전달) — 강조 표시는 다음 키/클릭까지 남겨 둔다.
+                            Some(selection) => {
+                                self.complete_selection(selection);
+                                true
+                            }
+                            // 이동 없이 뗐으면 기존 클릭 액션 그대로(회귀 없음).
+                            None => self.click_at(row, col, page),
+                        }
+                    }
+                    _ => false,
+                })
+            }
             Event::Resize(_, _) => Some(true),
             _ => Some(false),
         }
@@ -339,6 +388,27 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
             return true;
         }
         self.toggle_block_at(line)
+    }
+
+    /// 드래그 선택이 끝났을 때(마우스 업) 구간의 텍스트를 스트림(읽기) 순서로 뽑아 다음
+    /// `draw()`에서 클립보드로 보낼 수 있게 채워 둔다. `viewing_source` 여부와 무관하게
+    /// `self.lines` 기준이라 원문 화면에서도 동일하게 동작한다(markdown-source-view).
+    fn complete_selection(&mut self, selection: DragSelection) {
+        let (start, end) = normalize_selection(selection);
+        let (start_row, start_col) = start;
+        let (end_row, end_col) = end;
+        let last_row = self.lines.len().saturating_sub(1);
+        let mut collected = String::new();
+        for row in start_row..=end_row.min(last_row) {
+            let Some(line) = self.lines.get(row) else { break };
+            let col_start = if row == start_row { start_col } else { 0 };
+            let col_end = if row == end_row { end_col } else { line.width() };
+            if row > start_row {
+                collected.push('\n');
+            }
+            collected.push_str(line.text_between_cols(col_start, col_end));
+        }
+        self.pending_clipboard = Some(collected);
     }
 
     /// 현재 뷰포트(`top..top+page`) 안의 링크 사이에서 포커스를 옮긴다. 보이는 링크가 없으면
@@ -576,11 +646,12 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         }
     }
 
-    fn draw(&self, out: &mut io::Stdout, columns: usize, rows: usize) -> io::Result<()> {
+    fn draw(&mut self, out: &mut io::Stdout, columns: usize, rows: usize) -> io::Result<()> {
         // 동기화 갱신 안에서 줄을 쓴 뒤 남은 부분만 지워 깜빡임을 줄인다.
         queue!(out, terminal::BeginSynchronizedUpdate, cursor::MoveTo(0, 0))?;
         let page = rows.saturating_sub(1);
         let focused_position = self.focused_link.and_then(|index| self.link_positions.get(index));
+        let selection = self.drag.map(normalize_selection);
         for row in 0..page {
             queue!(out, cursor::MoveTo(0, row as u16))?;
             let absolute = self.top + row;
@@ -591,6 +662,15 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
                 {
                     line = line.highlight_span(position.col_start, position.col_end, Style::PLAIN.reverse());
                 }
+                // 드래그 선택 강조 — 링크 포커스와 같은 역상 스타일을 재사용한다(markdown-source-view).
+                if let Some(((start_row, start_col), (end_row, end_col))) = selection
+                    && absolute >= start_row
+                    && absolute <= end_row
+                {
+                    let col_start = if absolute == start_row { start_col } else { 0 };
+                    let col_end = if absolute == end_row { end_col } else { line.width() };
+                    line = line.highlight_span(col_start, col_end, Style::PLAIN.reverse());
+                }
                 let truncated = truncate_line(&line, columns);
                 queue!(out, crossterm::style::Print(truncated.to_ansi(self.theme)))?;
             }
@@ -599,6 +679,11 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         queue!(out, cursor::MoveTo(0, page as u16))?;
         let status = self.status(columns);
         queue!(out, crossterm::style::Print(status.to_ansi(self.theme)), terminal::EndSynchronizedUpdate)?;
+        // 드래그로 선택된 텍스트가 있으면 이번 프레임에 클립보드 시퀀스를 함께 내보내고 비운다
+        // (마우스 이벤트 시점엔 출력 스트림이 없어 여기까지 미뤄 둔 것).
+        if let Some(text) = self.pending_clipboard.take() {
+            queue!(out, crossterm::style::Print(links::clipboard_sequence(&text)))?;
+        }
         out.flush()
     }
 
@@ -629,6 +714,12 @@ impl<'a, F: Fn(&str, usize, usize) -> Document> Pager<'a, F> {
         }
         truncate_line(&Line::single(padded, self.theme.status), columns)
     }
+}
+
+/// 드래그 선택의 시작·끝을 읽기 순서(줄 먼저, 그다음 칸)로 정렬한다 — 사용자가 아래에서
+/// 위로, 또는 오른쪽에서 왼쪽으로 드래그해도 항상 (앞, 뒤) 순서로 돌려준다.
+fn normalize_selection(selection: DragSelection) -> ((usize, usize), (usize, usize)) {
+    if selection.origin <= selection.current { (selection.origin, selection.current) } else { (selection.current, selection.origin) }
 }
 
 /// 터미널 폭을 넘는 부분을 잘라낸다.
@@ -1014,6 +1105,113 @@ mod tests {
         let mut pager = pager(document, &theme);
         assert!(pager.click_at(block.start, 0, 10));
         assert!(pager.expanded[0], "링크가 없는 자리 클릭은 기존처럼 다이어그램을 펼쳐야 한다");
+    }
+
+    fn mouse(kind: MouseEventKind, row: u16, col: u16) -> Event {
+        Event::Mouse(MouseEvent { kind, column: col, row, modifiers: KeyModifiers::NONE })
+    }
+
+    /// 3.2(markdown-source-view) Down 후 이동 없이 Up이 오면 기존 클릭 액션(다이어그램 토글)
+    /// 이 그대로 실행된다(회귀 없음).
+    #[test]
+    fn mouse_down_up_without_movement_falls_back_to_click_action() {
+        let theme = Theme::none();
+        let (document, block) = fixture();
+        let mut pager = pager(document, &theme);
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), block.start as u16, 0), 10);
+        assert!(pager.drag.is_none());
+        pager.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), block.start as u16, 0), 10);
+        assert!(pager.expanded[0], "이동 없는 클릭은 기존처럼 다이어그램을 펼쳐야 한다");
+    }
+
+    /// 3.2 Down-Drag-Up이면 클릭 액션 대신 선택 상태로 전환되고, Up 뒤에도 강조 상태(`drag`)가
+    /// 남아 있는다(다음 키 입력 전까지, 4.1에서 지워짐을 확인).
+    #[test]
+    fn mouse_down_drag_up_selects_instead_of_clicking() {
+        let theme = Theme::none();
+        let (document, block) = fixture();
+        let mut pager = pager(document, &theme);
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), block.start as u16, 0), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), block.start as u16, 3), 10);
+        assert!(pager.drag.is_some());
+        pager.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), block.start as u16, 3), 10);
+        assert!(!pager.expanded[0], "드래그였으면 다이어그램 토글이 실행되면 안 된다");
+        assert!(pager.drag.is_some(), "선택 강조는 Up 뒤에도 남아 있어야 한다");
+    }
+
+    /// 4.1/4.3(markdown-source-view) 여러 줄에 걸친 드래그 구간에서 스트림(읽기) 순서로
+    /// 텍스트가 정확히 추출돼 대기 중인 클립보드 상태에 저장된다. 드래그 방향(아래→위로
+    /// 끌어도)과 무관하게 같은 결과.
+    #[test]
+    fn drag_selection_extracts_text_in_stream_order_regardless_of_direction() {
+        let theme = Theme::none();
+        let document =
+            Document { lines: vec![Line::single("hello world", Style::PLAIN), Line::single("second line", Style::PLAIN)], ..Document::default() };
+        let mut pager = pager(document, &theme);
+
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 0, 6), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 1, 6), 10);
+        pager.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 1, 6), 10);
+        assert_eq!(pager.pending_clipboard.as_deref(), Some("world\nsecond"));
+
+        // 반대 방향(아래에서 위로)으로 드래그해도 같은 결과.
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 1, 6), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 0, 6), 10);
+        pager.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 0, 6), 10);
+        assert_eq!(pager.pending_clipboard.as_deref(), Some("world\nsecond"));
+    }
+
+    /// 4.3 전역 원문 화면에서도(`viewing_source`) 같은 경로(`self.lines` 기준)라 드래그 선택이
+    /// 동일하게 동작한다.
+    #[test]
+    fn drag_selection_works_the_same_in_global_source_view() {
+        let theme = Theme::none();
+        let render = (|source: &str, _: usize, _: usize| Document { lines: vec![Line::single(source.to_string(), Style::PLAIN)], ..Document::default() })
+            as fn(&str, usize, usize) -> Document;
+        let mut pager = Pager::new("t", &theme, 80, "hello".to_string(), render, None, None);
+        pager.rerender(80, 80);
+        pager.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), 10);
+        assert!(pager.viewing_source);
+
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5), 10);
+        pager.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 0, 5), 10);
+        assert_eq!(pager.pending_clipboard.as_deref(), Some("hello"));
+    }
+
+    /// 4.4 마우스 휠 스크롤은 진행 중인 선택 상태를 건드리지 않는다.
+    #[test]
+    fn wheel_scroll_does_not_disturb_drag_selection() {
+        let theme = Theme::none();
+        let document = Document {
+            lines: (0..20).map(|i| Line::single(format!("줄 {i}"), Style::PLAIN)).collect(),
+            ..Document::default()
+        };
+        let mut pager = pager(document, &theme);
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 1, 0), 10);
+        assert!(pager.drag.is_some());
+        pager.handle_event(mouse(MouseEventKind::ScrollDown, 0, 0), 10);
+        assert!(pager.drag.is_some(), "휠 스크롤이 선택 상태를 지우면 안 된다");
+    }
+
+    /// 3.4 `draw()`가 드래그 구간에 역상 강조를 덧씌우는 근거(정규화된 선택 구간 + 그 구간에
+    /// `highlight_span`을 적용하면 역상이 붙는지)를 확인한다. `draw()` 자체는 `io::Stdout`을
+    /// 요구해 이 세션에선 직접 호출하지 않는다(markdown-link-navigation 때의 포커스 강조와
+    /// 같은 제약, 그때도 draw() 자체는 테스트하지 않고 같은 방식으로 확인했다).
+    #[test]
+    fn draw_highlights_the_dragged_selection() {
+        let theme = Theme::none();
+        let document = Document { lines: vec![Line::single("hello world", Style::PLAIN)], ..Document::default() };
+        let mut pager = pager(document, &theme);
+        pager.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0), 10);
+        pager.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5), 10);
+        assert!(pager.drag.is_some());
+
+        let selection = normalize_selection(pager.drag.unwrap());
+        assert_eq!(selection, ((0, 0), (0, 5)));
+        let highlighted = pager.lines[0].highlight_span(0, 5, Style::PLAIN.reverse());
+        assert!(highlighted.runs().any(|(t, s)| s.reverse && t == "hello"));
     }
 
     /// 7.1 앵커 점프: 찾으면 그 헤딩 줄로, 못 찾으면 위치를 유지하고 상태 메시지를 남긴다.
