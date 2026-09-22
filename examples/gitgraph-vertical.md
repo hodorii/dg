@@ -15,14 +15,46 @@ gitGraph TB:
     commit id: "init"
     branch develop
     checkout develop
+    branch feature-a
+    checkout feature-a
     commit id: "feature-a"
-    checkout main
-    commit id: "hotfix"
     checkout develop
+    merge feature-a
+    checkout main
+    branch hotfix
+    checkout hotfix
+    commit id: "hotfix"
+    checkout main
+    merge hotfix
+    checkout develop
+    branch feature-b
+    checkout feature-b
     commit id: "feature-b"
+    checkout develop
+    merge feature-b
     checkout main
     merge develop
 ```
+
+```mermaid
+gitGraph TB:
+    commit id: "init"
+    branch develop
+    checkout develop
+    commit id: "update"
+    commit id: "fix"
+    checkout main
+    merge develop
+    commit "merge develop"
+    branch feature
+    checkout feature
+    commit "feature/1"
+    commit "tested"
+    checkout main
+    merge feature
+```
+
+
 
 ## 같은 그래프를 가로 모드로 (`gitGraph LR:`, 기본값)
 
@@ -31,13 +63,61 @@ gitGraph LR:
     commit id: "init"
     branch develop
     checkout develop
+    branch feature-a
+    checkout feature-a
     commit id: "feature-a"
-    checkout main
-    commit id: "hotfix"
     checkout develop
+    merge feature-a
+    checkout main
+    branch hotfix
+    checkout hotfix
+    commit id: "hotfix"
+    checkout main
+    merge hotfix
+    checkout develop
+    branch feature-b
+    checkout feature-b
     commit id: "feature-b"
+    checkout develop
+    merge feature-b
     checkout main
     merge develop
+```
+
+```mermaid
+gitGraph LR:
+    commit
+    branch develop
+    checkout develop
+    commit
+    commit
+    checkout main
+    merge develop
+    commit
+    branch feature
+    checkout feature
+    commit
+    commit
+    checkout main
+    merge feature
+```
+
+```mermaid
+gitGraph TB:
+    commit id: "init"
+    branch develop
+    checkout develop
+    commit id: "update"
+    commit id: "fix"
+    checkout main
+    merge develop
+    commit "merge develop"
+    branch feature
+    checkout feature
+    commit "feature/1"
+    commit "tested"
+    checkout main
+    merge feature
 ```
 
 ## 기대 결과
