@@ -63,8 +63,23 @@ struct SequenceLayout<'a> {
     fragments: Vec<Fragment>,
     /// 항목 번호 → 프레임 번호 (FragmentStart 항목만).
     fragment_of_item: Vec<Option<usize>>,
+    /// 참여자별 최대 동시 활성화 겹침 수(겹치지 않으면 1). `position_participants()`가
+    /// 간격 확보에 쓴다. 자기 메시지(`from == to`)의 활성화는 집계하지 않는다
+    /// (sequence-nested-activation-offset — 그 경로는 activate/deactivate 자체를
+    /// 읽지 않는 기존 결함이라 범위 밖).
+    max_activation_depth: Vec<usize>,
     centers: Vec<usize>,
     total_width: usize,
+}
+
+/// 겹치는 활성화 막대를 옆으로 어긋나게 그릴 때 한 칸씩 더하는 상한. 이보다 깊게
+/// 겹쳐도 더 벌어지지 않고 이 칸에 겹쳐 그린다(다이어그램 폭이 무한정 늘지 않게).
+const ACTIVATION_OFFSET_CAP: usize = 3;
+
+/// 깊이 인덱스(0부터, 그 활성화가 열릴 때 이미 열려 있던 구간 수)를 실제 오프셋
+/// 칸 수로 바꾼다.
+fn activation_offset(depth_index: usize) -> usize {
+    depth_index.min(ACTIVATION_OFFSET_CAP)
 }
 
 impl<'a> SequenceLayout<'a> {
@@ -112,10 +127,12 @@ impl<'a> SequenceLayout<'a> {
             labels,
             fragments: Vec::new(),
             fragment_of_item: vec![None; sequence.items.len()],
+            max_activation_depth: vec![1; sequence.participants.len()],
             centers: Vec::new(),
             total_width: 0,
         };
         layout.collect_fragments();
+        layout.collect_activation_depths();
         layout.position_participants();
         if layout.total_width > width {
             return None;
@@ -186,6 +203,35 @@ impl<'a> SequenceLayout<'a> {
             if fragment.lo == usize::MAX {
                 fragment.lo = 0;
                 fragment.hi = participant_count - 1;
+            }
+        }
+    }
+
+    /// 참여자별로 동시에 열려 있던 활성화 구간 수의 최댓값을 미리 구해 둔다 —
+    /// `position_participants()`가 간격에 반영해야 하므로 그리기 전에 필요하다.
+    /// `draw()`가 실제로 막대를 그릴 때 다시 훑는 것과 같은 열고/닫기 규칙(LIFO)을
+    /// 쓰지만, 여기서는 칸 위치가 아니라 깊이 카운터만 본다.
+    fn collect_activation_depths(&mut self) {
+        let mut depth = vec![0usize; self.sequence.participants.len()];
+        for item in &self.sequence.items {
+            match item {
+                SequenceItem::Message { from, to, activate_target, deactivate_source, .. } if from != to => {
+                    if *activate_target {
+                        depth[*to] += 1;
+                        self.max_activation_depth[*to] = self.max_activation_depth[*to].max(depth[*to]);
+                    }
+                    if *deactivate_source {
+                        depth[*from] = depth[*from].saturating_sub(1);
+                    }
+                }
+                SequenceItem::Activate(p) => {
+                    depth[*p] += 1;
+                    self.max_activation_depth[*p] = self.max_activation_depth[*p].max(depth[*p]);
+                }
+                SequenceItem::Deactivate(p) => {
+                    depth[*p] = depth[*p].saturating_sub(1);
+                }
+                _ => {}
             }
         }
     }
@@ -293,6 +339,21 @@ impl<'a> SequenceLayout<'a> {
                 left_margin = left_margin.max(interior_need);
             }
         }
+        // 겹치는 활성화 막대는 참여자 칸에서 오른쪽으로 어긋나 그려지므로(오프셋 칸
+        // 수만큼) 그 옆 간격이 최소한 그만큼 더 있어야 옆 참여자의 생명선과 겹치지
+        // 않는다(sequence-nested-activation-offset). 겹치지 않는 참여자(깊이 1)는
+        // 손대지 않는다.
+        for (p, &depth) in self.max_activation_depth.iter().enumerate() {
+            if depth <= 1 {
+                continue;
+            }
+            let extra = activation_offset(depth - 1);
+            if p + 1 < count {
+                constraints.push((p, p + 1, gaps[p] + extra));
+            } else {
+                right_margin += extra;
+            }
+        }
         constraints.sort_by_key(|&(a, b, _)| (b - a, a));
         for (a, b, need) in constraints {
             let current: usize = gaps[a..b].iter().sum();
@@ -324,11 +385,17 @@ impl<'a> SequenceLayout<'a> {
         let header_top = row - header_height;
         let body_start = row;
         let count = self.sequence.participants.len();
-        let mut active: Vec<Vec<(usize, Option<usize>)>> = vec![Vec::new(); count];
+        // 세 번째 필드는 이 구간이 열릴 때의 깊이 인덱스(0부터) — 오프셋 칸 계산에 쓴다.
+        let mut active: Vec<Vec<(usize, Option<usize>, usize)>> = vec![Vec::new(); count];
         let mut active_depth = vec![0usize; count];
         let mut last_arrow_row = row;
         let mut fragment_stack: Vec<usize> = Vec::new();
         let mut delays: Vec<usize> = Vec::new();
+        // 활성화를 열거나 닫는 메시지의 화살표 쪽 끝을 그 구간의 오프셋 칸까지
+        // 연장하기 위한 항목별 (참여자와 무관하게, from/to 어느 쪽인지는
+        // draw_message가 이미 안다) 오프셋 칸 수.
+        let mut open_offset: Vec<Option<usize>> = vec![None; self.sequence.items.len()];
+        let mut close_offset: Vec<Option<usize>> = vec![None; self.sequence.items.len()];
         // 항목마다 (행 범위, x 범위)를 기록해 프레임 크기를 잡는다.
         let items: Vec<SequenceItem> = self.sequence.items.clone();
         let mut pending: Vec<(usize, usize, usize, usize, SequenceItem)> = Vec::new();
@@ -346,12 +413,16 @@ impl<'a> SequenceLayout<'a> {
                     row += self.labels[index].len() + 1;
                     last_arrow_row = row - 1;
                     if *activate_target {
+                        let depth_index = active_depth[*to];
                         active_depth[*to] += 1;
-                        active[*to].push((last_arrow_row, None));
+                        active[*to].push((last_arrow_row, None, depth_index));
+                        open_offset[index] = Some(activation_offset(depth_index));
                     }
                     if *deactivate_source {
+                        let closing_depth_index = active_depth[*from].saturating_sub(1);
                         Self::close_activation(&mut active[*from], last_arrow_row);
-                        active_depth[*from] = active_depth[*from].saturating_sub(1);
+                        active_depth[*from] = closing_depth_index;
+                        close_offset[index] = Some(activation_offset(closing_depth_index));
                     }
                     let (a, b) = (self.centers[*from.min(to)], self.centers[*from.max(to)]);
                     (a, b)
@@ -405,8 +476,9 @@ impl<'a> SequenceLayout<'a> {
                     (usize::MAX, 0)
                 }
                 SequenceItem::Activate(p) => {
+                    let depth_index = active_depth[*p];
                     active_depth[*p] += 1;
-                    active[*p].push((last_arrow_row, None));
+                    active[*p].push((last_arrow_row, None, depth_index));
                     (usize::MAX, 0)
                 }
                 SequenceItem::Deactivate(p) => {
@@ -433,10 +505,10 @@ impl<'a> SequenceLayout<'a> {
         canvas.set_edge_mode(true);
         for (p, &x) in self.centers.iter().enumerate() {
             canvas.vline(x, header_top + self.boxes[p].height.max(1) - 1 + (header_height - self.boxes[p].height), footer_top, LineKind::Solid, theme.diagram_line);
-            for (start, end) in &active[p] {
+            for (start, end, depth_index) in &active[p] {
                 let end = end.unwrap_or(body_end);
                 if *start < end {
-                    canvas.vline(x, *start, end, LineKind::Heavy, theme.diagram_accent);
+                    canvas.vline(x + activation_offset(*depth_index), *start, end, LineKind::Heavy, theme.diagram_accent);
                 }
             }
         }
@@ -454,7 +526,9 @@ impl<'a> SequenceLayout<'a> {
                     self.draw_self_message(canvas, *index, *from, *start_row, *kind, *head);
                 }
                 SequenceItem::Message { from, to, kind, head, .. } => {
-                    self.draw_message(canvas, *index, *from, *to, *start_row, *kind, *head);
+                    let from_offset = close_offset[*index].unwrap_or(0);
+                    let to_offset = open_offset[*index].unwrap_or(0);
+                    self.draw_message(canvas, *index, *from, *to, *start_row, *kind, *head, from_offset, to_offset);
                 }
                 SequenceItem::Note { placement, lines } => {
                     let note_width = Self::note_width(lines);
@@ -521,23 +595,31 @@ impl<'a> SequenceLayout<'a> {
         let _ = bottom;
     }
 
-    fn close_activation(intervals: &mut [(usize, Option<usize>)], row: usize) {
-        if let Some(open) = intervals.iter_mut().rev().find(|(_, end)| end.is_none()) {
+    fn close_activation(intervals: &mut [(usize, Option<usize>, usize)], row: usize) {
+        if let Some(open) = intervals.iter_mut().rev().find(|(_, end, _)| end.is_none()) {
             open.1 = Some(row);
         }
     }
 
-    fn draw_message(&self, canvas: &mut Canvas, index: usize, from: usize, to: usize, start_row: usize, kind: LineKind, head: Marker) {
+    /// `from_offset`/`to_offset`: 이 메시지가 그 쪽에서 활성화를 열거나(안쪽으로
+    /// 새로 겹치는 구간) 닫을 때(가장 안쪽 구간이 닫힘), 그 구간이 그려지는 오프셋
+    /// 칸 수. 겹침이 없으면 둘 다 0이라 기존과 동일하게 동작한다
+    /// (sequence-nested-activation-offset).
+    fn draw_message(&self, canvas: &mut Canvas, index: usize, from: usize, to: usize, start_row: usize, kind: LineKind, head: Marker, from_offset: usize, to_offset: usize) {
         let theme = self.theme;
         let (x_from, x_to) = (self.centers[from], self.centers[to]);
         let lines = &self.labels[index];
         let arrow_row = start_row + lines.len();
-        let (lo, hi) = (x_from.min(x_to) + 1, x_from.max(x_to) - 1);
+        // 라벨 가운데 정렬은 기준 생명선 칸으로 그대로 한다 — 화살표 자체(아래)만
+        // 오프셋 칸까지 연장한다.
+        let (label_lo, label_hi) = (x_from.min(x_to) + 1, x_from.max(x_to) - 1);
         for (k, line) in lines.iter().enumerate() {
-            canvas.text_centered(lo, start_row + k, hi - lo + 1, line, theme.diagram_text);
+            canvas.text_centered(label_lo, start_row + k, label_hi - label_lo + 1, line, theme.diagram_text);
         }
+        let (eff_from, eff_to) = (x_from + from_offset, x_to + to_offset);
+        let (lo, hi) = (eff_from.min(eff_to) + 1, eff_from.max(eff_to) - 1);
         canvas.hline(lo, hi, arrow_row, kind, theme.diagram_line);
-        let rightward = x_to > x_from;
+        let rightward = eff_to > eff_from;
         let glyph = match (head, rightward) {
             (Marker::OpenArrow, true) => '>',
             (Marker::OpenArrow, false) => '<',
@@ -553,7 +635,7 @@ impl<'a> SequenceLayout<'a> {
             canvas.put(x, arrow_row, glyph, theme.diagram_line);
         }
         let origin_bits = if rightward { EAST } else { WEST };
-        canvas.join(x_from, arrow_row, origin_bits, LineKind::Solid, theme.diagram_line, false);
+        canvas.join(eff_from, arrow_row, origin_bits, LineKind::Solid, theme.diagram_line, false);
     }
 
     fn draw_self_message(&self, canvas: &mut Canvas, index: usize, participant: usize, start_row: usize, kind: LineKind, head: Marker) {
@@ -706,4 +788,107 @@ mod tests {
         let joined = text.join("\n");
         assert!(joined.contains(&format!("[{label}]")), "{joined}");
     }
+
+    /// A와 C가 둘 다 B를 활성화한 채 겹치는 시나리오. LIFO 규칙(close_activation)이
+    /// 전제이므로 `-`(deactivate) 접미사가 반드시 여는 쪽과 같은 메시지에 실려야
+    /// 한다 — mermaid `-->>-` 접미사 파싱 자체는 이 스펙 밖의 별도 결함이라 파서를
+    /// 거치지 않고 IR을 직접 구성한다.
+    fn overlapping_activation_sequence() -> Sequence {
+        let mut s = Sequence::default();
+        let a = s.intern("A", "A", ParticipantKind::Box);
+        let b = s.intern("B", "B", ParticipantKind::Box);
+        let c = s.intern("C", "C", ParticipantKind::Box);
+        s.items.push(SequenceItem::Message { from: a, to: b, label: "call1".into(), kind: LineKind::Solid, head: Marker::Arrow, activate_target: true, deactivate_source: false });
+        s.items.push(SequenceItem::Message { from: c, to: b, label: "call2".into(), kind: LineKind::Solid, head: Marker::Arrow, activate_target: true, deactivate_source: false });
+        s.items.push(SequenceItem::Message { from: b, to: c, label: "return2".into(), kind: LineKind::Dashed, head: Marker::Arrow, activate_target: false, deactivate_source: true });
+        s.items.push(SequenceItem::Message { from: b, to: a, label: "return1".into(), kind: LineKind::Dashed, head: Marker::Arrow, activate_target: false, deactivate_source: true });
+        s
+    }
+
+    /// 활성화 막대 글자('┃')만 남기고 나머지 칸은 공백으로 바꿔, 어느 열에 막대가
+    /// 있는지 행마다 확인하기 쉽게 만든다.
+    fn bar_columns(row: &str) -> Vec<usize> {
+        row.chars().enumerate().filter(|(_, c)| *c == '┃').map(|(i, _)| i).collect()
+    }
+
+    #[test]
+    fn overlapping_activations_draw_at_different_columns() {
+        let out = render(&overlapping_activation_sequence(), &Theme::none(), 80).unwrap();
+        let text: Vec<String> = out.iter().map(Line::plain).collect();
+        let joined = text.join("\n");
+        // "return2" 라벨이 있는 줄은 두 활성화가 모두 열려 있는 유일한 구간이다 —
+        // 그 줄에서 활성화 막대 글자가 서로 다른 두 칸에 있어야 한다(1.1).
+        let row = text.iter().find(|l| l.contains("return2")).unwrap_or_else(|| panic!("return2 줄을 못 찾음: {joined}"));
+        let cols = bar_columns(row);
+        assert_eq!(cols.len(), 2, "겹치는 두 활성화 막대가 같은 줄에 둘 다 보여야 한다: {row:?}\n{joined}");
+        assert_ne!(cols[0], cols[1], "두 활성화 막대가 같은 칸에 겹쳐 그려지면 안 된다: {row:?}");
+        assert_eq!(cols[1] - cols[0], 1, "두 번째(안쪽) 막대는 첫 번째보다 한 칸 오른쪽에 있어야 한다: {row:?}");
+    }
+
+    #[test]
+    fn non_overlapping_activation_bar_stays_on_lifeline() {
+        let mut s = Sequence::default();
+        let a = s.intern("A", "A", ParticipantKind::Box);
+        let b = s.intern("B", "B", ParticipantKind::Box);
+        s.items.push(SequenceItem::Message { from: a, to: b, label: "hi".into(), kind: LineKind::Solid, head: Marker::Arrow, activate_target: true, deactivate_source: false });
+        s.items.push(SequenceItem::Message { from: b, to: a, label: "bye".into(), kind: LineKind::Solid, head: Marker::Arrow, activate_target: false, deactivate_source: true });
+        let out = render(&s, &Theme::none(), 80).unwrap();
+        let text: Vec<String> = out.iter().map(Line::plain).collect();
+        let joined = text.join("\n");
+        let row = text.iter().find(|l| l.contains('┃')).unwrap_or_else(|| panic!("활성화 막대 줄을 못 찾음: {joined}"));
+        assert_eq!(bar_columns(row).len(), 1, "겹치지 않는 활성화는 지금처럼 막대가 한 칸에만 있어야 한다(1.3): {row:?}");
+    }
+
+    #[test]
+    fn three_overlapping_activations_step_one_column_each() {
+        let mut s = Sequence::default();
+        let a = s.intern("A", "A", ParticipantKind::Box);
+        let b = s.intern("B", "B", ParticipantKind::Box);
+        let c = s.intern("C", "C", ParticipantKind::Box);
+        let d = s.intern("D", "D", ParticipantKind::Box);
+        for (from, label) in [(a, "1"), (c, "2"), (d, "3")] {
+            s.items.push(SequenceItem::Message { from, to: b, label: label.into(), kind: LineKind::Solid, head: Marker::Arrow, activate_target: true, deactivate_source: false });
+        }
+        s.items.push(SequenceItem::Message { from: b, to: a, label: "mark".into(), kind: LineKind::Solid, head: Marker::Arrow, activate_target: false, deactivate_source: false });
+        let out = render(&s, &Theme::none(), 100).unwrap();
+        let text: Vec<String> = out.iter().map(Line::plain).collect();
+        let joined = text.join("\n");
+        let row = text.iter().find(|l| l.contains("mark")).unwrap_or_else(|| panic!("mark 줄을 못 찾음: {joined}"));
+        let cols = bar_columns(row);
+        assert_eq!(cols, vec![cols[0], cols[0] + 1, cols[0] + 2], "3겹이면 칸이 하나씩 더 어긋나야 한다(1.2): {row:?}\n{joined}");
+    }
+
+    #[test]
+    fn activation_offset_caps_and_never_panics() {
+        let mut s = Sequence::default();
+        let b = s.intern("B", "B", ParticipantKind::Box);
+        let callers: Vec<usize> = (0..6).map(|i| s.intern(&format!("P{i}"), &format!("P{i}"), ParticipantKind::Box)).collect();
+        for &p in &callers {
+            s.items.push(SequenceItem::Message { from: p, to: b, label: "go".into(), kind: LineKind::Solid, head: Marker::Arrow, activate_target: true, deactivate_source: false });
+        }
+        // 6겹(상한 3보다 훨씬 깊음)이어도 패닉 없이 끝까지 렌더링돼야 한다(4.1).
+        let out = render(&s, &Theme::none(), 160);
+        assert!(out.is_some(), "폭 안에서 렌더링이 실패하면 안 된다");
+        let text: Vec<String> = out.unwrap().iter().map(Line::plain).collect();
+        let last_row = text.iter().rev().find(|l| l.contains('┃')).unwrap_or_else(|| panic!("활성화 막대 줄을 못 찾음"));
+        let cols = bar_columns(last_row);
+        let span = cols.iter().max().unwrap() - cols.iter().min().unwrap();
+        assert!(span <= ACTIVATION_OFFSET_CAP, "상한을 넘어 칸이 계속 벌어지면 안 된다(4.1): span={span}");
+    }
+
+    #[test]
+    fn message_arrow_reaches_the_offset_column_it_opens_or_closes() {
+        let out = render(&overlapping_activation_sequence(), &Theme::none(), 80).unwrap();
+        let text: Vec<String> = out.iter().map(Line::plain).collect();
+        let joined = text.join("\n");
+        // call2가 여는 활성화(오프셋 1칸)의 화살촉은 두 번째 막대 칸 바로 다음(오른쪽)에 와야 한다.
+        let call2_row = text.iter().find(|l| l.contains("call2")).unwrap_or_else(|| panic!("call2 줄을 못 찾음: {joined}"));
+        // call2 라벨 줄이 아니라 화살표 줄(그다음 줄)에서 확인한다.
+        let call2_arrow_row = text[text.iter().position(|l| l == call2_row).unwrap() + 1].clone();
+        let cols = bar_columns(&call2_arrow_row);
+        assert_eq!(cols.len(), 2, "call2 화살표 줄엔 두 활성화 막대가 다 보여야 한다: {call2_arrow_row:?}\n{joined}");
+        let arrowhead_col = call2_arrow_row.chars().position(|c| c == '◀').unwrap_or_else(|| panic!("화살촉(◀)을 못 찾음: {call2_arrow_row:?}"));
+        assert_eq!(arrowhead_col, cols[1] + 1, "call2가 새로 여는 활성화 칸 바로 옆에 화살촉이 와야 한다(3.1): {call2_arrow_row:?}");
+    }
 }
+
