@@ -1831,15 +1831,32 @@ impl<'a> Layout<'a> {
                 // 오른쪽 바로 다음 칸(top)에 붙인다 — 레이어 공용 통로 시작점(gap_start)을 쓰면
                 // 같은 레이어의 더 넓은 노드 기준으로 밀려, 좁은 노드에서 시작하는 라벨이 자기
                 // 노드에서 멀리 떨어져 보인다(diagram-lr-tail-label-position). to측(head_label)은
-                // 이미 세그먼트 자신의 bottom을 쓴다 — 그것과 대칭을 맞춘다.
+                // 이미 세그먼트 자신의 bottom을 쓴다 — 그것과 대칭을 맞춘다(단, head_label도
+                // tail_label과 같은 이유로 표식과 다른 줄을 쓰므로 to측 노드 경계에 바로
+                // 붙여야 한다 — 아래 head_label 계산 참고).
+                //
+                // `label`(관계 이름)은 표식과 같은 segment.exit 줄을 쓴다. top 바로 다음
+                // 칸부터 쓰면 표식이 두 글자(까치발 `CrowZeroMany` 등, 예: `╫>`)인 경우 그
+                // 두 번째 글자를 그대로 덮어써 지운다 — 표식이 실제로 차지하는 칸 수만큼만
+                // 건너뛴다(diagram-lr-label-marker-overlap).
+                //
+                // `tail_label`(카디널리티 등)은 표식보다 한 줄 위(exit-1)에 그려 표식과 절대
+                // 같은 칸을 다투지 않는다 — 표식 글자 수와 무관하게 노드 경계 바로 다음 칸(top)에
+                // 붙여, 표식이 노드 테두리에 맞닿는 것과 같은 간격으로 맞춘다(다이어그램마다
+                // 표식 글자 수가 달라도 카디널리티 위치가 흔들리지 않는다).
+                let tail_glyphs = marker_glyphs(top_marker, self.direction, true).len().max(1);
                 if !label.is_empty() {
-                    canvas.text(top + 1, segment.exit, &label, label_style);
+                    canvas.text(top + tail_glyphs, segment.exit, &label, label_style);
                 }
                 if !tail_label.is_empty() {
-                    canvas.text(top + 1, segment.exit.saturating_sub(1), &tail_label, label_style);
+                    canvas.text(top, segment.exit.saturating_sub(1), &tail_label, label_style);
                 }
                 if !head_label.is_empty() {
-                    let x = bottom.saturating_sub(width_of(&head_label));
+                    // tail_label과 대칭: head_label도 표식과 다른 줄(entry-1)에 그려 표식
+                    // 글자 수를 다툴 일이 없다 — 마지막 글자가 to측 노드 경계 바로 앞 칸
+                    // (bottom, 표식의 마지막 글자와 같은 자리)에서 끝나도록 오른쪽으로
+                    // 한 칸 더 붙인다(diagram-lr-label-marker-overlap).
+                    let x = (bottom + 1).saturating_sub(width_of(&head_label));
                     canvas.text(x, segment.entry.saturating_sub(1), &head_label, label_style);
                 }
             }
@@ -2146,5 +2163,74 @@ mod tests {
         let long_gap = long_tail_col as isize - long_border as isize;
         assert_eq!(a_gap, long_gap, "from측 라벨은 자기 노드 경계에서 같은 간격만큼 떨어져야 한다(A={a_gap}, LONG={long_gap}):\n{text}");
         assert!(a_gap <= 3, "from측 라벨이 노드 경계에서 너무 멀리 떨어져 있다(gap={a_gap}):\n{text}");
+    }
+
+    /// (diagram-lr-label-marker-overlap) LR에서 from측 표식이 두 글자(까치발 `CrowZeroMany`
+    /// 등)일 때, 관계 라벨(`label`)이 표식의 두 번째 글자를 덮어써 지우면 안 된다 — 둘 다 같은
+    /// `segment.exit` 줄을 쓰기 때문에 라벨 시작 칸이 표식 폭을 건너뛰어야 한다. 표식이 한
+    /// 글자인 흔한 경우(카디널리티 간격)는 건드리지 않는다 — 사용자가 그 간격은 기존(top+1)이
+    /// 맞다고 확인했다.
+    #[test]
+    fn left_right_label_does_not_overwrite_a_two_glyph_tail_marker() {
+        let mut g = Graph::default();
+        let a = g.intern("A", "A", Shape::Rect, None);
+        let b = g.intern("B", "B", Shape::Rect, None);
+        g.direction = Some(Direction::LeftRight);
+        // CrowZeroMany 꼬리 표식은 두 글자(╫/○, > 계열)를 쓴다 — 둘 다 살아 있어야 한다.
+        g.add_edge(Edge { from: a, to: b, tail: Marker::CrowZeroMany, label: "places".into(), ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+
+        let expected: Vec<char> = marker_glyphs(Marker::CrowZeroMany, Direction::LeftRight, true);
+        assert_eq!(expected.len(), 2, "이 테스트는 두 글자짜리 표식을 전제로 한다: {expected:?}");
+        let a_row = out.iter().position(|l| l.contains(" A ")).unwrap_or_else(|| panic!("A not found: {text}"));
+        for glyph in &expected {
+            assert!(out[a_row].contains(*glyph), "표식 글자 {glyph:?}가 라벨에 덮여 사라졌다: {text}");
+        }
+        assert!(text.contains("places"), "관계 라벨 자체도 그대로 보여야 한다: {text}");
+    }
+
+    /// (diagram-lr-tail-label-border-gap) tail_label(카디널리티 등)은 표식보다 한 줄 위에
+    /// 그려져 표식과 같은 칸을 다투지 않으므로, 표식 글자 수와 무관하게 노드 경계 바로
+    /// 다음 칸에 붙어야 한다(사용자 확인: 표식이 노드 테두리에 맞닿는 것과 같은 간격).
+    #[test]
+    fn left_right_tail_label_hugs_the_border_directly() {
+        let mut g = Graph::default();
+        let a = g.intern("A", "A", Shape::Rect, None);
+        let b = g.intern("B", "B", Shape::Rect, None);
+        g.direction = Some(Direction::LeftRight);
+        g.add_edge(Edge { from: a, to: b, tail: Marker::CrowOne, tail_label: "1".into(), ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+
+        let a_row = out.iter().position(|l| l.contains(" A ")).unwrap_or_else(|| panic!("A not found: {text}"));
+        let a_border = out[a_row].chars().enumerate().filter(|(_, c)| *c == '│').nth(1).map(|(i, _)| i).unwrap_or_else(|| panic!("A border not found: {text}"));
+        let tail_col = out[a_row - 1].chars().position(|c| c == '1').unwrap_or_else(|| panic!("tail label not found above its row: {text}"));
+        // 경계 칸 바로 다음 칸(빈 칸 없이)에 붙어야 한다 — 표식이 몇 글자든 상관없다.
+        assert_eq!(tail_col as isize - a_border as isize, 1, "tail_label이 노드 경계에 바로 붙지 않았다: {text}");
+    }
+
+    /// (diagram-lr-tail-label-border-gap) head_label(카디널리티 등)도 tail_label과
+    /// 대칭이다 — 표식과 다른 줄에 그려지므로 to측 노드 경계 바로 앞 칸에 붙어야 한다.
+    #[test]
+    fn left_right_head_label_hugs_the_border_directly() {
+        let mut g = Graph::default();
+        let a = g.intern("A", "A", Shape::Rect, None);
+        let b = g.intern("B", "B", Shape::Rect, None);
+        g.direction = Some(Direction::LeftRight);
+        g.add_edge(Edge { from: a, to: b, head: Marker::CrowOne, head_label: "9".into(), ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+
+        let b_row = out.iter().position(|l| l.contains(" B ")).unwrap_or_else(|| panic!("B not found: {text}"));
+        // " B " 바로 앞 칸이 B의 왼쪽 경계(│)다 — A도 같은 줄에 있을 수 있어 첫 │는 A의
+        // 것일 수 있으므로, B의 것을 " B " 위치로부터 역산한다.
+        let chars: Vec<char> = out[b_row].chars().collect();
+        let b_text_at = chars.windows(3).position(|w| w == [' ', 'B', ' ']).unwrap_or_else(|| panic!("\" B \" not found: {text}"));
+        let b_border = b_text_at - 1;
+        assert_eq!(chars[b_border], '│', "B 왼쪽 경계 위치 계산이 틀렸다: {text}");
+        let head_col = out[b_row - 1].chars().position(|c| c == '9').unwrap_or_else(|| panic!("head label not found above its row: {text}"));
+        // 경계 칸 바로 앞 칸(빈 칸 없이)에 붙어야 한다.
+        assert_eq!(b_border as isize - head_col as isize, 1, "head_label이 노드 경계에 바로 붙지 않았다: {text}");
     }
 }

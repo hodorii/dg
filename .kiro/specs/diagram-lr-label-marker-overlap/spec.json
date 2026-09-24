@@ -1,0 +1,22 @@
+{
+  "feature_name": "diagram-lr-label-marker-overlap",
+  "created_at": "2026-09-24T02:00:00Z",
+  "updated_at": "2026-09-24T03:00:00Z",
+  "language": "ko",
+  "phase": "completed",
+  "approvals": {
+    "bugfix": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": true
+}

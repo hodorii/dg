@@ -188,17 +188,17 @@ gitGraph는 PlantUML 대응이 없어 애초에 공유 `ir`에 넣지 않고 `me
 
 ◈ mermaid · class ────────────────────────────────────────
 ┌──────────────────────┐                              ┌───────────────────────┐     ┌───────────────┐
-│        Graph         │           1                  │         Node          │     │ «enumeration» │
-├──────────────────────┤♦──────────nodes──────────╮   ├───────────────────────┤ ╭──▶│     Shape     │
-│ +Vec<Node> nodes     │           1              │ * │ +String id            │ │   └───────────────┘
-│ +Vec<Edge> edges     │♦──────────groups────────╮╰───│ +Vec<String> sections │─╯
-│ +Vec<Group> groups   │           1             │    │ +Shape shape          │     ┌───────────────┐
-│ +Direction direction │♦──────────edges────────╮│    │ +usize group          │ ╭──▶│ «enumeration» │
+│        Graph         │1                             │         Node          │     │ «enumeration» │
+├──────────────────────┤♦nodes────────────────────╮   ├───────────────────────┤ ╭──▶│     Shape     │
+│ +Vec<Node> nodes     │1                         │  *│ +String id            │ │   └───────────────┘
+│ +Vec<Edge> edges     │♦groups──────────────────╮╰───│ +Vec<String> sections │─╯
+│ +Vec<Group> groups   │1                        │    │ +Shape shape          │     ┌───────────────┐
+│ +Direction direction │♦edges──────────────────╮│    │ +usize group          │ ╭──▶│ «enumeration» │
 │ +String title        │                        ││    └───────────────────────┘ │   │    Marker     │
 └──────────────────────┘                        ││                              │╭─▶│               │
                                                 ││    ┌───────────────┐         ││  └───────────────┘
                                                 ││    │     Group     │         ││
-                                                ││  * ├───────────────┤         ││
+                                                ││   *├───────────────┤         ││
                                                 │╰────│ +String id    │         ││
                                                 │     │ +String title │         ││
                                                 │     │ +usize parent │         ││
@@ -208,7 +208,7 @@ gitGraph는 PlantUML 대응이 없어 애초에 공유 `ir`에 넣지 않고 `me
                                                 │     │      Edge      │        ││
                                                 │     ├────────────────┤        ││
                                                 │     │ +usize from    │        ││
-                                                │   * │ +usize to      │────────╯│
+                                                │    *│ +usize to      │────────╯│
                                                 ╰─────│ +String label  │         │
                                                       │ +LineKind kind │─────────◠╮
                                                       │ +Marker tail   │         ││
@@ -216,19 +216,19 @@ gitGraph는 PlantUML 대응이 없어 애초에 공유 `ir`에 넣지 않고 `me
                                                       └────────────────┘         ││
                                                                                  ││
                                                       ┌──────────────┐           ││ ┌───────────────┐
-┌────────────────────────────────┐ 1                * │              │───────────╯╰▶│ «enumeration» │
+┌────────────────────────────────┐1                  *│              │───────────╯╰▶│ «enumeration» │
 │            Sequence            │♦items──────────────│ SequenceItem │              │   LineKind    │
 ├────────────────────────────────┤                    │              │─────────────▶│               │
 │ +Vec<Participant> participants │                    └──────────────┘              └───────────────┘
-│ +Vec<SequenceItem> items       │ 1
+│ +Vec<SequenceItem> items       │1
 │ +bool autonumber               │♦participants─╮     ┌───────────────────────┐
 └────────────────────────────────┘              │     │      Participant      │     ┌─────────────────┐
-                                                │   * ├───────────────────────┤     │  «enumeration»  │
+                                                │    *├───────────────────────┤     │  «enumeration»  │
 ┌───────────────────────┐                       ╰─────│ +String id            │────▶│ ParticipantKind │
 │       GitGraph        │                             │ +ParticipantKind kind │     └─────────────────┘
-├───────────────────────┤          1                  └───────────────────────┘
-│ +Vec<String> tracks   │♦─────────events───────╮
-│ +Vec<GitEvent> events │                       │   * ┌──────────┐
+├───────────────────────┤1                            └───────────────────────┘
+│ +Vec<String> tracks   │♦events────────────────╮
+│ +Vec<GitEvent> events │                       │    *┌──────────┐
 │ +Direction direction  │                       ╰─────│ GitEvent │
 └───────────────────────┘                             └──────────┘
 
@@ -249,7 +249,7 @@ ERD (mermaid)
           ╭──────────╯ │ │ contains
           │            │ ╰──────────╮
           ○            │            ○
-          ∨            │            ∨
+          ∧            │            ∧
 ┌───────────────────┐  │  ┌──────────────────┐
 │       EDGE        │  │  │      GROUP       │
 ├───────────────────┤  │  ├──────────────────┤
@@ -257,12 +257,12 @@ ERD (mermaid)
 │ to : usize [FK]   │  │  │ title : string   │
 │ label : string    │  │  └──────────────────┘
 └───────────────────┘  │            ╪
-          ∧            │            │
+          ∨            │            │
           ○            │            │
           ╰──────────╮ from/to로 참조
                      │ │ ╭──────────╯ 옵션으로 묶음
                      │ ○ ○
-                     ╪ ∨ ∨
+                     ╪ ∧ ∧
              ┌──────────────────┐
              │       NODE       │
              ├──────────────────┤
