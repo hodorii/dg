@@ -64,9 +64,13 @@ pub fn draw(canvas: &mut Canvas, x: usize, y: usize, shape: Shape, sections: &[V
             canvas.put(x + w - 2, y, '╲', border);
             canvas.put(x + 1, y + h - 1, '╲', border);
             canvas.put(x + w - 2, y + h - 1, '╱', border);
+            // 옆면 글자로 판단(마름모)과 예비 단계(육각형)를 구분한다 — 파서는 `{`(Diamond)와
+            // `{{`(Hexagon)를 이미 구분해 넘기는데, 이 두 글자만 같으면 그려질 땐 똑같아 보였다.
+            // 육각형은 모서리를 깎은 직사각형처럼 곧은 세로선을, 마름모는 좀 더 각진 꺾쇠를 쓴다.
+            let (left, right) = if shape == Shape::Hexagon { ('│', '│') } else { ('⟨', '⟩') };
             for row in y + 1..y + h - 1 {
-                canvas.put(x, row, '⟨', border);
-                canvas.put(x + w - 1, row, '⟩', border);
+                canvas.put(x, row, left, border);
+                canvas.put(x + w - 1, row, right, border);
             }
             draw_sections(canvas, x + 1, y + 1 + extra_top, w - 2, sections, theme, false);
         }
@@ -156,5 +160,17 @@ mod tests {
     fn cylinder_has_lid() {
         let rows = draw_rows(Shape::Cylinder, vec![vec!["db".into()]]);
         assert_eq!(rows, vec!["╭────╮", "├────┤", "│ db │", "╰────╯"]);
+    }
+
+    /// mermaid는 `{ }`(판단, Diamond)와 `{{ }}`(예비 단계, Hexagon)를 서로 다른 모양으로
+    /// 구분해 파싱하는데, 그리는 쪽이 같은 글자를 재사용하면 그 구분이 사라져 버렸다.
+    /// 옆면 글자만이라도 달라야 두 모양이 눈으로 구분된다.
+    #[test]
+    fn diamond_and_hexagon_render_differently() {
+        let diamond = draw_rows(Shape::Diamond, vec![vec!["x".into()]]);
+        let hexagon = draw_rows(Shape::Hexagon, vec![vec!["x".into()]]);
+        assert_eq!(diamond, vec![" ╱───╲", "⟨  x  ⟩", " ╲───╱"]);
+        assert_eq!(hexagon, vec![" ╱───╲", "│  x  │", " ╲───╱"]);
+        assert_ne!(diamond, hexagon, "판단(Diamond)과 예비 단계(Hexagon)가 같은 모양으로 그려지면 안 된다");
     }
 }
