@@ -1827,11 +1827,16 @@ impl<'a> Layout<'a> {
                 }
             }
             Direction::LeftRight => {
+                // from측 라벨(관계 이름·tail_label)은 이 세그먼트가 실제로 시작하는 자기 노드의
+                // 오른쪽 바로 다음 칸(top)에 붙인다 — 레이어 공용 통로 시작점(gap_start)을 쓰면
+                // 같은 레이어의 더 넓은 노드 기준으로 밀려, 좁은 노드에서 시작하는 라벨이 자기
+                // 노드에서 멀리 떨어져 보인다(diagram-lr-tail-label-position). to측(head_label)은
+                // 이미 세그먼트 자신의 bottom을 쓴다 — 그것과 대칭을 맞춘다.
                 if !label.is_empty() {
-                    canvas.text(gap_start + 1, segment.exit, &label, label_style);
+                    canvas.text(top + 1, segment.exit, &label, label_style);
                 }
                 if !tail_label.is_empty() {
-                    canvas.text(gap_start + 1, segment.exit.saturating_sub(1), &tail_label, label_style);
+                    canvas.text(top + 1, segment.exit.saturating_sub(1), &tail_label, label_style);
                 }
                 if !head_label.is_empty() {
                     let x = bottom.saturating_sub(width_of(&head_label));
@@ -2103,5 +2108,43 @@ mod tests {
         // (at_top=false)은 오른쪽으로 벌어지는 `<`.
         assert_eq!(marker_glyphs(Marker::CrowMany, Direction::LeftRight, true), vec!['╫', '>']);
         assert_eq!(marker_glyphs(Marker::CrowMany, Direction::LeftRight, false), vec!['╫', '<']);
+    }
+
+    /// (diagram-lr-tail-label-position) 가로(LR) 방향에서 같은 레이어에 폭이 다른 두 개체가
+    /// 있을 때, from측 라벨(관계 이름·카디널리티/다중성)은 각자 자기 노드 경계에서 같은
+    /// 간격만큼 떨어져야 한다 — 레이어에서 가장 넓은 노드 기준 위치를 공유해 좁은 노드 쪽
+    /// 라벨만 멀리 떨어지면 안 된다.
+    #[test]
+    fn left_right_tail_label_hugs_its_own_node_not_the_widest_sibling() {
+        let mut g = Graph::default();
+        let a = g.intern("A", "A", Shape::Rect, None);
+        let b = g.intern("B", "B", Shape::Rect, None);
+        let long = g.intern("LONG", "LONG_ENTITY_NAME_HERE", Shape::Rect, None);
+        let c = g.intern("C", "C", Shape::Rect, None);
+        g.direction = Some(Direction::LeftRight);
+        g.add_edge(Edge { from: a, to: b, head: Marker::Arrow, label: "aaa".into(), tail_label: "1".into(), head_label: "9".into(), ..Edge::default() });
+        g.add_edge(Edge { from: long, to: c, head: Marker::Arrow, label: "bbb".into(), tail_label: "1".into(), head_label: "9".into(), ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 120).unwrap());
+        let text = out.join("\n");
+
+        // 문자 열(칸) 기준으로 비교한다 — 상자 그림 문자는 UTF-8 바이트로는 3바이트라
+        // `str::find`(바이트 오프셋)를 그대로 쓰면 칸 수와 어긋난다.
+        let char_col = |row: &str, needle: char| row.chars().position(|c| c == needle).unwrap_or_else(|| panic!("{needle:?} not found in row {row:?}\n{text}"));
+        let nth_border_col = |row: &str, n: usize| {
+            row.chars().enumerate().filter(|(_, c)| *c == '│').nth(n).map(|(i, _)| i).unwrap_or_else(|| panic!("{n}번째 │ not found in row {row:?}\n{text}"))
+        };
+
+        let a_row = out.iter().position(|l| l.contains(" A ")).unwrap_or_else(|| panic!("A not found: {text}"));
+        let a_border = nth_border_col(&out[a_row], 1);
+        let a_tail_col = char_col(&out[a_row - 1], '1');
+
+        let long_row = out.iter().position(|l| l.contains("LONG_ENTITY_NAME_HERE")).unwrap_or_else(|| panic!("LONG not found: {text}"));
+        let long_border = nth_border_col(&out[long_row], 1);
+        let long_tail_col = char_col(&out[long_row - 1], '1');
+
+        let a_gap = a_tail_col as isize - a_border as isize;
+        let long_gap = long_tail_col as isize - long_border as isize;
+        assert_eq!(a_gap, long_gap, "from측 라벨은 자기 노드 경계에서 같은 간격만큼 떨어져야 한다(A={a_gap}, LONG={long_gap}):\n{text}");
+        assert!(a_gap <= 3, "from측 라벨이 노드 경계에서 너무 멀리 떨어져 있다(gap={a_gap}):\n{text}");
     }
 }

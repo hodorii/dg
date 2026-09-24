@@ -166,4 +166,36 @@ mod tests {
         assert!(text.contains("견주기") && text.contains("확장") && text.contains("캠페인 A"), "{text}");
         assert!(text.contains('┼') && text.contains('●'), "{text}");
     }
+
+    /// (diagram-lr-tail-label-position) classDiagram을 가로(LR) 방향으로 실제 파싱·렌더링해도
+    /// 그래프 배치기의 from측 라벨 결함이 그대로 재현된다 — ER 전용 결함이 아니다.
+    #[test]
+    fn renders_class_diagram_left_right_with_multiplicity_hugging_its_own_class() {
+        let source = "classDiagram\n A \"1\" --> \"many\" B : rel1\n LONG_CLASS_NAME_HERE \"1\" --> \"many\" C : rel2\n";
+        let options = DiagramOptions { direction: Some((crate::diagram::ir::Direction::LeftRight, false)), ..Default::default() };
+        let (kind, body) = render(source, &Theme::none(), 140, options).unwrap();
+        assert_eq!(kind, "class");
+        let out: Vec<String> = body.iter().map(Line::plain).collect();
+        let text = out.join("\n");
+
+        // 문자 열(칸) 기준으로 비교한다 — 상자 그림 문자는 UTF-8 바이트로는 3바이트라
+        // `str::find`(바이트 오프셋)를 그대로 쓰면 칸 수와 어긋난다.
+        let char_col = |row: &str, needle: char| row.chars().position(|c| c == needle).unwrap_or_else(|| panic!("{needle:?} not found in row {row:?}\n{text}"));
+        let nth_border_col = |row: &str, n: usize| {
+            row.chars().enumerate().filter(|(_, c)| *c == '│').nth(n).map(|(i, _)| i).unwrap_or_else(|| panic!("{n}번째 │ not found in row {row:?}\n{text}"))
+        };
+
+        let a_row = out.iter().position(|l| l.contains(" A ")).unwrap_or_else(|| panic!("A not found: {text}"));
+        let a_border = nth_border_col(&out[a_row], 1);
+        let a_tail_col = char_col(&out[a_row - 1], '1');
+
+        let long_row = out.iter().position(|l| l.contains("LONG_CLASS_NAME_HERE")).unwrap_or_else(|| panic!("LONG_CLASS_NAME_HERE not found: {text}"));
+        let long_border = nth_border_col(&out[long_row], 1);
+        let long_tail_col = char_col(&out[long_row - 1], '1');
+
+        let a_gap = a_tail_col as isize - a_border as isize;
+        let long_gap = long_tail_col as isize - long_border as isize;
+        assert_eq!(a_gap, long_gap, "from측 다중성 라벨은 자기 클래스 경계에서 같은 간격만큼 떨어져야 한다(A={a_gap}, LONG={long_gap}):\n{text}");
+        assert!(a_gap <= 3, "from측 다중성 라벨이 클래스 경계에서 너무 멀리 떨어져 있다(gap={a_gap}):\n{text}");
+    }
 }
