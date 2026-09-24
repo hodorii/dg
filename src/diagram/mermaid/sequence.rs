@@ -134,6 +134,14 @@ fn parse_message(sequence: &mut Sequence, line: &str) {
             break;
         }
     }
+    // 화살표 몸통(`--`)도 `-`를 쓰므로 위 탐욕적 스캔이 deactivate 접미사의 `-`까지
+    // 그대로 먹어 버린다(예: `->>-B`의 `arrow_end`가 "->>-"까지 먹어 `head`
+    // 판별(`ends_with(">>")`)도 함께 어긋난다). mermaid 화살표는 `>`/`x`/`)`로
+    // 끝나지 맨 끝이 `-`인 화살표는 없다는 전제로, 마지막 글자가 `-`면 한 글자
+    // 되돌려 뒤의 `target_text.strip_prefix('-')`가 다시 보게 한다.
+    if arrow_end > 0 && after.as_bytes()[arrow_end - 1] == b'-' {
+        arrow_end -= 1;
+    }
     let arrow = &after[..arrow_end];
     let remainder = &after[arrow_end..];
     let (target_text, text) = match remainder.find(':') {
@@ -187,6 +195,43 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+        // `S-->>-U: token` — dashed 화살표 + deactivate 접미사. 예전엔 이 필드들을
+        // 확인하지 않아 접미사 파싱 결함(sequence-deactivate-suffix-parsing)이
+        // 그냥 통과했다.
+        match &s.items[2] {
+            SequenceItem::Message { label, deactivate_source, head, kind, .. } => {
+                assert_eq!(label, "token");
+                assert!(deactivate_source, "deactivate 접미사가 인식돼야 한다");
+                assert_eq!(*head, Marker::Arrow);
+                assert_eq!(*kind, LineKind::Dashed);
+            }
+            other => panic!("{other:?}"),
+        }
         assert!(matches!(s.items[6], SequenceItem::Note { placement: NotePlacement::Over(0, 1), .. }));
+    }
+
+    /// (sequence-deactivate-suffix-parsing) 화살표 종류와 무관하게 `-`(deactivate)
+    /// 접미사가 붙으면 항상 인식돼야 한다 — 화살표 몸통도 `-`를 쓰기 때문에 탐욕적
+    /// 스캔이 접미사까지 먹어 버리기 쉬운 지점이다.
+    #[test]
+    fn deactivate_suffix_is_recognized_for_every_arrow_kind() {
+        let cases = [
+            ("A->>-B: m", LineKind::Solid, Marker::Arrow),
+            ("A-->>-B: m", LineKind::Dashed, Marker::Arrow),
+            ("A-x-B: m", LineKind::Solid, Marker::Cross),
+            ("A-)-B: m", LineKind::Solid, Marker::OpenArrow),
+            ("A--)-B: m", LineKind::Dashed, Marker::OpenArrow),
+        ];
+        for (line, kind, head) in cases {
+            let s = parse(&format!("sequenceDiagram\n {line}\n"));
+            match s.items.first() {
+                Some(SequenceItem::Message { deactivate_source, head: got_head, kind: got_kind, .. }) => {
+                    assert!(*deactivate_source, "{line:?}: deactivate 접미사가 인식돼야 한다");
+                    assert_eq!(*got_head, head, "{line:?}: head");
+                    assert_eq!(*got_kind, kind, "{line:?}: kind");
+                }
+                other => panic!("{line:?}: {other:?}"),
+            }
+        }
     }
 }
