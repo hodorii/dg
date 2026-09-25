@@ -32,6 +32,7 @@ pub fn measure(shape: Shape, sections: &[Vec<String>]) -> (usize, usize) {
         Shape::Cylinder => (tw + 4, th + 3),
         Shape::Actor => (tw.max(3), th + 3),
         Shape::Interface => (tw.max(1), th + 1),
+        Shape::Plain => (tw, th),
     }
 }
 
@@ -100,6 +101,18 @@ pub fn draw(canvas: &mut Canvas, x: usize, y: usize, shape: Shape, sections: &[V
         Shape::Interface => {
             canvas.put(x + w / 2, y, '○', border);
             draw_sections(canvas, x, y + 1, w, sections, theme, false);
+        }
+        Shape::Plain => {
+            // draw_sections()의 x+1/w-2 관례는 테두리 한 칸을 전제하는데, Plain은
+            // 테두리가 아예 없어 그대로 쓰면 앞뒤 여백이 비대칭으로 남는다(뒤쪽
+            // 빈 칸은 출력 시 잘리지만 앞쪽은 남음) — 직접 채운다.
+            let mut row = y + extra_top;
+            for section in sections {
+                for text in section {
+                    canvas.text_centered(x, row, w, text, line_style(0, text, theme));
+                    row += 1;
+                }
+            }
         }
     }
 }
@@ -172,5 +185,22 @@ mod tests {
         assert_eq!(diamond, vec![" ╱───╲", "⟨  x  ⟩", " ╲───╱"]);
         assert_eq!(hexagon, vec![" ╱───╲", "│  x  │", " ╲───╱"]);
         assert_ne!(diamond, hexagon, "판단(Diamond)과 예비 단계(Hexagon)가 같은 모양으로 그려지면 안 된다");
+    }
+
+    /// (plantuml-wbs) `Shape::Plain`은 테두리 없이 글자만 그려야 한다(PlantUML WBS의
+    /// `_` 접미사 노드).
+    #[test]
+    fn plain_has_no_border() {
+        let rows = draw_rows(Shape::Plain, vec![vec!["leaf".into()]]);
+        assert_eq!(rows, vec!["leaf"]);
+        for row in &rows {
+            assert!(!row.contains(['┌', '┐', '└', '┘', '│', '─']), "테두리 문자가 없어야 한다: {row:?}");
+        }
+    }
+
+    #[test]
+    fn plain_supports_multiple_lines() {
+        let rows = draw_rows(Shape::Plain, vec![vec!["one".into(), "two".into()]]);
+        assert_eq!(rows, vec!["one", "two"]);
     }
 }

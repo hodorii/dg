@@ -128,7 +128,7 @@ dg -s light -w 80 doc.md      # 밝은 테마, 폭 80
 
 ### PlantUML (` ```plantuml `, ` ```puml `)
 
-종류는 여는 태그를 먼저 보고(`@startgantt`면 간트), 일반 태그(`@startuml`)면 본문에서 자동 판별한다(`participant`·`->`면 시퀀스, `class`/`<|--`면 클래스, `entity`만 있으면 ER, `[컴포넌트]`·`package`면 컴포넌트).
+종류는 여는 태그를 먼저 보고(`@startgantt`면 간트, `@startwbs`면 WBS), 일반 태그(`@startuml`)면 본문에서 자동 판별한다(`participant`·`->`면 시퀀스, `class`/`<|--`면 클래스, `entity`만 있으면 ER, `[컴포넌트]`·`package`면 컴포넌트).
 
 | 종류 | 지원 |
 |------|------|
@@ -137,6 +137,7 @@ dg -s light -w 80 doc.md      # 밝은 테마, 폭 80
 | ER | `entity X { *id : int <<PK>> \n -- \n name }`, `\|\|--o{` `}o--\|\|` `\|o--o\|` `}\|--\|{` 카디널리티(까치발 표식) |
 | 간트(`@startgantt`) | `title`, `Project starts <날짜>`(기준일), `[작업] requires N days/weeks`(`1 week and 4 days`처럼 `and` 결합), `[작업] starts <날짜>`·`starts D+N`·`starts at [다른작업]'s end`/`'s start`, `then`으로 한 줄 잇기, `[A] -> [B]` 의존, `is colored in`·`on {자원}`·`is NN% completed`·`<style>`·`note … end note`·`--` 구분선은 무시 |
 | 컴포넌트·배치·유스케이스 | `[이름]`, `[이름] as 별칭`, `component`/`interface`/`()`/`database`/`node`/`cloud`/`folder`/`frame`/`rectangle`/`storage`/`queue`/`actor`/`:액터:`/`usecase`/`(유스케이스)` 등, `package … { }` 중첩 그룹, `-->` `..>` `--` 와 `: 라벨`, `left to right direction`, `title` |
+| WBS(`@startwbs`) | OrgMode 깊이 표기(`*`/`**`/`***`, 단계를 건너뛰어도 직전 항목의 자식으로), 최상위 `*`가 여럿이면 각각 독립 뿌리, `_` 접미사(`*_`)로 테두리 없는 노드, `:`~`;`로 여러 줄 본문. 좌우로 갈라지는 산술 표기(`+`/`-`의 방향 의미)·`<`/`>`·노드 간 화살표·인라인 색상·`<style>`은 무시 |
 
 `skinparam`, `hide/show`, `!전처리`, `'주석`, `/' 블록 '/`, `legend`, `header/footer`는 무시한다.
 
