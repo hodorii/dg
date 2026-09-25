@@ -32,6 +32,8 @@ pub enum Shape {
     Actor,
     Interface,
     Note,
+    /// 테두리 없이 글자만(PlantUML WBS의 `_` 접미사 등).
+    Plain,
     /// 상태도의 시작점 `●`.
     Start,
     /// 상태도의 끝점 `◉`.

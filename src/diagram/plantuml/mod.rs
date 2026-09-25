@@ -6,6 +6,7 @@ pub mod gantt;
 pub mod relation;
 pub mod sequence;
 pub mod text;
+pub mod wbs;
 
 use crate::diagram::layout;
 use crate::diagram::options::DiagramOptions;
@@ -101,6 +102,7 @@ fn kind_of_start_tag(source: &str) -> Option<&'static str> {
     let tag: String = first.strip_prefix("@start")?.chars().take_while(char::is_ascii_alphanumeric).collect();
     match tag.to_ascii_lowercase().as_str() {
         "gantt" => Some("gantt"),
+        "wbs" => Some("wbs"),
         _ => None,
     }
 }
@@ -112,6 +114,11 @@ pub fn render(source: &str, theme: &Theme, width: usize, options: DiagramOptions
         "sequence" => layout::sequence::render(&sequence::parse(source), theme, width)?,
         "component" => {
             let mut graph = component::parse(source);
+            options.apply_to_graph(&mut graph);
+            layout::graph::render(&graph, theme, width)?
+        }
+        "wbs" => {
+            let mut graph = wbs::parse(source);
             options.apply_to_graph(&mut graph);
             layout::graph::render(&graph, theme, width)?
         }
@@ -159,5 +166,19 @@ mod tests {
         assert_eq!(kind_of(&generic), Some("component"));
         // 태그 앞에 주석·빈 줄이 있어도 찾는다.
         assert_eq!(kind_of("\n' 메모\n@startgantt\n[T] requires 1 day\n@endgantt"), Some("gantt"));
+    }
+
+    /// (plantuml-wbs) `@startwbs`도 gantt와 같은 패턴으로 휴리스틱을 거치지 않고
+    /// 바로 wbs로 판별돼야 한다.
+    #[test]
+    fn start_wbs_tag_wins_over_the_heuristic() {
+        let source = "@startwbs\n* Root\n** Child\n@endwbs";
+        assert_eq!(kind_of(source), Some("wbs"));
+        let (kind, body) = render(source, &Theme::none(), 80, DiagramOptions::default()).unwrap();
+        assert_eq!(kind, "wbs");
+        let text: String = body.iter().map(crate::line::Line::plain).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("Root") && text.contains("Child"), "{text}");
+        // 항목이 하나도 없으면 다른 종류와 마찬가지로 코드블록으로 물러난다(3.1).
+        assert!(render("@startwbs\n@endwbs", &Theme::none(), 80, DiagramOptions::default()).is_none());
     }
 }
