@@ -7,7 +7,7 @@
 //! 4. 방향(TB/LR)은 배치 좌표계(along/across)를 캔버스 좌표로 옮길 때만 관여한다.
 
 use crate::diagram::canvas::{Canvas, EAST, LineKind, NORTH, SOUTH, WEST};
-use crate::diagram::ir::{Direction, Graph, Marker, Shape};
+use crate::diagram::ir::{Direction, Graph, GroupKind, Marker, Shape};
 use crate::diagram::layout::shape;
 use crate::line::Line;
 use crate::style::{Style, Theme};
@@ -329,7 +329,8 @@ impl<'a> Layout<'a> {
         match child {
             // 가상 노드는 배선의 산물이고, 닻은 그룹 첫 층에 붙어 있어야 한다.
             Child::Node(i) => self.lnodes[i].node.is_some_and(|n| self.graph.nodes[n].shape != Shape::Anchor),
-            Child::Block(_) => true,
+            // 레인은 폭 초과로 층을 접어도 나란한 띠를 유지한다 — 접기 후보에서 제외.
+            Child::Block(b) => !self.is_lane(b),
         }
     }
 
@@ -381,6 +382,11 @@ impl<'a> Layout<'a> {
             }
             let Some(Some(group)) = source_group else { continue };
             if has_successor_inside {
+                continue;
+            }
+            // 레인은 이미 다이어그램 전체를 관통하므로 "상자 밑으로 밀기"가 무의미하다 — 오히려
+            // 레인을 벗어나는 첫 노드를 레인의 마지막 층 뒤로 밀어 버려 요구사항 3.1을 어긴다.
+            if self.graph.groups[group].kind == GroupKind::Lane {
                 continue;
             }
             let group_max = (0..n)
@@ -635,7 +641,7 @@ impl<'a> Layout<'a> {
     // ── 2. 가상 노드와 구간 ─────────────────────────────────────────────
 
     fn make_segments(&mut self) {
-        let group_ranges = self.group_layer_ranges();
+        let group_ranges = self.effective_group_ranges();
         for (i, edge) in self.graph.edges.iter().enumerate() {
             if edge.from == edge.to {
                 continue;
@@ -685,16 +691,58 @@ impl<'a> Layout<'a> {
         }
     }
 
-    /// 그룹마다 (구성원이 있는) 층 범위.
-    fn group_layer_ranges(&self) -> Vec<(usize, usize)> {
-        let mut ranges = vec![(usize::MAX, 0); self.graph.groups.len()];
+    /// 그룹마다 유효 층 범위 — Lane은 부모의 유효 범위(부모 없으면 다이어그램 전체), Box는
+    /// (구성원이 있는) 실제 범위. `dummy_group()`(가상 노드 소속 판정)과 `build_blocks()`(블록
+    /// 층 범위) 양쪽의 단일 출처라 서로 다른 값을 쓰는 일이 없다.
+    fn effective_group_ranges(&self) -> Vec<(usize, usize)> {
+        let mut member_ranges = vec![(usize::MAX, 0); self.graph.groups.len()];
         for (i, node) in self.graph.nodes.iter().enumerate() {
             for g in self.graph.ancestors(node.group) {
-                ranges[g].0 = ranges[g].0.min(self.lnodes[i].layer);
-                ranges[g].1 = ranges[g].1.max(self.lnodes[i].layer);
+                member_ranges[g].0 = member_ranges[g].0.min(self.lnodes[i].layer);
+                member_ranges[g].1 = member_ranges[g].1.max(self.lnodes[i].layer);
             }
         }
-        ranges
+        let full_range = (0, self.layer_count.saturating_sub(1));
+        (0..self.graph.groups.len())
+            .map(|g| {
+                let mut cursor = g;
+                loop {
+                    if self.graph.groups[cursor].kind != GroupKind::Lane {
+                        break member_ranges[cursor];
+                    }
+                    match self.graph.groups[cursor].parent {
+                        Some(p) => cursor = p,
+                        None => break full_range,
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// 블록 0(루트)은 false.
+    fn is_lane(&self, block: usize) -> bool {
+        block != 0 && self.graph.groups[block - 1].kind == GroupKind::Lane
+    }
+
+    /// 레인 블록은 테두리가 부모와 한 줄이라 `group_top()` 랭크·`inner_rank()`·`route()`의
+    /// `top_levels`/`bottom_levels` 어디에도 세지 않는다(중첩 레인 사슬 전체가 배너만큼만
+    /// 밀리고 상자 나눔마다 한 단씩 더 밀리지 않는다 — 그 밀림은 `banner_start()`가 대신 맡는다).
+    /// Box 블록은 항상 셈.
+    fn counts_toward_rank(&self, block: usize) -> bool {
+        !self.is_lane(block)
+    }
+
+    /// Lane 조상 수(최상위 Lane = 0). Box 블록에는 호출하지 않는다.
+    fn lane_depth(&self, block: usize) -> usize {
+        let mut depth = 0;
+        let mut cursor = self.block_parent(block);
+        while let Some(p) = cursor {
+            if self.is_lane(p) {
+                depth += 1;
+            }
+            cursor = self.block_parent(p);
+        }
+        depth
     }
 
     /// 가상 노드가 들어갈 그룹: 그 층에 걸쳐 있는 출발 쪽(없으면 도착 쪽) 그룹 가운데 가장 안쪽.
@@ -729,6 +777,16 @@ impl<'a> Layout<'a> {
                 cursor = self.block_parent(b);
             }
         }
+        // 레인 블록의 층 범위는 소속 범위(부모 레인 또는 다이어그램 전체) 전체로 강제한다 —
+        // dummy_group()과 같은 출처(effective_group_ranges)라 두 판정이 어긋나지 않는다.
+        let effective = self.effective_group_ranges();
+        for block in 1..self.blocks.len() {
+            if self.blocks[block].registered && self.is_lane(block) {
+                let g = self.blocks[block].group.unwrap();
+                self.blocks[block].layer_min = effective[g].0;
+                self.blocks[block].layer_max = effective[g].1;
+            }
+        }
     }
 
     fn register_block(&mut self, block: usize) {
@@ -760,13 +818,36 @@ impl<'a> Layout<'a> {
         self.assign_absolute(0, 0);
     }
 
+    /// `child`가 레인 블록인지(`Child::Node`는 항상 false).
+    fn is_lane_child(&self, child: Child) -> bool {
+        matches!(child, Child::Block(b) if self.is_lane(b))
+    }
+
+    /// `child`를 `block` 안에 놓을 때 좌우로 남길 여백. 부모·자식이 모두 레인이면 0(밀착),
+    /// 그 밖(노드·일반 그룹 자식, 또는 부모가 레인이 아님)은 기존 `block_pad` 그대로.
+    fn lane_pad(&self, block: usize, child: Child) -> usize {
+        if self.is_lane(block) && self.is_lane_child(child) { 0 } else { self.block_pad(block) }
+    }
+
     /// 자식들을 순서대로, 층이 겹치는 앞 자식의 오른쪽에 놓는다. 블록 폭을 돌려준다.
     fn place_block(&mut self, block: usize) -> usize {
-        let pad = self.block_pad(block);
+        // 부모 레인의 라벨 여유(block_extra)는 마지막 레인 자식에게 넘기고 자기 폭에는 더하지
+        // 않는다 — 밀착 배치를 유지하면서도 라벨이 잘리지 않게 마지막 레인이 넓어진다.
+        if self.is_lane(block) {
+            let last_lane_child = self.blocks[block].children.iter().rev().find_map(|&c| match c {
+                Child::Block(b) if self.is_lane(b) => Some(b),
+                _ => None,
+            });
+            if let Some(last_lane_block) = last_lane_child {
+                let extra = std::mem::take(&mut self.block_extra[block]);
+                self.block_extra[last_lane_block] += extra;
+            }
+        }
+        let default_pad = self.block_pad(block);
         let children = self.blocks[block].children.clone();
         let mut placed: Vec<(usize, usize, usize, usize, Child)> = Vec::new();
         let mut max_end = 0;
-        for child in children {
+        for child in children.iter().copied() {
             let (child_width, layer_min, layer_max) = match child {
                 Child::Node(i) => (self.lnodes[i].footprint(), self.lnodes[i].layer, self.lnodes[i].layer),
                 Child::Block(b) => {
@@ -777,7 +858,14 @@ impl<'a> Layout<'a> {
             let mut start = placed
                 .iter()
                 .filter(|&&(_, _, lo, hi, _)| lo <= layer_max && layer_min <= hi)
-                .map(|&(_, end, _, _, earlier)| end + self.gap_between(earlier, child))
+                .map(|&(_, end, _, _, earlier)| {
+                    if self.is_lane(block) && self.is_lane_child(earlier) && self.is_lane_child(child) {
+                        // 형제 레인: 경계 칸을 공유해 두 테두리가 한 줄로 합쳐지게 한 칸 앞에서 시작한다.
+                        end.saturating_sub(1)
+                    } else {
+                        end + self.gap_between(earlier, child)
+                    }
+                })
                 .max()
                 .unwrap_or(0);
             // 닻(그룹으로 드나드는 화살표 자리)은 테두리 제목 글자와 겹치지 않게 제목 오른쪽에 둔다.
@@ -789,6 +877,7 @@ impl<'a> Layout<'a> {
             }
             let end = start + child_width;
             placed.push((start, end, layer_min, layer_max, child));
+            let pad = self.lane_pad(block, child);
             match child {
                 Child::Node(i) => self.lnodes[i].across = start + pad,
                 Child::Block(b) => self.blocks[b].start = start + pad,
@@ -800,7 +889,11 @@ impl<'a> Layout<'a> {
             (Direction::TopDown, Some(g)) => width_of(&self.graph.groups[g].title) + 4,
             _ => 0,
         };
-        let width = (max_end + 2 * pad).max(title_min) + self.block_extra.get(block).copied().unwrap_or(0);
+        // 레인 밀착: 첫 자식의 왼쪽·마지막 자식의 오른쪽 여백은 각자의 `lane_pad`를 따른다(보통
+        // 그룹은 둘 다 `default_pad`라 기존 `2 * pad`와 같은 값).
+        let left_pad = children.first().map(|&c| self.lane_pad(block, c)).unwrap_or(default_pad);
+        let right_pad = children.last().map(|&c| self.lane_pad(block, c)).unwrap_or(default_pad);
+        let width = (max_end + left_pad + right_pad).max(title_min) + self.block_extra.get(block).copied().unwrap_or(0);
         self.blocks[block].width = width;
         width
     }
@@ -848,6 +941,11 @@ impl<'a> Layout<'a> {
             if children.len() < 2 {
                 continue;
             }
+            // 레인 자식이 하나라도 있으면 통째로 선언 순서를 지킨다(BPMN은 한 그룹의 직계
+            // 자식이 레인이면 전부 레인이므로 부분 고정은 사변적 — research.md).
+            if children.iter().any(|&c| self.is_lane_child(c)) {
+                continue;
+            }
             let mut keyed: Vec<(f64, Child)> = children
                 .into_iter()
                 .map(|child| {
@@ -892,6 +990,10 @@ impl<'a> Layout<'a> {
         for _ in 0..outer_iterations {
             let mut improved = false;
             for block in 0..self.blocks.len() {
+                // reorder()와 같은 이유로 레인 자식이 있는 블록은 이웃 교환도 건너뛴다.
+                if self.blocks[block].children.iter().any(|&c| self.is_lane_child(c)) {
+                    continue;
+                }
                 let mut k = 1;
                 while k < self.blocks[block].children.len() {
                     let unit = self.unit_of(block, k);
@@ -1078,6 +1180,23 @@ impl<'a> Layout<'a> {
                 let gap = self.gap_between(Child::Node(i), Child::Node(members[k + 1]));
                 high = high.min(start.saturating_sub(gap + footprint));
             }
+            // 레인 형제 블록은 실제 구성원이 없는 층에도 (다이어그램 전체를 관통하므로) 자리를
+            // 차지한다 — 그 층에 같은 층 이웃이 없어 위 두 검사로 못 잡는다. 레인 상자 밖에
+            // 그려져야 하는 노드(요구사항 3.3)가 침범하지 않게 별도로 막는다.
+            for child in self.blocks[container].children.clone() {
+                let Child::Block(b) = child else { continue };
+                if !(self.is_lane(b) && self.blocks[b].registered && self.blocks[b].layer_min <= layer && layer <= self.blocks[b].layer_max) {
+                    continue;
+                }
+                let (bstart, bend) = (self.blocks[b].start, self.blocks[b].start + self.blocks[b].width);
+                let node_center = self.lnodes[i].across as f64 + footprint as f64 / 2.0;
+                let lane_center = bstart as f64 + (bend - bstart) as f64 / 2.0;
+                if node_center < lane_center {
+                    high = high.min(bstart.saturating_sub(self.gap_across()));
+                } else {
+                    low = low.max(bend + self.gap_across());
+                }
+            }
             // 가상 노드는 선을 곧게 펴는 것이 우선이므로, 막고 있는 같은 블록의 이웃을 밀어내 자리를 만든다.
             if self.lnodes[i].node.is_none() {
                 if desired > high {
@@ -1234,7 +1353,7 @@ impl<'a> Layout<'a> {
             let mut bottom = 0;
             let mut cursor = Some(self.lnode_block[i]);
             while let Some(b) = cursor {
-                if b != 0 {
+                if b != 0 && self.counts_toward_rank(b) {
                     top += usize::from(self.blocks[b].layer_min == layer);
                     bottom += usize::from(self.blocks[b].layer_max == layer);
                 }
@@ -1318,8 +1437,50 @@ impl<'a> Layout<'a> {
         }
 
         self.layer_start = vec![0; self.layer_count];
+        if self.layer_count > 0 {
+            // 깊이별 배너 크기 합을 첫 층 시작 앞에 둔다 — 레인이 없으면 0이라 기존 출력과
+            // 바이트 단위로 같다(요구사항 6.1).
+            self.layer_start[0] = self.banner_along().iter().sum();
+        }
         for layer in 1..self.layer_count {
             self.layer_start[layer] = self.layer_start[layer - 1] + self.layer_total(layer - 1) + self.gap[layer - 1];
+        }
+    }
+
+    /// 깊이별 배너 크기(흐름축). TB는 깊이마다 고정 2(테두리 줄 + 제목 줄), LR은 그 깊이에서
+    /// 가장 넓은 레인 제목 폭에 맞춘 3(테두리 칸 + 제목 앞뒤 한 칸씩)을 더한 값 — 잘리지 않는다.
+    fn banner_along(&self) -> Vec<usize> {
+        let max_depth = (1..self.blocks.len())
+            .filter(|&b| self.blocks[b].registered && self.is_lane(b))
+            .map(|b| self.lane_depth(b))
+            .max();
+        let Some(max_depth) = max_depth else { return Vec::new() };
+        (0..=max_depth)
+            .map(|depth| match self.direction {
+                Direction::TopDown => 2,
+                Direction::LeftRight => {
+                    let widest_title = (1..self.blocks.len())
+                        .filter(|&b| self.blocks[b].registered && self.is_lane(b) && self.lane_depth(b) == depth)
+                        .map(|b| width_of(&self.graph.groups[self.blocks[b].group.unwrap()].title))
+                        .max()
+                        .unwrap_or(0);
+                    3 + widest_title
+                }
+            })
+            .collect()
+    }
+
+    /// 깊이 `depth`의 배너가 시작하는 흐름축 위치(그보다 얕은 깊이의 배너 크기 합).
+    fn banner_start(&self, depth: usize) -> usize {
+        self.banner_along().iter().take(depth).sum()
+    }
+
+    /// 레인 사각형의 흐름축 끝: 최상위(부모가 레인이 아님)면 캔버스 끝, 부모가 레인이면 부모와
+    /// 같은 끝(사슬 전체가 다이어그램 끝까지 함께 닿는다).
+    fn lane_along_end(&self, block: usize) -> usize {
+        match self.block_parent(block) {
+            Some(p) if self.is_lane(p) => self.lane_along_end(p),
+            _ => self.total_along().saturating_sub(1),
         }
     }
 
@@ -1650,12 +1811,17 @@ impl<'a> Layout<'a> {
         order.sort_by_key(|&b| self.block_depth(b));
         for b in order {
             let block = &self.blocks[b];
-            let top = self.group_top(b);
-            let bottom = self.group_bottom(b);
+            let (top, bottom) = if self.is_lane(b) { (self.banner_start(self.lane_depth(b)), self.lane_along_end(b)) } else { (self.group_top(b), self.group_bottom(b)) };
             let (x0, y0) = self.to_canvas(top, block.start);
             let (x1, y1) = self.to_canvas(bottom, block.start + block.width - 1);
             let (w, h) = (x1 - x0 + 1, y1 - y0 + 1);
             canvas.rect(x0, y0, w, h, LineKind::Solid, self.theme.diagram_group, false);
+            if self.is_lane(b) {
+                // 구분선: 배너 전체와 내용 상자를 가르는 교차선. `group_top(b)`가 이미
+                // `layer_start[0] + 2*rank`(레인은 rank 0이라 사슬 전체가 같은 줄)를 준다.
+                let divider = self.group_top(b);
+                self.line_across(canvas, block.start, block.start + block.width - 1, divider, LineKind::Solid, self.theme.diagram_group);
+            }
         }
     }
 
@@ -1666,6 +1832,16 @@ impl<'a> Layout<'a> {
             let Some(g) = block.group else { continue };
             let title = &self.graph.groups[g].title;
             if !block.registered || title.is_empty() {
+                continue;
+            }
+            if self.is_lane(b) {
+                let banner_top = self.banner_start(self.lane_depth(b));
+                let (x0, y0) = self.to_canvas(banner_top + 1, block.start + 1);
+                let text = match self.direction {
+                    Direction::TopDown => truncate(title, block.width.saturating_sub(4)).to_string(),
+                    Direction::LeftRight => title.clone(),
+                };
+                canvas.text(x0, y0, &text, self.theme.diagram_group.bold());
                 continue;
             }
             let top = self.group_top(b);
@@ -1689,7 +1865,7 @@ impl<'a> Layout<'a> {
         let mut rank = 0;
         let mut cursor = self.block_parent(b);
         while let Some(p) = cursor {
-            if p != 0 && self.blocks[p].layer_min == block.layer_min {
+            if p != 0 && self.blocks[p].layer_min == block.layer_min && self.counts_toward_rank(p) {
                 rank += 1;
             }
             cursor = self.block_parent(p);
@@ -1707,14 +1883,17 @@ impl<'a> Layout<'a> {
         depth
     }
 
-    /// 같은 층에서 끝나는 하위 블록 사슬의 길이.
+    /// 같은 층에서 끝나는 하위 블록 사슬의 길이. 레인 자식은 부모와 테두리가 한 줄이라 세지
+    /// 않는다(`counts_toward_rank`) — 사슬 자체는 그 안의 Box 자식을 찾도록 계속 내려간다.
     fn inner_rank(&self, block: usize) -> usize {
         let layer_max = self.blocks[block].layer_max;
         self.blocks[block]
             .children
             .iter()
             .filter_map(|child| match child {
-                Child::Block(c) if self.blocks[*c].layer_max == layer_max => Some(1 + self.inner_rank(*c)),
+                Child::Block(c) if self.blocks[*c].layer_max == layer_max => {
+                    Some(usize::from(self.counts_toward_rank(*c)) + self.inner_rank(*c))
+                }
                 _ => None,
             })
             .max()
@@ -2015,6 +2194,16 @@ mod tests {
         lines.iter().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("{needle} not found in {lines:?}"))
     }
 
+    /// 문자 열(칸) 기준 위치. 상자 그림 문자는 UTF-8 바이트로 3바이트라 `str::find`(바이트
+    /// 오프셋)를 그대로 쓰면 칸 수와 어긋난다 — 서로 다른 줄의 위치를 비교할 때는 항상 이걸 쓴다.
+    fn char_col(row: &str, needle: char) -> usize {
+        row.chars().position(|c| c == needle).unwrap_or_else(|| panic!("{needle:?} not found in row {row:?}"))
+    }
+
+    fn char_rcol(row: &str, needle: char) -> usize {
+        row.chars().enumerate().filter(|&(_, c)| c == needle).last().map(|(i, _)| i).unwrap_or_else(|| panic!("{needle:?} not found in row {row:?}"))
+    }
+
     #[test]
     fn bottom_up_flips_top_down_without_mirroring_text() {
         let mut g = chain_graph();
@@ -2232,5 +2421,339 @@ mod tests {
         let head_col = out[b_row - 1].chars().position(|c| c == '9').unwrap_or_else(|| panic!("head label not found above its row: {text}"));
         // 경계 칸 바로 앞 칸(빈 칸 없이)에 붙어야 한다.
         assert_eq!(b_border as isize - head_col as isize, 1, "head_label이 노드 경계에 바로 붙지 않았다: {text}");
+    }
+
+    // ── 레인(bpmn-lane-layout) ────────────────────────────────────────
+
+    /// 요구사항 1.1, 1.4: 최상위 레인 A(노드가 층 0에만)와 레인 B(층 0~2)가 흐름 방향으로
+    /// 같은 범위를 관통하며 좌우로 나란히 그려진다.
+    #[test]
+    fn top_level_lanes_span_the_full_diagram_depth_side_by_side() {
+        let mut g = Graph::default();
+        let lane_a = g.add_lane("A", None);
+        let lane_b = g.add_lane("B", None);
+        g.intern("a1", "a1", Shape::Rect, Some(lane_a));
+        let b1 = g.intern("b1", "b1", Shape::Rect, Some(lane_b));
+        let b2 = g.intern("b2", "b2", Shape::Rect, Some(lane_b));
+        let b3 = g.intern("b3", "b3", Shape::Rect, Some(lane_b));
+        g.add_edge(Edge { from: b1, to: b2, head: Marker::Arrow, ..Edge::default() });
+        g.add_edge(Edge { from: b2, to: b3, head: Marker::Arrow, ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        assert_eq!(out[0].matches('┌').count(), 2, "두 레인의 위 테두리가 같은 줄에서 시작해야 한다: {text}");
+        // A(왼쪽)는 노드가 층 0에만 있어도 B(층 0~2)와 같은 범위까지 관통해야 하므로, 맨 아래
+        // 줄 맨 왼쪽 칸이 A 자신의 아래 테두리(└)여야 한다.
+        assert!(out.last().unwrap().starts_with('└'), "A의 아래 테두리가 캔버스 맨 아래 줄까지 이어져야 한다: {text}");
+    }
+
+    /// 요구사항 1.3: 레인 안에 중첩된 레인 상자는 부모 레인의 흐름 방향 범위 전체를 관통한다
+    /// (부모·자식 레인의 아래 테두리가 같은 줄에 있다 — 자식의 실제 구성원은 첫 층뿐이어도).
+    #[test]
+    fn nested_lane_covers_the_same_range_as_its_parent() {
+        let mut g = Graph::default();
+        let pool = g.add_lane("Pool", None);
+        let sub = g.add_lane("Sub", Some(pool));
+        let s1 = g.intern("s1", "s1", Shape::Rect, Some(sub));
+        let s2 = g.intern("s2", "s2", Shape::Rect, Some(pool));
+        g.add_edge(Edge { from: s1, to: s2, head: Marker::Arrow, ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        // Sub의 테두리가 Pool의 아래 테두리와 정확히 같은 줄에서 만나면 그 칸이 분기 문자(┴)로
+        // 이어진다 — 다른 줄에서 따로 닫혔다면 이 문자가 나오지 않는다.
+        assert!(out.last().unwrap().contains('┴'), "Sub의 아래 테두리가 Pool과 같은 줄에서 만나야 한다(┴): {text}");
+    }
+
+    /// 요구사항 2.1, 2.2, 2.3: 부모 레인 안의 형제 레인은 경계 한 열을 공유하고(││ 없음),
+    /// 부모 테두리와 만나는 칸이 분기 문자(┬·┴)이며, 첫/마지막 자식의 바깥 테두리가 부모
+    /// 테두리와 같은 열이다.
+    #[test]
+    fn sibling_lanes_under_a_pool_share_one_border_with_branch_glyphs() {
+        let mut g = Graph::default();
+        let pool = g.add_lane("Pool", None);
+        let lane_a = g.add_lane("A", Some(pool));
+        let lane_b = g.add_lane("B", Some(pool));
+        g.intern("a1", "a1", Shape::Rect, Some(lane_a));
+        g.intern("b1", "b1", Shape::Rect, Some(lane_b));
+        let out = rows(render(&g, &Theme::none(), 100).unwrap());
+        let text = out.join("\n");
+        assert!(!text.contains("││"), "형제 레인 사이 경계가 두 줄(││)이면 안 된다: {text}");
+        // 형제 레인의 경계가 부모 테두리와 만나는 칸이 분기 문자로 이어진다(부모 자신의 맨
+        // 윗줄이 아니라, A·B 자신의 배너 테두리가 Pool 테두리와 만나는 줄에서).
+        assert!(text.contains('┬'), "부모 테두리와 만나는 칸에 ┬가 있어야 한다: {text}");
+        assert!(text.contains('┴'), "부모 테두리와 만나는 칸에 ┴가 있어야 한다: {text}");
+        let pool_left = char_col(&out[0], '┌');
+        let pool_right = char_col(&out[0], '┐');
+        let a_title_row = out.iter().position(|l| l.contains('A')).unwrap_or_else(|| panic!("A not found: {text}"));
+        let a_left = char_col(&out[a_title_row], '│');
+        assert_eq!(a_left, pool_left, "첫 자식(A)의 왼쪽 테두리가 부모 테두리와 같은 열이어야 한다: {text}");
+        let b_title_row = out.iter().position(|l| l.contains('B')).unwrap_or_else(|| panic!("B not found: {text}"));
+        let b_right = char_rcol(&out[b_title_row], '│');
+        assert_eq!(b_right, pool_right, "마지막 자식(B)의 오른쪽 테두리가 부모 테두리와 같은 열이어야 한다: {text}");
+    }
+
+    /// 요구사항 1.3, 2.3: 풀 > 레인 > 하위 레인 3단 중첩의 아랫변이 모두 같은 줄에 있고,
+    /// 배너 다음 구분선이 한 줄만 있다(중첩 단계마다 가로선이 늘어나는 이중 구분선 없음).
+    #[test]
+    fn three_level_lane_nesting_has_no_doubled_divider() {
+        let mut g = Graph::default();
+        let pool = g.add_lane("Pool", None);
+        let lane = g.add_lane("Lane", Some(pool));
+        let sub = g.add_lane("SubLane", Some(lane));
+        g.intern("s1", "s1", Shape::Rect, Some(sub));
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        let bottom_lines = out.iter().filter(|l| l.contains('└')).count();
+        assert_eq!(bottom_lines, 1, "3단 중첩의 아랫변이 모두 같은 줄에 있어야 한다: {text}");
+        let sub_title_row = out.iter().position(|l| l.contains("SubLane")).unwrap_or_else(|| panic!("SubLane not found: {text}"));
+        assert!(
+            out[sub_title_row + 1].contains('┌'),
+            "SubLane 제목 줄 바로 다음이 구분선 겸 s1 상자 윗변이어야 한다(이중 구분선 없음): {text}"
+        );
+    }
+
+    /// 요구사항 4.1, 4.6: TB에서 레인 제목 줄이 첫 노드 줄보다 위이고 테두리 선(─)과 겹치지
+    /// 않는다. 빈 제목 레인은 배너 자리는 유지하되 글자를 쓰지 않는다(패닉도 없다).
+    #[test]
+    fn tb_lane_title_gets_its_own_banner_row_without_dashes() {
+        let mut g = Graph::default();
+        let lane = g.add_lane("Sales", None);
+        let empty_lane = g.add_lane("", None);
+        g.intern("n1", "n1", Shape::Rect, Some(lane));
+        g.intern("n2", "n2", Shape::Rect, Some(empty_lane));
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        let title_row = out.iter().position(|l| l.contains("Sales")).unwrap_or_else(|| panic!("title not found: {text}"));
+        let node_row = out.iter().position(|l| l.contains(" n1 ")).unwrap_or_else(|| panic!("node not found: {text}"));
+        assert!(title_row < node_row, "제목 줄이 노드 줄보다 위여야 한다: {text}");
+        assert!(!out[title_row].contains('─'), "제목 줄에 테두리 선이 없어야 한다: {text}");
+    }
+
+    /// 요구사항 4.2: LR에서 제목이 노드 내용 왼쪽의 전용 열에 가로쓰기로 쓰이고 잘리지 않는다.
+    #[test]
+    fn left_right_lane_title_gets_its_own_banner_column_without_truncation() {
+        let mut g = Graph::default();
+        let lane = g.add_lane("Longish Lane Title", None);
+        g.intern("n", "n", Shape::Rect, Some(lane));
+        g.direction = Some(Direction::LeftRight);
+        let out = rows(render(&g, &Theme::none(), 100).unwrap());
+        let text = out.join("\n");
+        assert!(text.contains("Longish Lane Title"), "LR 레인 제목은 잘리지 않아야 한다: {text}");
+        let title_row = out.iter().position(|l| l.contains("Longish Lane Title")).unwrap();
+        let node_row = out.iter().position(|l| l.contains(" n ")).unwrap_or_else(|| panic!("node not found: {text}"));
+        let node_top_row = out[..node_row].iter().rposition(|l| l.contains('┌')).unwrap_or_else(|| panic!("node top border not found: {text}"));
+        let title_col = char_col(&out[title_row], 'L');
+        let node_col = char_col(&out[node_top_row], '┌');
+        assert!(title_col < node_col, "LR 제목 열이 노드 왼쪽 테두리보다 왼쪽이어야 한다: {text}");
+    }
+
+    /// 요구사항 4.3: 자식 레인의 배너가 부모 레인의 배너 다음에 오며 두 제목이 겹치지 않는다.
+    #[test]
+    fn nested_lane_banners_stack_without_overlapping_titles() {
+        let mut g = Graph::default();
+        let pool = g.add_lane("Pool", None);
+        let lane = g.add_lane("Lane", Some(pool));
+        g.intern("n", "n", Shape::Rect, Some(lane));
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        let pool_row = out.iter().position(|l| l.contains("Pool")).unwrap_or_else(|| panic!("Pool not found: {text}"));
+        let lane_row = out.iter().position(|l| l.contains("Lane")).unwrap_or_else(|| panic!("Lane not found: {text}"));
+        assert!(pool_row < lane_row, "풀 제목이 레인 제목보다 앞 줄에 있어야 한다: {text}");
+    }
+
+    /// 요구사항 4.4: 같은 깊이의 형제 레인 제목 길이가 서로 달라도 모든 형제의 노드 내용이
+    /// 같은 위치에서 시작한다.
+    #[test]
+    fn sibling_lane_titles_of_different_length_still_align_content_start() {
+        let mut g = Graph::default();
+        let pool = g.add_lane("Pool", None);
+        let short = g.add_lane("X", Some(pool));
+        let long = g.add_lane("A Very Long Title Indeed", Some(pool));
+        g.intern("n1", "n1", Shape::Rect, Some(short));
+        g.intern("n2", "n2", Shape::Rect, Some(long));
+        let out = rows(render(&g, &Theme::none(), 100).unwrap());
+        let text = out.join("\n");
+        let row1 = out.iter().position(|l| l.contains(" n1 ")).unwrap_or_else(|| panic!("n1 not found: {text}"));
+        let row2 = out.iter().position(|l| l.contains(" n2 ")).unwrap_or_else(|| panic!("n2 not found: {text}"));
+        assert_eq!(row1, row2, "형제 레인의 첫 노드는 제목 길이와 무관하게 같은 줄에서 시작해야 한다: {text}");
+    }
+
+    /// 요구사항 4.5: 위→아래 방향 + 제목이 구성원 노드보다 넓으면 레인이 제목 폭만큼 넓어지고
+    /// 제목이 잘리지 않는다(기존 그룹 제목과 같은 규약).
+    #[test]
+    fn tb_wide_lane_title_widens_the_lane_instead_of_truncating() {
+        let mut g = Graph::default();
+        let lane = g.add_lane("A Very Long Lane Title", None);
+        g.intern("n", "n", Shape::Rect, Some(lane));
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        assert!(text.contains("A Very Long Lane Title"), "긴 제목이 잘리면 안 된다: {text}");
+    }
+
+    /// 요구사항 2.4: 형제 레인을 A, B, C 순서로 선언 + C→A 간선만 있어도(무게중심 정렬이
+    /// 다른 순서를 선호할 수 있어도) A, B, C 선언 순서 그대로 그려진다.
+    #[test]
+    fn lane_children_keep_declaration_order_even_when_an_edge_pulls_otherwise() {
+        let mut g = Graph::default();
+        let pool = g.add_lane("Pool", None);
+        let lane_a = g.add_lane("A", Some(pool));
+        let lane_b = g.add_lane("B", Some(pool));
+        let lane_c = g.add_lane("C", Some(pool));
+        let a1 = g.intern("a1", "a1", Shape::Rect, Some(lane_a));
+        g.intern("b1", "b1", Shape::Rect, Some(lane_b));
+        let c1 = g.intern("c1", "c1", Shape::Rect, Some(lane_c));
+        g.add_edge(Edge { from: c1, to: a1, head: Marker::Arrow, ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 100).unwrap());
+        let text = out.join("\n");
+        let title_row = out.iter().position(|l| l.contains('A') && l.contains('B') && l.contains('C')).unwrap_or_else(|| panic!("A, B, C 배너 줄을 못 찾음: {text}"));
+        let pos_a = out[title_row].find('A').unwrap();
+        let pos_b = out[title_row].find('B').unwrap();
+        let pos_c = out[title_row].find('C').unwrap();
+        assert!(pos_a < pos_b && pos_b < pos_c, "선언 순서 A, B, C가 유지돼야 한다: {text}");
+    }
+
+    /// 요구사항 2.5: 형제 레인 + 폭 초과로 층 접기 폴백이 일어나도 레인은 접히지 않고 나란한
+    /// 띠를 유지하며, 레인 안의 노드만 접힌다.
+    #[test]
+    fn narrow_width_folds_nodes_inside_a_lane_without_stacking_the_lanes() {
+        let mut g = Graph::default();
+        let pool = g.add_lane("Pool", None);
+        let lane_a = g.add_lane("A", Some(pool));
+        let lane_b = g.add_lane("B", Some(pool));
+        // A 안에 나란한 노드를 여럿 둬(간선 없음, 모두 층0) 위→아래에서 폭이 넘치게 한다.
+        for i in 0..4 {
+            g.intern(&format!("a{i}"), &format!("a{i}"), Shape::Rect, Some(lane_a));
+        }
+        // B 안에는 층이 깊은 사슬을 둬(왼쪽→오른쪽 재시도도 폭이 넘치게) `render()`가 반대
+        // 방향으로 피하지 못하고 반드시 위→아래 + 층 접기로 떨어지게 만든다.
+        let mut prev = g.intern("b0", "b0", Shape::Rect, Some(lane_b));
+        for i in 1..6 {
+            let next = g.intern(&format!("b{i}"), &format!("b{i}"), Shape::Rect, Some(lane_b));
+            g.add_edge(Edge { from: prev, to: next, head: Marker::Arrow, ..Edge::default() });
+            prev = next;
+        }
+        let out = rows(render(&g, &Theme::none(), 40).unwrap());
+        let text = out.join("\n");
+        // 접기가 실제로 일어났는지 확인: 간선 없이 원래 모두 층 0인 a0~a3가 좁은 폭 때문에
+        // 서로 다른 줄(층)로 접혔어야 한다.
+        let a_rows: std::collections::BTreeSet<usize> =
+            (0..4).map(|i| out.iter().position(|l| l.contains(&format!(" a{i} "))).unwrap_or_else(|| panic!("a{i} not found: {text}"))).collect();
+        assert!(a_rows.len() > 1, "레인 A 안의 노드들이 층 접기로 서로 다른 줄에 놓여야 한다: {text}");
+        // 레인 A·B 자신은 접히지 않고 여전히 좌우로 나란해야 한다(배너가 같은 줄).
+        let a_row = out.iter().position(|l| l.contains('A')).unwrap();
+        let b_row = out.iter().position(|l| l.contains('B')).unwrap();
+        assert_eq!(a_row, b_row, "A·B 배너가 여전히 같은 줄(좌우 나란)이어야 한다: {text}");
+    }
+
+    /// 요구사항 3.1: A 안에 a1 뒤로 a2, a3가 더 있어도, a1에서 B로 가는 간선의 도착 노드는
+    /// a1의 바로 다음 층에 놓이고 A의 마지막 노드(a3) 뒤로 밀리지 않는다.
+    #[test]
+    fn cross_lane_successor_lands_right_after_its_source_layer() {
+        let mut g = Graph::default();
+        let pool = g.add_lane("Pool", None);
+        let lane_a = g.add_lane("A", Some(pool));
+        let lane_b = g.add_lane("B", Some(pool));
+        let a1 = g.intern("a1", "a1", Shape::Rect, Some(lane_a));
+        let a2 = g.intern("a2", "a2", Shape::Rect, Some(lane_a));
+        let a3 = g.intern("a3", "a3", Shape::Rect, Some(lane_a));
+        let b1 = g.intern("b1", "b1", Shape::Rect, Some(lane_b));
+        g.add_edge(Edge { from: a1, to: a2, head: Marker::Arrow, ..Edge::default() });
+        g.add_edge(Edge { from: a2, to: a3, head: Marker::Arrow, ..Edge::default() });
+        g.add_edge(Edge { from: a1, to: b1, head: Marker::Arrow, ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 100).unwrap());
+        let text = out.join("\n");
+        let row_a2 = out.iter().position(|l| l.contains(" a2 ")).unwrap_or_else(|| panic!("a2 not found: {text}"));
+        let row_b1 = out.iter().position(|l| l.contains(" b1 ")).unwrap_or_else(|| panic!("b1 not found: {text}"));
+        assert_eq!(row_a2, row_b1, "b1이 a2와 같은 줄에 있어야 한다(A의 마지막 뒤로 밀리면 안 됨): {text}");
+    }
+
+    /// 요구사항 3.2: 레인 경계를 넘는 간선의 선이 끊기지 않고 화살촉이 도착 노드 바로 위에
+    /// 붙는다.
+    #[test]
+    fn edge_crossing_lane_boundary_stays_unbroken_with_arrowhead_at_target() {
+        let mut g = Graph::default();
+        let pool = g.add_lane("Pool", None);
+        let lane_a = g.add_lane("A", Some(pool));
+        let lane_b = g.add_lane("B", Some(pool));
+        let a1 = g.intern("a1", "a1", Shape::Rect, Some(lane_a));
+        let b1 = g.intern("b1", "b1", Shape::Rect, Some(lane_b));
+        g.add_edge(Edge { from: a1, to: b1, head: Marker::Arrow, ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 100).unwrap());
+        let text = out.join("\n");
+        assert!(text.contains('▼'), "화살촉이 있어야 한다: {text}");
+        let b1_row = out.iter().position(|l| l.contains(" b1 ")).unwrap_or_else(|| panic!("b1 not found: {text}"));
+        // 상자는 (윗변, 이름 줄, 아랫변) 3줄이므로 화살촉은 이름 줄에서 두 줄 위(윗변 바로 위)다.
+        assert!(out[b1_row - 2].contains('▼'), "화살촉이 도착 노드 상자 바로 위 줄에 있어야 한다: {text}");
+    }
+
+    /// 요구사항 3.3: 레인 밖 노드(최상위)는 레인 상자 바깥에 그려지고 패닉이 없다.
+    #[test]
+    fn node_outside_a_lane_is_drawn_outside_the_lane_box() {
+        let mut g = Graph::default();
+        let pool = g.add_lane("Pool", None);
+        let lane = g.add_lane("Lane", Some(pool));
+        let sub = g.add_lane("SubLane", Some(lane));
+        let c1 = g.intern("c1", "c1", Shape::Rect, Some(sub));
+        let d1 = g.intern("d1", "d1", Shape::Rect, None);
+        g.add_edge(Edge { from: c1, to: d1, head: Marker::Arrow, ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        let pool_right = char_rcol(&out[0], '┐');
+        let d1_row = out.iter().position(|l| l.contains(" d1 ")).unwrap_or_else(|| panic!("d1 not found: {text}"));
+        let d1_col = char_col(&out[d1_row], 'd');
+        assert!(d1_col > pool_right, "레인 밖 노드는 레인 상자 오른쪽 바깥에 그려져야 한다: {text}");
+    }
+
+    /// 요구사항 5.1, 5.2: 방향 지정 없음(기본 위→아래)이면 레인이 좌우로, `LeftRight`면
+    /// 레인이 위아래로 쌓인다.
+    #[test]
+    fn unspecified_direction_places_lanes_side_by_side_left_right_stacks_them() {
+        let build = |direction: Option<Direction>| {
+            let mut g = Graph::default();
+            let pool = g.add_lane("Pool", None);
+            let lane_a = g.add_lane("A", Some(pool));
+            let lane_b = g.add_lane("B", Some(pool));
+            g.intern("a1", "a1", Shape::Rect, Some(lane_a));
+            g.intern("b1", "b1", Shape::Rect, Some(lane_b));
+            g.direction = direction;
+            g
+        };
+        let tb = rows(render(&build(None), &Theme::none(), 100).unwrap());
+        let tb_text = tb.join("\n");
+        let a_row = tb.iter().position(|l| l.contains('A')).unwrap_or_else(|| panic!("A not found: {tb_text}"));
+        let b_row = tb.iter().position(|l| l.contains('B')).unwrap_or_else(|| panic!("B not found: {tb_text}"));
+        assert_eq!(a_row, b_row, "TB에서 A·B 배너가 같은 줄(좌우로 나란)이어야 한다: {tb_text}");
+
+        let lr = rows(render(&build(Some(Direction::LeftRight)), &Theme::none(), 100).unwrap());
+        let lr_text = lr.join("\n");
+        let a_row_lr = lr.iter().position(|l| l.contains('A')).unwrap_or_else(|| panic!("A not found: {lr_text}"));
+        let b_row_lr = lr.iter().position(|l| l.contains('B')).unwrap_or_else(|| panic!("B not found: {lr_text}"));
+        assert!(a_row_lr < b_row_lr, "LR에서 A가 B보다 위(위아래로 쌓임)여야 한다: {lr_text}");
+    }
+
+    /// 요구사항 5.3: 지정 폭을 초과하면 기존 규약대로 `None`을 돌려준다.
+    #[test]
+    fn lane_graph_too_wide_returns_none() {
+        let mut g = Graph::default();
+        let pool = g.add_lane("Pool with a very long title indeed", None);
+        let lane = g.add_lane("Lane with an equally long title", Some(pool));
+        g.intern("n", "wide node label here", Shape::Rect, Some(lane));
+        assert!(render(&g, &Theme::none(), 8).is_none());
+    }
+
+    /// 요구사항 6.2: 3단 중첩·구성원 없는 레인·레인 간 되돌아가는 간선이 섞여도 패닉이 없다.
+    #[test]
+    fn deep_nesting_empty_lane_and_backward_cross_lane_edge_do_not_panic() {
+        let mut g = Graph::default();
+        let pool = g.add_lane("Pool", None);
+        let lane = g.add_lane("Lane", Some(pool));
+        let sub = g.add_lane("SubLane", Some(lane));
+        let _empty = g.add_lane("Empty", Some(pool));
+        let s1 = g.intern("s1", "s1", Shape::Rect, Some(sub));
+        let lane_b = g.add_lane("B", Some(pool));
+        let b1 = g.intern("b1", "b1", Shape::Rect, Some(lane_b));
+        g.add_edge(Edge { from: s1, to: b1, head: Marker::Arrow, ..Edge::default() });
+        g.add_edge(Edge { from: b1, to: s1, head: Marker::Arrow, kind: LineKind::Dashed, ..Edge::default() });
+        let out = render(&g, &Theme::none(), 100);
+        assert!(out.is_some(), "패닉 없이 렌더링돼야 한다");
     }
 }
