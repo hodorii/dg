@@ -96,12 +96,22 @@ pub struct Edge {
     pub head: Marker,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GroupKind {
+    /// 구성원 범위만 감싸는 내용 적응형 상자.
+    #[default]
+    Box,
+    /// 소속 범위(다이어그램 전체 또는 부모 레인) 전체를 관통하는 띠.
+    Lane,
+}
+
 #[derive(Clone, Debug)]
 pub struct Group {
     /// 원문에서 그룹을 가리키는 아이디(간선의 끝으로 쓰일 수 있다).
     pub id: String,
     pub title: String,
     pub parent: Option<usize>,
+    pub kind: GroupKind,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -149,8 +159,16 @@ impl Graph {
     }
 
     pub fn add_group_with_id(&mut self, id: &str, title: &str, parent: Option<usize>) -> usize {
-        self.groups.push(Group { id: id.to_string(), title: title.to_string(), parent });
+        self.groups.push(Group { id: id.to_string(), title: title.to_string(), parent, kind: GroupKind::Box });
         self.groups.len() - 1
+    }
+
+    /// 레인 종류 그룹. id = title(기존 `add_group`과 같은 규약). 소속 범위(다이어그램 전체 또는
+    /// 부모 레인) 전체를 관통하는 띠로 그려진다(`layout::graph`가 소비).
+    pub fn add_lane(&mut self, title: &str, parent: Option<usize>) -> usize {
+        let group = self.add_group_with_id(title, title, parent);
+        self.groups[group].kind = GroupKind::Lane;
+        group
     }
 
     /// 그룹 자체를 가리키는 간선 끝. 그룹 안에 보이지 않는 닻 노드를 두고 거기에 잇는다.
@@ -170,6 +188,20 @@ impl Graph {
             cursor = self.groups[g].parent;
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_lane_marks_group_kind_lane_while_add_group_stays_box() {
+        let mut g = Graph::default();
+        let lane = g.add_lane("Sales", None);
+        let boxed = g.add_group("Backend", None);
+        assert_eq!(g.groups[lane].kind, GroupKind::Lane);
+        assert_eq!(g.groups[boxed].kind, GroupKind::Box);
     }
 }
 
