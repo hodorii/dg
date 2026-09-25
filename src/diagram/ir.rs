@@ -18,6 +18,14 @@ impl Direction {
     }
 }
 
+/// BPMN 이벤트 노드가 흐름 안 어디에 있는지 — 위치 글자와 테두리 굵기만 바꾼다.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventPosition {
+    Start,
+    Intermediate,
+    End,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Shape {
     #[default]
@@ -40,6 +48,10 @@ pub enum Shape {
     End,
     /// 그룹을 가리키는 간선이 닿는 보이지 않는 점.
     Anchor,
+    /// BPMN 이벤트: 둥근 상자, 본문 왼쪽에 위치 글자(○/◎/●). End는 굵은 테두리.
+    Event(EventPosition),
+    /// BPMN 접힌 서브프로세스: Round와 같은 테두리·본문에 아래 테두리 가운데 `[+]`.
+    Subprocess,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -61,6 +73,8 @@ pub enum Marker {
     CrowMany,
     /// 없거나 여럿 `o{`.
     CrowZeroMany,
+    /// BPMN default 시퀀스 흐름의 빗금 꼬리 `╱`.
+    Slash,
 }
 
 /// ER 카디널리티 문자열(`1`, `0..1`, `1..N`, `0..N`)을 까치발 표식으로.

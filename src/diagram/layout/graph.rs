@@ -2134,6 +2134,9 @@ fn marker_glyphs(marker: Marker, direction: Direction, at_top: bool) -> Vec<char
         Marker::CrowZeroOne => vec!['○', one],
         Marker::CrowMany => vec![one, many],
         Marker::CrowZeroMany => vec!['○', many],
+        // BPMN default 흐름 꼬리: 방향과 무관한 한 글자(Circle/Cross와 같은 패턴) — 세로선
+        // 위에서도 가로선 위에서도 빗금으로 읽힌다.
+        Marker::Slash => vec!['╱'],
     };
     glyphs
 }
@@ -2141,7 +2144,7 @@ fn marker_glyphs(marker: Marker, direction: Direction, at_top: bool) -> Vec<char
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagram::ir::{Edge, Shape};
+    use crate::diagram::ir::{Edge, EventPosition, Shape};
 
     fn simple_graph() -> Graph {
         let mut g = Graph::default();
@@ -2755,5 +2758,182 @@ mod tests {
         g.add_edge(Edge { from: b1, to: s1, head: Marker::Arrow, kind: LineKind::Dashed, ..Edge::default() });
         let out = render(&g, &Theme::none(), 100);
         assert!(out.is_some(), "패닉 없이 렌더링돼야 한다");
+    }
+
+    // ── BPMN 도형·표식(bpmn-shapes) ──────────────────────────────────
+
+    /// 요구사항 4.1, 4.2: `Marker::Slash`는 방향·위치와 무관하게 한 글자다
+    /// (`Circle`/`Cross`와 같은 패턴 — `crow_one_marker_is_a_single_glyph_not_doubled`와 대응).
+    #[test]
+    fn slash_marker_is_a_single_glyph_regardless_of_direction() {
+        for direction in [Direction::TopDown, Direction::LeftRight] {
+            for at_top in [true, false] {
+                assert_eq!(marker_glyphs(Marker::Slash, direction, at_top), vec!['╱']);
+            }
+        }
+    }
+
+    /// 요구사항 4.1: TB에서 default 흐름 꼬리 빗금이 출발 노드 테두리 바로 아래 줄, 같은
+    /// 열에 놓인다.
+    #[test]
+    fn slash_tail_marker_sits_right_below_the_source_node_in_top_down() {
+        let mut g = Graph::default();
+        let a = g.intern("a", "a", Shape::Rect, None);
+        let b = g.intern("b", "b", Shape::Rect, None);
+        g.add_edge(Edge { from: a, to: b, tail: Marker::Slash, head: Marker::Arrow, ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        let a_text_row = row_of(&out, " a ");
+        let a_col = char_col(&out[a_text_row], 'a');
+        let exit_row = a_text_row + 2; // 테두리 바로 아래 줄(요구사항 4.1)
+        assert_eq!(char_col(&out[exit_row], '╱'), a_col, "a 테두리 바로 아래, a와 같은 열에 빗금이 있어야 한다: {text}");
+    }
+
+    /// 요구사항 4.2: LR에서는 출발 노드 오른쪽 테두리 바로 다음 칸에 빗금이 놓인다.
+    #[test]
+    fn slash_tail_marker_sits_right_after_the_source_node_in_left_right() {
+        let mut g = Graph::default();
+        let a = g.intern("a", "a", Shape::Rect, None);
+        let b = g.intern("b", "b", Shape::Rect, None);
+        g.add_edge(Edge { from: a, to: b, tail: Marker::Slash, head: Marker::Arrow, ..Edge::default() });
+        g.direction = Some(Direction::LeftRight);
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        let a_text_row = row_of(&out, " a ");
+        let a_col = char_col(&out[a_text_row], 'a');
+        // a letter 다음의 첫 '│'가 a 자신의 오른쪽 테두리다(char_rcol은 b의 오른쪽 테두리까지
+        // 집어버려 못 쓴다 — 한 줄에 두 노드의 테두리가 같이 있다).
+        let a_right_border = out[a_text_row].chars().enumerate().skip(a_col + 1).find(|&(_, c)| c == '│').map(|(i, _)| i).expect("a 오른쪽 테두리가 있어야 한다");
+        assert_eq!(char_col(&out[a_text_row], '╱'), a_right_border + 1, "a 오른쪽 바로 다음 칸에 빗금이 있어야 한다: {text}");
+    }
+
+    /// 요구사항 4.3: 빗금 꼬리 + 화살촉 머리 + 라벨을 함께 쓰면 라벨이 빗금을 덮어쓰지 않고
+    /// 그 다음 칸부터 시작하며, 화살촉은 도착 노드에 그대로 붙는다.
+    #[test]
+    fn slash_tail_does_not_get_overwritten_by_a_label_in_left_right() {
+        let mut g = Graph::default();
+        let a = g.intern("a", "a", Shape::Rect, None);
+        let b = g.intern("b", "b", Shape::Rect, None);
+        g.add_edge(Edge { from: a, to: b, tail: Marker::Slash, head: Marker::Arrow, label: "no".into(), ..Edge::default() });
+        g.direction = Some(Direction::LeftRight);
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        let a_text_row = row_of(&out, " a ");
+        let slash_col = char_col(&out[a_text_row], '╱');
+        let label_col = char_col(&out[a_text_row], 'n');
+        assert_eq!(label_col, slash_col + 1, "라벨이 빗금 다음 칸부터 시작해야 한다: {text}");
+        assert!(text.contains('▶'), "화살촉이 그대로 그려져야 한다: {text}");
+    }
+
+    /// 요구사항 1.5: TB·LR 모두에서 이벤트 노드(가는 선·굵은 선 둘 다)가 기존 접점 규칙을
+    /// 그대로 따른다 — 화살촉이 각 도착 노드 테두리 바로 바깥 칸에 붙는다.
+    #[test]
+    fn event_shapes_attach_edges_using_existing_contact_rules_top_down() {
+        let mut g = Graph::default();
+        let start = g.intern("start", "Go", Shape::Event(EventPosition::Start), None);
+        let mid = g.intern("mid", "Mid", Shape::Round, None);
+        let end = g.intern("end", "Done", Shape::Event(EventPosition::End), None);
+        g.add_edge(Edge { from: start, to: mid, head: Marker::Arrow, ..Edge::default() });
+        g.add_edge(Edge { from: mid, to: end, head: Marker::Arrow, ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        // 노드는 테두리(위)·본문(텍스트 줄)·테두리(아래) 세 줄을 차지하므로, 화살촉은
+        // 텍스트 줄에서 두 줄 위(테두리 바로 위 줄)에 있다.
+        let mid_row = row_of(&out, "Mid");
+        assert!(out[mid_row - 2].contains('▼'), "가는 선 노드 테두리 바로 위 줄에 화살촉이 붙어야 한다: {text}");
+        let end_row = row_of(&out, "Done");
+        assert!(out[end_row - 2].contains('▼'), "굵은 테두리(종료 이벤트)에도 화살촉이 테두리 바로 위 줄에 붙어야 한다: {text}");
+    }
+
+    #[test]
+    fn event_shapes_attach_edges_using_existing_contact_rules_left_right() {
+        let mut g = Graph::default();
+        let start = g.intern("start", "Go", Shape::Event(EventPosition::Start), None);
+        let end = g.intern("end", "Done", Shape::Event(EventPosition::End), None);
+        g.add_edge(Edge { from: start, to: end, head: Marker::Arrow, ..Edge::default() });
+        g.direction = Some(Direction::LeftRight);
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        let end_row = row_of(&out, "Done");
+        let end_left_border = char_col(&out[end_row], '┃');
+        assert_eq!(out[end_row].chars().nth(end_left_border - 1), Some('▶'), "화살촉이 종료 이벤트(굵은 테두리) 바로 왼쪽에 있어야 한다: {text}");
+    }
+
+    /// 요구사항 2.2: 서브프로세스 아래로 간선이 나가도 `[+]`가 지워지지 않고, 그 아래 줄에
+    /// 선이 그려진다.
+    #[test]
+    fn subprocess_plus_marker_survives_an_outgoing_edge_below_it() {
+        let mut g = Graph::default();
+        let sub = g.intern("sub", "Sub", Shape::Subprocess, None);
+        let next = g.intern("next", "Next", Shape::Rect, None);
+        g.add_edge(Edge { from: sub, to: next, head: Marker::Arrow, ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        let plus_row = row_of(&out, "[+]");
+        let plus_col = char_col(&out[plus_row], '+');
+        let line_row = &out[plus_row + 1];
+        assert!(line_row.chars().nth(plus_col).is_some_and(|c| c == '│' || c == '▼'), "[+] 바로 아래 줄에 선이 있어야 한다: {text}");
+    }
+
+    /// 요구사항 6.2: 이름 없는 이벤트·한 글자·세 줄 본문·레인 안 배치·양방향·빗금 양끝
+    /// 조합에 TB·LR 모두 패닉이 없다.
+    #[test]
+    fn new_shapes_and_slash_marker_do_not_panic_across_edge_cases() {
+        let mut g = Graph::default();
+        let lane = g.add_lane("Lane", None);
+        let unnamed_start = g.intern("s0", "s0", Shape::Event(EventPosition::Start), Some(lane));
+        g.set_label(unnamed_start, ""); // 이름 없는 이벤트: 본문 줄 없음
+        let one_char = g.intern("s1", "X", Shape::Event(EventPosition::Intermediate), Some(lane));
+        let three_line = g.intern("s2", "one\ntwo\nthree", Shape::Subprocess, Some(lane));
+        let end = g.intern("s3", "Done", Shape::Event(EventPosition::End), None);
+        g.add_edge(Edge { from: unnamed_start, to: one_char, tail: Marker::Slash, head: Marker::Arrow, ..Edge::default() });
+        g.add_edge(Edge { from: one_char, to: three_line, head: Marker::Arrow, ..Edge::default() });
+        // 빗금 양끝: 꼬리·머리 둘 다 Slash.
+        g.add_edge(Edge { from: three_line, to: end, tail: Marker::Slash, head: Marker::Slash, ..Edge::default() });
+        // 양방향: 되돌아가는 간선.
+        g.add_edge(Edge { from: end, to: unnamed_start, head: Marker::Arrow, kind: LineKind::Dashed, ..Edge::default() });
+        assert!(render(&g, &Theme::none(), 100).is_some(), "TB에서 패닉 없이 렌더링돼야 한다");
+        g.direction = Some(Direction::LeftRight);
+        assert!(render(&g, &Theme::none(), 100).is_some(), "LR에서 패닉 없이 렌더링돼야 한다");
+    }
+
+    fn task_with_stereotype(g: &mut Graph, id: &str, name: &str, stereotype: &str, group: Option<usize>) -> usize {
+        let index = g.intern(id, name, Shape::Round, group);
+        g.nodes[index].sections[0] = vec![name.to_string(), format!("«{stereotype}»")];
+        index
+    }
+
+    /// 요구사항 6.3: 손으로 만든 "주문 처리" 그래프(레인 2개, 시작/종료 이벤트, `«user»`/
+    /// `«service»` 태스크, XOR 게이트웨이, 조건 라벨 흐름)가 LR 폭 100 안에서 렌더링되고,
+    /// 1~5의 새 관례가 한 그림 안에 모두 드러난다. 파일을 파싱하지 않고 `Graph`를 직접 만든다.
+    #[test]
+    fn hand_built_order_processing_graph_renders_within_width_100() {
+        let mut g = Graph { direction: Some(Direction::LeftRight), ..Graph::default() };
+        let sales = g.add_lane("영업", None);
+        let warehouse = g.add_lane("창고", None);
+
+        let received = g.intern("received", "주문 접수", Shape::Event(EventPosition::Start), Some(sales));
+        let review = task_with_stereotype(&mut g, "review", "주문 검토", "user", Some(sales));
+        let check_stock = g.intern("check_stock", "× 재고 있음?", Shape::Diamond, Some(warehouse));
+        let prepare = task_with_stereotype(&mut g, "prepare", "출고 준비", "user", Some(warehouse));
+        let shipped_end = g.intern("shipped_end", "shipped_end", Shape::Event(EventPosition::End), Some(warehouse));
+        g.set_label(shipped_end, ""); // 이름 없는 종료 이벤트
+        let notify = task_with_stereotype(&mut g, "notify", "품절 안내 발송", "service", Some(sales));
+        let cancel_end = g.intern("cancel_end", "품절 취소", Shape::Event(EventPosition::End), Some(sales));
+
+        g.add_edge(Edge { from: received, to: review, head: Marker::Arrow, ..Edge::default() });
+        g.add_edge(Edge { from: review, to: check_stock, head: Marker::Arrow, ..Edge::default() });
+        g.add_edge(Edge { from: check_stock, to: prepare, head: Marker::Arrow, label: "예".into(), ..Edge::default() });
+        g.add_edge(Edge { from: prepare, to: shipped_end, head: Marker::Arrow, ..Edge::default() });
+        g.add_edge(Edge { from: check_stock, to: notify, head: Marker::Arrow, label: "아니오".into(), ..Edge::default() });
+        g.add_edge(Edge { from: notify, to: cancel_end, head: Marker::Arrow, ..Edge::default() });
+
+        let lines = render(&g, &Theme::none(), 100);
+        assert!(lines.is_some(), "폭 100 안에서 렌더링돼야 한다");
+        let out = rows(lines.unwrap());
+        let text = out.join("\n");
+        for needle in ["○", "●", "┃", "«user»", "«service»", "× 재고 있음?", "예", "아니오"] {
+            assert!(text.contains(needle), "{needle:?}가 결과에 있어야 한다:\n{text}");
+        }
     }
 }
