@@ -1,13 +1,16 @@
 //! `diagram::mod`가 mermaid·PlantUML과 같은 모양으로 부르는 BPMN 언어 진입점.
 //!
-//! 파서는 없다(하류 `bpmn-xml`·`bpmn-yaml`·`bizprocess-bpmn` 스펙 몫) — `kind_of`는 항상 `None`이고
-//! `render(source)`는 그래서 항상 코드블록 폴백으로 물러난다. 손으로 만든 `Model`을 그리려면
-//! [`render_model`]을 직접 부른다.
+//! `kind_of`는 `parse_xml::looks_like_bpmn`으로 BPMN XML을 스니핑해 갈래 `"xml"`을 돌려준다
+//! (하류 `bpmn-yaml`·`bizprocess-bpmn` 스펙이 다른 갈래를 더한다). `render`는 그 갈래를 파서에
+//! 넘기고 결과 `Model`을 [`render_model`]로 그린다. 손으로 만든 `Model`을 직접 그리려면
+//! `render_model`을 바로 부른다.
 
 pub mod lower;
 pub mod model;
+pub mod parse_xml;
 pub mod validate;
 pub mod vocabulary;
+pub mod xml;
 
 use crate::diagram::layout;
 use crate::diagram::options::DiagramOptions;
@@ -15,15 +18,18 @@ use crate::line::Line;
 use crate::style::Theme;
 use model::Model;
 
-/// 코드펜스 본문의 문법 갈래. 이 스펙에서는 항상 `None`(파서 없음) — 파서 스펙이 갈래를 더한다.
-pub fn kind_of(_source: &str) -> Option<&'static str> {
-    None
+/// 코드펜스 본문의 문법 갈래: BPMN XML이면 `Some("xml")`(후속 스펙: `"yaml"` …).
+pub fn kind_of(source: &str) -> Option<&'static str> {
+    parse_xml::looks_like_bpmn(source).then_some("xml")
 }
 
-/// `kind_of` → 파서 → `render_model`. 파서가 없어 지금은 항상 `None`.
-pub fn render(source: &str, _theme: &Theme, _width: usize, _options: DiagramOptions) -> Option<(&'static str, Vec<Line>)> {
-    kind_of(source)?;
-    None
+/// `kind_of` → 갈래별 파서 → `render_model`. 파서 실패는 `None`.
+pub fn render(source: &str, theme: &Theme, width: usize, options: DiagramOptions) -> Option<(&'static str, Vec<Line>)> {
+    let model = match kind_of(source)? {
+        "xml" => parse_xml::parse(source).ok()?,
+        _ => return None,
+    };
+    render_model(&model, theme, width, options)
 }
 
 /// `elements`가 비면 `None` → 검증 → 변환 → 방향 옵션 덮어쓰기 → 그래프 배치기 렌더링.
@@ -38,6 +44,130 @@ pub fn render_model(model: &Model, theme: &Theme, width: usize, options: Diagram
     let lines = layout::graph::render(&graph, theme, width)?;
     let kind = if model.participants.len() >= 2 { "collaboration" } else { "process" };
     Some((kind, lines))
+}
+
+/// bpmn.io 형식 그대로 쓴 공용 XML fixture(테스트 전용). `examples/`에는 두지 않는다(design §Out-of-Scope).
+#[cfg(test)]
+pub(crate) mod fixtures {
+    /// 주문 처리 협업 — 풀 `고객`(레인 없음)·`판매사`(레인 `영업`·`창고`), `«message»` 시작,
+    /// `«user»`/`«service»` 태스크, `×` 게이트웨이 + default 흐름, 경계 `«error»` 이벤트, 메시지
+    /// 흐름, `<?xml` 선언·`bpmn:` 접두사·`xmlns:*` 5개·`incoming`/`outgoing`·`&#10;` 이름·
+    /// `conditionExpression`·`bpmndi:BPMNDiagram` 구획을 모두 담는다(requirements 7.3).
+    const ORDER_PROCESSING_HEADER: &str = concat!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+        "\n",
+        r#"<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="Definitions_1" targetNamespace="http://bpmn.io/schema/bpmn">"#,
+    );
+
+    pub fn order_processing_collaboration() -> String {
+        format!("{ORDER_PROCESSING_HEADER}{ORDER_PROCESSING_BODY}{ORDER_PROCESSING_DIAGRAM}</bpmn:definitions>\n")
+    }
+
+    /// 위와 같은 문서에서 `bpmndi:BPMNDiagram` 구획만 지운 것 — 출력 바이트 동일 확인용(2.5).
+    pub fn order_processing_collaboration_without_diagram() -> String {
+        format!("{ORDER_PROCESSING_HEADER}{ORDER_PROCESSING_BODY}</bpmn:definitions>\n")
+    }
+
+    const ORDER_PROCESSING_BODY: &str = r#"
+  <bpmn:collaboration id="Collaboration_1">
+    <bpmn:participant id="Participant_Customer" name="고객" processRef="Process_Customer"/>
+    <bpmn:participant id="Participant_Vendor" name="판매사" processRef="Process_Vendor"/>
+    <bpmn:messageFlow id="Flow_Message" sourceRef="Task_CreateOrder" targetRef="StartEvent_OrderReceived"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_Customer" isExecutable="false">
+    <bpmn:startEvent id="StartEvent_Customer" name="시작">
+      <bpmn:outgoing>Flow_1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="Task_CreateOrder" name="주문서&#10;작성">
+      <bpmn:incoming>Flow_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_2</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="EndEvent_CustomerDone" name="완료">
+      <bpmn:incoming>Flow_2</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_Customer" targetRef="Task_CreateOrder"/>
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_CreateOrder" targetRef="EndEvent_CustomerDone"/>
+  </bpmn:process>
+  <bpmn:process id="Process_Vendor" isExecutable="false">
+    <bpmn:laneSet id="LaneSet_1">
+      <bpmn:lane id="Lane_Sales" name="영업">
+        <bpmn:flowNodeRef>StartEvent_OrderReceived</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_ReviewOrder</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>BoundaryEvent_Timeout</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>EndEvent_Cancelled</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_NotifyOOS</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>EndEvent_OutOfStock</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_Warehouse" name="창고">
+        <bpmn:flowNodeRef>Gateway_StockCheck</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_PrepareShipment</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>EndEvent_Shipped</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="StartEvent_OrderReceived">
+      <bpmn:messageEventDefinition id="MessageEventDefinition_1"/>
+      <bpmn:outgoing>Flow_Sales1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="Task_ReviewOrder" name="주문 검토">
+      <bpmn:incoming>Flow_Sales1</bpmn:incoming>
+      <bpmn:outgoing>Flow_Cross1</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:boundaryEvent id="BoundaryEvent_Timeout" name="시한 초과" attachedToRef="Task_ReviewOrder">
+      <bpmn:errorEventDefinition id="ErrorEventDefinition_1"/>
+      <bpmn:outgoing>Flow_Sales2</bpmn:outgoing>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="EndEvent_Cancelled" name="취소">
+      <bpmn:incoming>Flow_Sales2</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:serviceTask id="Task_NotifyOOS" name="품절 안내">
+      <bpmn:incoming>Flow_Cross2</bpmn:incoming>
+      <bpmn:outgoing>Flow_Sales3</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_OutOfStock" name="품절 취소">
+      <bpmn:incoming>Flow_Sales3</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:exclusiveGateway id="Gateway_StockCheck" name="재고 있음?" default="Flow_Cross2">
+      <bpmn:incoming>Flow_Cross1</bpmn:incoming>
+      <bpmn:outgoing>Flow_StockYes</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Cross2</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="Task_PrepareShipment" name="출고 준비">
+      <bpmn:incoming>Flow_StockYes</bpmn:incoming>
+      <bpmn:outgoing>Flow_Wh2</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="EndEvent_Shipped" name="완료">
+      <bpmn:incoming>Flow_Wh2</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_Sales1" sourceRef="StartEvent_OrderReceived" targetRef="Task_ReviewOrder"/>
+    <bpmn:sequenceFlow id="Flow_Cross1" sourceRef="Task_ReviewOrder" targetRef="Gateway_StockCheck">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_StockYes" name="예" sourceRef="Gateway_StockCheck" targetRef="Task_PrepareShipment"/>
+    <bpmn:sequenceFlow id="Flow_Cross2" sourceRef="Gateway_StockCheck" targetRef="Task_NotifyOOS"/>
+    <bpmn:sequenceFlow id="Flow_Sales2" sourceRef="BoundaryEvent_Timeout" targetRef="EndEvent_Cancelled"/>
+    <bpmn:sequenceFlow id="Flow_Sales3" sourceRef="Task_NotifyOOS" targetRef="EndEvent_OutOfStock"/>
+    <bpmn:sequenceFlow id="Flow_Wh2" sourceRef="Task_PrepareShipment" targetRef="EndEvent_Shipped"/>
+  </bpmn:process>
+"#;
+
+    const ORDER_PROCESSING_DIAGRAM: &str = r#"
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <!-- 좌표는 읽지 않는다 — BPMNDI는 영구 제외(design §Out-of-Scope) -->
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Collaboration_1">
+      <bpmndi:BPMNShape id="Shape_Customer" bpmnElement="Participant_Customer" isHorizontal="true">
+        <dc:Bounds x="160" y="80" width="600" height="150"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Vendor" bpmnElement="Participant_Vendor" isHorizontal="true">
+        <dc:Bounds x="160" y="260" width="600" height="300"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Edge_Message" bpmnElement="Flow_Message">
+        <![CDATA[ waypoints are not read by dg ]]>
+        <di:waypoint x="300" y="230"/>
+        <di:waypoint x="300" y="300"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+"#;
 }
 
 #[cfg(test)]
@@ -92,9 +222,44 @@ mod tests {
     }
 
     #[test]
-    fn source_entry_point_is_always_none_until_a_parser_spec_adds_a_dialect() {
-        assert_eq!(kind_of("<definitions></definitions>"), None);
+    fn node_less_definitions_sniffs_as_xml_but_renders_nothing() {
+        assert_eq!(kind_of("<definitions></definitions>"), Some("xml"));
         assert_eq!(render("<definitions></definitions>", &Theme::none(), 100, DiagramOptions::default()), None);
+    }
+
+    #[test]
+    fn non_xml_bodies_have_no_grammar_kind() {
+        assert_eq!(kind_of("process:\n  id: p1\n"), None);
+        assert_eq!(kind_of("임의의 한글 문장입니다"), None);
+    }
+
+    #[test]
+    fn prefix_less_single_process_renders_as_process_without_a_pool_band() {
+        let source = r#"<definitions><process id="p1"><startEvent id="s"/><task id="t"/><endEvent id="e"/><sequenceFlow id="f1" sourceRef="s" targetRef="t"/><sequenceFlow id="f2" sourceRef="t" targetRef="e"/></process></definitions>"#;
+        // tasks.md는 "풀 띠 없음"을 `┃` 부재로 표현하지만, 실제로는 종료 이벤트의 굵은 테두리(4.1)도
+        // 같은 글자를 쓴다(canvas::line_char) — 이 fixture처럼 종료 이벤트가 있으면 `┃`가 정상적으로
+        // 나타난다. 그래서 "풀 띠 없음"은 모델 자체에 참여자가 없다는 사실로 직접 확인한다(풀 띠는
+        // 참여자별로만 그려지므로 참여자가 없으면 띠도 없다).
+        let model = parse_xml::parse(source).unwrap();
+        assert!(model.participants.is_empty());
+        let (kind, _) = render(source, &Theme::none(), 100, DiagramOptions::default()).expect("렌더링돼야 한다");
+        assert_eq!(kind, "process");
+    }
+
+    #[test]
+    fn order_processing_fixture_renders_as_collaboration() {
+        let fixture = fixtures::order_processing_collaboration();
+        let (kind, _) = render(&fixture, &Theme::none(), 100, DiagramOptions::default()).expect("렌더링돼야 한다");
+        assert_eq!(kind, "collaboration");
+    }
+
+    #[test]
+    fn a_truncated_fixture_fails_to_parse_and_renders_nothing() {
+        let fixture = fixtures::order_processing_collaboration();
+        // 아스키 문자열 경계에서 자르므로 문자 경계 걱정 없이 안전하게 잘린다 — 협업·고객 프로세스만
+        // 열린 채 남고 나머지가 통째로 사라져 반드시 파싱에 실패한다.
+        let cut_at = fixture.find(r#"<bpmn:process id="Process_Vendor""#).expect("fixture에 있어야 한다");
+        assert_eq!(render(&fixture[..cut_at], &Theme::none(), 100, DiagramOptions::default()), None);
     }
 
     #[test]
@@ -354,6 +519,35 @@ mod tests {
             let (kind, _) = render_model(&model, &Theme::none(), 100, DiagramOptions::default()).expect("렌더링돼야 한다");
             assert_eq!(kind, "collaboration");
         }
+    }
+
+    /// tasks 4.1 — bpmn.io 형식 fixture(3.1)를 실제로 파싱·렌더링해, 손 모델(8.3
+    /// `order_processing_collaboration_model`)과 노드·흐름 수가 같은지, 도형 어휘 11종이 전부
+    /// 나오는지, `bpmndi` 구획 유무가 출력에 영향을 주지 않는지 확인한다.
+    #[test]
+    fn order_processing_fixture_matches_the_hand_model_and_ignores_the_diagram_section() {
+        let fixture = fixtures::order_processing_collaboration();
+        let model = parse_xml::parse(&fixture).expect("fixture는 파싱돼야 한다");
+        let hand_model = order_processing_collaboration_model();
+        assert_eq!(model.elements.len(), hand_model.elements.len());
+        assert_eq!(model.flows.len(), hand_model.flows.len());
+
+        let (kind, lines) = render(&fixture, &Theme::none(), 100, DiagramOptions::default()).expect("폭 100 안에서 렌더링돼야 한다");
+        assert_eq!(kind, "collaboration");
+        let rendered = lines.iter().map(Line::text).collect::<Vec<_>>().join("\n");
+        for glyph in ["○", "●", "◎", "┃", "«user»", "«service»", "«message»", "«error»", "× 재고 있음?", "╱", "╌"] {
+            assert!(rendered.contains(glyph), "렌더링 결과에 {glyph:?}가 있어야 한다:\n{rendered}");
+        }
+        // `&#10;`로 인코딩한 두 줄 이름이 실제로 두 줄로 보인다(2.2).
+        assert!(rendered.contains("주문서"));
+        assert!(rendered.contains("작성"));
+
+        // `bpmndi:BPMNDiagram` 구획을 지운 같은 fixture와 출력 바이트가 같다(2.5).
+        let fixture_without_diagram = fixtures::order_processing_collaboration_without_diagram();
+        let without_diagram = render(&fixture_without_diagram, &Theme::none(), 100, DiagramOptions::default()).expect("구획 없이도 렌더링돼야 한다");
+        assert_eq!(without_diagram.1.iter().map(Line::text).collect::<Vec<_>>(), lines.iter().map(Line::text).collect::<Vec<_>>());
+
+        eprintln!("{rendered}");
     }
 }
 

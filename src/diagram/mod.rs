@@ -67,11 +67,13 @@ pub fn language_of_source(path: Option<&str>, source: &str) -> Option<Language> 
     if mermaid::kind_of(source).is_some() {
         return Some(Language::Mermaid);
     }
-    if plantuml::kind_of(source).is_some() {
-        return Some(Language::PlantUml);
-    }
+    // BPMN을 PlantUML보다 먼저 본다 — PlantUML `kind_of`는 점수가 없으면 `Some("class")`를 돌려주는
+    // 포괄 판별기라 뒤에 두면 확장자 없는 BPMN XML을 영영 못 본다(design §Key Decisions).
     if bpmn::kind_of(source).is_some() {
         return Some(Language::Bpmn);
+    }
+    if plantuml::kind_of(source).is_some() {
+        return Some(Language::PlantUml);
     }
     None
 }
@@ -221,11 +223,47 @@ mod robustness {
                 let _ = render(Language::PlantUml, source, &Theme::none(), width, DiagramOptions::default());
             }
         }
-        // 파서가 없는 언어(6.8) — 어떤 본문이든 항상 `None`이어야 한다.
-        let bpmn = ["", "<definitions></definitions>", "process:\n  id: p1\n", "임의의 한글 문장입니다"];
-        for source in bpmn {
+        // BPMN(6.1~6.5, 5.8, 1.4, 1.5) — 반드시 `None`인 입력들. 손상된 구조·범위 밖 문법·구조
+        // 규칙 위반은 패닉 없이 코드블록으로 물러나야 한다.
+        let bpmn_must_be_none: Vec<String> = vec![
+            "".into(),
+            "   \n  ".into(),
+            "<".into(),
+            "<definitions/>".into(),
+            "<bpmn:definitio".into(),                                   // 태그 중간 잘림
+            "<definitions><process>".into(),                            // 요소가 열린 채 끝남
+            "<definitions><process></definitions>".into(),              // 닫는 태그 불일치
+            r#"<definitions x="unterminated>"#.into(),                  // 속성 따옴표 미종결
+            "<!-- unterminated".into(),                                 // 주석 미종결
+            "<definitions><![CDATA[unterminated".into(),                // CDATA 미종결
+            "<?xml unterminated".into(),                                // 선언 미종결
+            format!("{}{}", "<a>".repeat(100), "</a>".repeat(100)),     // 깊이 64 초과(6.4)
+            r#"<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"></definitions>"#.into(), // WSDL
+            "process:\n  id: p1\n".into(),                              // YAML 조각
+            "임의의 한글 문장입니다".into(),                                  // 평문
+            // 풀을 넘는 시퀀스 흐름(5.8) — validate가 거부.
+            r#"<definitions><collaboration id="c1"><participant id="p1" processRef="pr1"/><participant id="p2" processRef="pr2"/></collaboration><process id="pr1"><task id="a"/></process><process id="pr2"><task id="b"/><sequenceFlow id="f1" sourceRef="a" targetRef="b"/></process></definitions>"#.into(),
+            // 중복 id(5.8) — validate가 거부.
+            r#"<definitions><process id="p1"><task id="dup"/><task id="dup"/></process></definitions>"#.into(),
+        ];
+        for source in &bpmn_must_be_none {
             for width in [8usize, 20, 40, 80, 200] {
-                assert_eq!(render(Language::Bpmn, source, &Theme::none(), width, DiagramOptions::default()), None);
+                assert_eq!(render(Language::Bpmn, source, &Theme::none(), width, DiagramOptions::default()), None, "{source:?} (width {width})는 None이어야 한다");
+            }
+        }
+
+        // 패닉만 없으면 되는 입력들(6.6) — 성공·실패 둘 다 허용.
+        let bpmn_may_render: Vec<String> = vec![
+            crate::diagram::bpmn::fixtures::order_processing_collaboration(),
+            crate::diagram::bpmn::fixtures::order_processing_collaboration_without_diagram(),
+            r#"<process id="p1"><task id="a" name="&nbsp; 이름"/></process>"#.into(),
+            r#"<process id="p1"><task id="a"/><task id="b"/><sequenceFlow sourceRef="a" targetRef="b"/></process>"#.into(), // id 없는 흐름
+            r#"<process id="p1"><startEvent id="s"><messageEventDefinition/><timerEventDefinition/></startEvent></process>"#.into(), // 이벤트 정의 2개
+            r#"<process id="p1"><startEvent id="s"/><subProcess id="sp"><task id="inner"/><startEvent id="inner-s"/></subProcess><endEvent id="e"/><sequenceFlow id="f1" sourceRef="s" targetRef="sp"/><sequenceFlow id="f2" sourceRef="sp" targetRef="e"/></process>"#.into(), // subProcess 안 노드
+        ];
+        for source in &bpmn_may_render {
+            for width in [8usize, 20, 40, 80, 200] {
+                let _ = render(Language::Bpmn, source, &Theme::none(), width, DiagramOptions::default());
             }
         }
     }
@@ -234,5 +272,35 @@ mod robustness {
     fn caption_uses_language_name_and_kind() {
         let line = caption("bpmn", "collaboration", &Theme::none(), 40);
         assert!(line.text().starts_with("◈ bpmn · collaboration "));
+    }
+
+    /// tasks 3.2 — BPMN 스니핑이 PlantUML 포괄 판별보다 먼저 온다(design §Key Decisions).
+    #[test]
+    fn language_of_source_prefers_bpmn_sniffing_over_plantumls_catch_all() {
+        let fixture = crate::diagram::bpmn::fixtures::order_processing_collaboration();
+        // 확장자·펜스 없는 fixture(1.3).
+        assert_eq!(language_of_source(None, &fixture), Some(Language::Bpmn));
+        // 확장자 `.bpmn`은 본문 무관(1.2).
+        assert_eq!(language_of_source(Some("x.bpmn"), "아무 내용"), Some(Language::Bpmn));
+        // WSDL·HTML은 BPMN으로 오판되지 않는다 — 이전과 같은 결과(1.4): PlantUML `kind_of`가
+        // 점수 없으면 `Some("class")`를 돌려주는 포괄 판별기라, `bpmn::kind_of`가 늘 `None`이던
+        // 이 스펙 이전에도 결국 PlantUML(class)로 잡혔다(이 순서 변경이 새로 만든 결과가 아니다).
+        assert_eq!(language_of_source(None, r#"<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"></definitions>"#), Some(Language::PlantUml));
+        assert_eq!(language_of_source(None, "<html><body></body></html>"), Some(Language::PlantUml));
+    }
+
+    /// tasks 3.2 — 기존 PlantUML·mermaid 판별은 이 스펙 이후에도 그대로다(1.6).
+    #[test]
+    fn language_of_source_leaves_existing_plantuml_and_mermaid_detection_unchanged() {
+        assert_eq!(language_of_source(None, "class A"), Some(Language::PlantUml));
+        assert_eq!(language_of_source(None, "flowchart TB\n A --> B"), Some(Language::Mermaid));
+        for source in [
+            "@startuml\n@enduml",
+            "@startuml\nA -> B\n@enduml",
+            "@startgantt\n@endgantt",
+            "@startuml\nclass A {\n@enduml",
+        ] {
+            assert_eq!(language_of_source(None, source), Some(Language::PlantUml), "{source:?}는 그대로 PlantUML이어야 한다");
+        }
     }
 }
