@@ -6,8 +6,8 @@ BPMN 도구가 내보낸 BPMN 2.0 XML을 새 크레이트 없이 읽어 이미 �
 남아 있던 BPMN 갈래 판별·렌더링 진입점을 실제로 채우는 기능이다. 검증용 문서는 전부 테스트 코드 안
 문자열 리터럴이며 `examples/` 파일은 추가하지 않는다.
 
-- [ ] 1. 기반: 회귀 기준선과 XML 토크나이저
-- [ ] 1.1 (P) 기존 출력의 바이트 기준선 채취
+- [x] 1. 기반: 회귀 기준선과 XML 토크나이저
+- [x] 1.1 (P) 기존 출력의 바이트 기준선 채취
   - 코드를 손대기 전에 `examples/*.md` 전부를 `dg -P --width 100`으로 렌더링해 스크래치 디렉터리에 저장
     (4.3의 diff 기준). 기준선 테스트 수(373)도 함께 기록
   - DONE: 예제 파일마다 기준 출력 파일이 하나씩 있고, 같은 명령을 다시 돌려도 같은 내용
@@ -15,7 +15,7 @@ BPMN 도구가 내보낸 BPMN 2.0 XML을 새 크레이트 없이 읽어 이미 �
   - _Difficulty: low_
   - _Boundary: 검증_
 
-- [ ] 1.2 (P) XML 토크나이저 1 — 요소 트리·텍스트·엔티티·접두사
+- [x] 1.2 (P) XML 토크나이저 1 — 요소 트리·텍스트·엔티티·접두사
   - design §Components "bpmn::xml"의 요소·시작 태그·오류 타입을 그대로 만들고, 문자 단위 렉서로 시작/끝/자기
     닫힘 태그, 홑·겹따옴표 속성(중복 이름은 첫 값), 직접 텍스트 + CDATA(문서 순서로 이어붙여 양끝 공백 제거,
     자식 요소 텍스트는 제외), `<?…?>` 선언·`<!DOCTYPE …>`·주석(안에 `<`·`>` 있어도) 건너뛰기를 구현한다.
@@ -32,7 +32,7 @@ BPMN 도구가 내보낸 BPMN 2.0 XML을 새 크레이트 없이 읽어 이미 �
   - _Difficulty: high_
   - _Boundary: bpmn::xml_
 
-- [ ] 1.3 XML 토크나이저 2 — 불투명 구획·깊이 상한·구조 오류·첫 시작 태그
+- [x] 1.3 XML 토크나이저 2 — 불투명 구획·깊이 상한·구조 오류·첫 시작 태그
   - 호출자가 준 로컬 이름 목록의 요소는 같은 렉서로 시작·끝 태그 균형만 세어(그 안의 주석·CDATA·같은 이름
     중첩도 정상 인식) 자식을 만들지 않고 건너뛴다. 중첩 깊이가 64를 넘으면 깊이 오류. 태그·따옴표·주석·CDATA·
     선언이 열린 채 끝남·요소 미닫힘은 끝 오류, 이름 없는 태그·값 없는 속성은 위치 포함 형식 오류, 닫는 태그
@@ -49,8 +49,8 @@ BPMN 도구가 내보낸 BPMN 2.0 XML을 새 크레이트 없이 읽어 이미 �
   - _Boundary: bpmn::xml_
   - _Depends: 1.2_
 
-- [ ] 2. 핵심: BPMN 의미 트리 → 모델
-- [ ] 2.1 BPMN 스니핑 판정
+- [x] 2. 핵심: BPMN 의미 트리 → 모델
+- [x] 2.1 BPMN 스니핑 판정
   - 첫 시작 태그만 보고 판정: 로컬 이름이 `definitions`이면 `xmlns`로 시작하는 속성 중 값에 `omg.org/spec/BPMN`이
     있거나 `xmlns` 속성이 하나도 없어야 참, `process`·`collaboration`이면 참, 그 외 거짓
   - DONE: 단위 테스트에서 bpmn.io식 네임스페이스 선언 `definitions`·선언 없는 `definitions`·`process`·
@@ -61,7 +61,7 @@ BPMN 도구가 내보낸 BPMN 2.0 XML을 새 크레이트 없이 읽어 이미 �
   - _Boundary: bpmn::parse_xml_
   - _Depends: 1.3_
 
-- [ ] 2.2 (P) 구조 — 협업·참여자·프로세스·레인·소속·제목
+- [x] 2.2 (P) 구조 — 협업·참여자·프로세스·레인·소속·제목
   - design "bpmn::parse_xml" 빌드 순서 1~4·8: 루트(`definitions` 또는 `process`/`collaboration` 자체, 그 외는
     루트 오류) → 참여자(이름·`processRef` → 그 프로세스의 소속 = 참여자 id, `processRef` 없으면 레인 없는
     참여자) → 참여자가 가리키지 않는 프로세스는 레인 집합이 있으면 프로세스 id·이름으로 참여자 합성, 없으면
@@ -78,7 +78,7 @@ BPMN 도구가 내보낸 BPMN 2.0 XML을 새 크레이트 없이 읽어 이미 �
   - _Boundary: bpmn::parse_xml_
   - _Depends: 1.3_
 
-- [ ] 2.3 (P) 노드 — 요소 표·트리거·경계 이벤트·서브프로세스·데이터·주석·무시
+- [x] 2.3 (P) 노드 — 요소 표·트리거·경계 이벤트·서브프로세스·데이터·주석·무시
   - design "bpmn::parse_xml" 요소 표대로 프로세스 직접 자식을 요소로: 이벤트 4위치(트리거는 해석되는
     `*EventDefinition` 자식 0개 → 없음, 1개 → 그것, 2개 이상 → `parallelMultiple="true"`면 병렬 다중 아니면
     다중), 태스크(어휘 표 토큰 함수로), `subProcess`·`adHocSubProcess`·`transaction` → 접힌 서브프로세스(자식
@@ -96,7 +96,7 @@ BPMN 도구가 내보낸 BPMN 2.0 XML을 새 크레이트 없이 읽어 이미 �
   - _Boundary: bpmn::parse_xml_
   - _Depends: 1.3_
 
-- [ ] 2.4 흐름 — 시퀀스·default·메시지·연관·데이터 연관·미리 거르기
+- [x] 2.4 흐름 — 시퀀스·default·메시지·연관·데이터 연관·미리 거르기
   - `sequenceFlow`(라벨 = `@name`, default = 어떤 노드의 `@default` 값과 id 일치 — 게이트웨이·활동 모두),
     협업의 `messageFlow`, 프로세스의 `association`, 활동 자식 `dataInputAssociation`(`sourceRef` 텍스트 → 활동)·
     `dataOutputAssociation`(활동 → `targetRef` 텍스트)을 흐름으로. **끝이 최상위 참여자 id면 그대로 둔다**
@@ -114,8 +114,8 @@ BPMN 도구가 내보낸 BPMN 2.0 XML을 새 크레이트 없이 읽어 이미 �
   - _Boundary: bpmn::parse_xml_
   - _Depends: 2.2, 2.3_
 
-- [ ] 3. 배선
-- [ ] 3.1 BPMN 언어 진입점의 `xml` 갈래
+- [x] 3. 배선
+- [x] 3.1 BPMN 언어 진입점의 `xml` 갈래
   - 갈래 판별을 스니핑 판정으로(참이면 `"xml"`), 소스 렌더링을 `"xml"` 팔 → 파서 → 실패면 없음 → 모델 렌더링
     으로 채운다. 캡션 종류는 모델 렌더링이 준 `process`/`collaboration`. 공용 XML fixture(bpmn.io 형식 주문 처리
     협업 문서: `<?xml` 선언, `bpmn:` 접두사, `xmlns:*` 5개, `incoming`/`outgoing`, `&#10;` 이름, `conditionExpression`,
@@ -129,7 +129,7 @@ BPMN 도구가 내보낸 BPMN 2.0 XML을 새 크레이트 없이 읽어 이미 �
   - _Boundary: bpmn::mod_
   - _Depends: 2.1, 2.4_
 
-- [ ] 3.2 언어 판별 순서 — BPMN 스니핑을 PlantUML 앞으로
+- [x] 3.2 언어 판별 순서 — BPMN 스니핑을 PlantUML 앞으로
   - 확장자·펜스 없는 소스의 언어 추정 순서를 확장자 → `@start` → mermaid → BPMN → PlantUML로 바꾼다(PlantUML
     판별이 점수 없으면 클래스로 보는 포괄 판별이라 뒤에 있어야 함). 확장자 `.bpmn`은 그대로 본문 무관
   - DONE: 테스트에서 fixture(`.bpmn` 경로 없음) → BPMN(1.3); 경로 `x.bpmn` + 임의 본문 → BPMN(1.2); WSDL·
@@ -140,8 +140,8 @@ BPMN 도구가 내보낸 BPMN 2.0 XML을 새 크레이트 없이 읽어 이미 �
   - _Boundary: diagram::mod_
   - _Depends: 3.1_
 
-- [ ] 4. 검증
-- [ ] 4.1 bpmn.io 형식 fixture 통합 렌더링
+- [x] 4. 검증
+- [x] 4.1 bpmn.io 형식 fixture 통합 렌더링
   - 3.1의 fixture를 폭 100으로 렌더링해 단정한다; 드러나는 결함은 이 태스크 안에서 고친다(파서 쪽이면 2.x,
     모델 이후는 재검토 후 `bpmn-model` 결함으로 기록)
   - DONE: 통합 테스트에서 fixture → 종류 `collaboration`, 결과 텍스트에 `○`·`●`·`◎`·`┃`·`«user»`·`«service»`·
@@ -153,7 +153,7 @@ BPMN 도구가 내보낸 BPMN 2.0 XML을 새 크레이트 없이 읽어 이미 �
   - _Boundary: bpmn::mod_
   - _Depends: 3.1_
 
-- [ ] 4.2 (P) 손상·비BPMN 입력 강건성과 마크다운 펜스 폴백
+- [x] 4.2 (P) 손상·비BPMN 입력 강건성과 마크다운 펜스 폴백
   - 기존 이상 입력 패닉 테스트의 BPMN 배열을 둘로 나눈다 — 반드시 없음: 빈 문자열·공백·`<`·`<definitions/>`·
     태그 중간 잘림·요소 열린 채 끝·닫는 태그 불일치·따옴표/주석/CDATA/선언 미종결·깊이 100 중첩·WSDL·YAML 조각·
     평문·풀을 넘는 시퀀스 흐름·중복 id; 패닉만 없음: fixture들·`&nbsp;` 이름·id 없는 흐름·이벤트 정의 2개·
@@ -166,7 +166,7 @@ BPMN 도구가 내보낸 BPMN 2.0 XML을 새 크레이트 없이 읽어 이미 �
   - _Boundary: diagram::mod, markdown 테스트_
   - _Depends: 3.2_
 
-- [ ] 4.3 전체 스위트 + clippy + 바이트 동일 회귀 + 의존성 수 + 실물 실행
+- [x] 4.3 전체 스위트 + clippy + 바이트 동일 회귀 + 의존성 수 + 실물 실행
   - DONE: `cargo test` 전량 통과(기준선 373개 중 의도적으로 갱신한 두 테스트 외 무수정 통과 + 신규), `cargo clippy
     --all-targets -- -D warnings` 클린, `examples/*.md`를 1.1과 같은 명령으로 렌더링해 기준선과 `diff` 무차이(7.1),
     `Cargo.toml` 의존성 4개 그대로(7.2), fixture를 스크래치 디렉터리의 `.bpmn` 파일로 써서 `dg <파일>`과

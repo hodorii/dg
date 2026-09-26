@@ -912,13 +912,25 @@ mod tests {
         assert!(out.iter().any(|l| l.contains("▼")));
     }
 
-    /// 파서가 없는 `bpmn` 코드펜스(6.8) — 코드블록으로 남고 앞뒤 문단은 그대로 렌더링된다.
+    /// 노드 없는 `<definitions/>`는 BPMN XML로 스니핑되지만(`kind_of` = `"xml"`) 그릴 노드가 없어
+    /// `render_model`이 `None`을 돌려준다 — 코드블록으로 물러나고 앞뒤 문단은 그대로다(6.5).
     #[test]
-    fn bpmn_fence_without_a_parser_falls_back_to_a_code_block() {
+    fn bpmn_fence_with_no_nodes_falls_back_to_a_code_block() {
         let out = plain("앞 문단\n\n```bpmn\n<definitions></definitions>\n```\n\n뒤 문단\n", 60);
         assert!(out.contains(&"앞 문단".to_string()));
         assert!(out.iter().any(|l| l.starts_with("╭─ bpmn ")));
         assert!(out.contains(&"│ <definitions></definitions>".to_string()));
+        assert!(out.contains(&"뒤 문단".to_string()));
+    }
+
+    /// 구조가 손상된 BPMN XML(닫는 태그 불일치)은 파싱에 실패해 코드블록으로 물러난다(6.7). 그 펜스
+    /// 하나만 영향받고 앞뒤 문단은 정상 렌더링된다.
+    #[test]
+    fn bpmn_fence_with_malformed_xml_falls_back_to_a_code_block() {
+        let out = plain("앞 문단\n\n```bpmn\n<definitions><process></definitions>\n```\n\n뒤 문단\n", 60);
+        assert!(out.contains(&"앞 문단".to_string()));
+        assert!(out.iter().any(|l| l.starts_with("╭─ bpmn ")));
+        assert!(out.contains(&"│ <definitions><process></definitions>".to_string()));
         assert!(out.contains(&"뒤 문단".to_string()));
     }
 
