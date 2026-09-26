@@ -86,7 +86,9 @@ BPMN 도구(Camunda Modeler·bpmn.io·Flowable 등)가 내보낸 BPMN 2.0 XML �
 
 ### 4. 흐름 노드 → 도형(기존 어휘 표 그대로)
 - 4.1: [`startEvent` / `intermediateCatchEvent`·`intermediateThrowEvent` / `endEvent`] →
-  [각각 `○`/`◎`/`●` 이벤트 상자, 종료는 굵은 테두리]
+  [각각 `○`/`◎`/`●` 이벤트 상자, 종료는 굵은 테두리]("상자·굵은 테두리" 렌더링은
+  `bpmn-event-shape-notation`이 대체함 — 매핑(`ElementKind::Event → Shape::Event(position)`)은
+  그대로, 그리기만 테두리 없는 위치 글자 + 이름으로 바뀜)
 - 4.2: [이벤트 안 `*EventDefinition` 자식이 하나(`messageEventDefinition` … 12종)] →
   [둘째 줄 `«message»`처럼 해당 트리거 라벨; 자식이 둘 이상이면 `«multiple»`,
   `parallelMultiple="true"`이면 `«parallelMultiple»`; 없으면 트리거 줄 없음]

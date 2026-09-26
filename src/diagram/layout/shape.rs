@@ -28,8 +28,9 @@ pub fn measure(shape: Shape, sections: &[Vec<String>]) -> (usize, usize) {
     match shape {
         Shape::Start | Shape::End | Shape::Anchor => (1, 1),
         Shape::Rect | Shape::Round | Shape::Note | Shape::Circle | Shape::Subprocess => (tw + 4, th + 2),
-        // 테두리·공백·위치 글자·공백·본문·공백·테두리. 본문이 비어도 한 줄은 확보한다(1.6).
-        Shape::Event(_) => (tw + 6, th.max(1) + 2),
+        // 테두리 없음 — 위치 글자 자체가 도형이다. 위치 글자·공백·본문 폭, 본문이 비어도
+        // 높이는 한 줄 확보한다(2.4).
+        Shape::Event(_) => (if tw == 0 { 1 } else { tw + 2 }, th.max(1)),
         Shape::Stadium | Shape::Diamond | Shape::Hexagon | Shape::Subroutine => (tw + 6, th + 2),
         Shape::Cylinder => (tw + 4, th + 3),
         Shape::Actor => (tw.max(3), th + 3),
@@ -64,17 +65,24 @@ pub fn draw(canvas: &mut Canvas, x: usize, y: usize, shape: Shape, sections: &[V
             canvas.text_centered(x, y + h - 1, w, "[+]", border);
         }
         Shape::Event(position) => {
-            let round = position != EventPosition::End;
-            let kind = if round { LineKind::Solid } else { LineKind::Heavy };
-            canvas.rect(x, y, w, h, kind, border, round);
-            let row0 = y + 1 + extra_top;
+            // 테두리 없음 — 위치 글자(○/◎/●) 자체가 도형이고, 이름·둘째 줄은 그 오른쪽에
+            // 왼쪽 맞춤으로 붙는다. `draw_sections()`의 가운데 정렬 관례는 양옆 테두리를
+            // 전제하므로 쓰지 않는다(`Plain` 분기와 같은 이유).
+            let block_x = x + (w - measured_width) / 2;
+            let row0 = y + extra_top;
             let glyph = match position {
                 EventPosition::Start => '○',
                 EventPosition::Intermediate => '◎',
                 EventPosition::End => '●',
             };
-            canvas.put(x + 2, row0, glyph, theme.diagram_accent);
-            draw_sections(canvas, x + 2, row0, w - 2, sections, theme, false);
+            canvas.put(block_x, row0, glyph, theme.diagram_accent);
+            let mut row = row0;
+            for section in sections {
+                for text in section {
+                    canvas.text(block_x + 2, row, text, line_style(0, text, theme));
+                    row += 1;
+                }
+            }
         }
         Shape::Stadium => {
             canvas.rect(x, y, w, h, LineKind::Solid, border, true);
@@ -285,43 +293,51 @@ mod tests {
         }
     }
 
-    /// (bpmn-shapes) 시작·중간·종료 이벤트의 위치 글자와 테두리(요구사항 1.1~1.4).
+    /// (bpmn-event-shape-notation) 시작·중간·종료 이벤트는 테두리 없이 위치 글자 +
+    /// 오른쪽 이름 한 줄로 그려진다(요구사항 2.1~2.3) — `Round`의 둥근 상자 실루엣과는
+    /// 다르다(1.1~1.3의 재현: 이전엔 이 셋이 `Round`·`Stadium`과 같은 세 줄 상자였다).
     #[test]
     fn event_start_intermediate_end_render_with_position_glyphs() {
         let start = draw_rows(Shape::Event(EventPosition::Start), vec![vec!["Go".into()]]);
-        assert_eq!(start, vec!["╭──────╮", "│ ○ Go │", "╰──────╯"]);
+        assert_eq!(start, vec!["○ Go"]);
 
         let intermediate = draw_rows(Shape::Event(EventPosition::Intermediate), vec![vec!["Go".into()]]);
-        assert_eq!(intermediate, vec!["╭──────╮", "│ ◎ Go │", "╰──────╯"]);
+        assert_eq!(intermediate, vec!["◎ Go"]);
 
         let end = draw_rows(Shape::Event(EventPosition::End), vec![vec!["Go".into()]]);
-        assert_eq!(end, vec!["┏━━━━━━┓", "┃ ● Go ┃", "┗━━━━━━┛"]);
+        assert_eq!(end, vec!["● Go"]);
 
-        let (_, event_height) = measure(Shape::Event(EventPosition::Start), &[vec!["Go".into()]]);
-        let (_, round_height) = measure(Shape::Round, &[vec!["Go".into()]]);
-        assert_eq!(event_height, round_height, "위치 글자가 줄을 추가하지 않는다(1.4) — 이름 줄 수가 같은 기존 둥근 상자와 높이가 같아야 한다");
+        let round = draw_rows(Shape::Round, vec![vec!["Go".into()]]);
+        assert_eq!(round, vec!["╭────╮", "│ Go │", "╰────╯"]);
+        assert_ne!(start, round, "이벤트는 Round와 실루엣이 달라야 한다");
+        const BORDER_CHARS: [char; 12] = ['╭', '╮', '╰', '╯', '─', '│', '┏', '┓', '┗', '┛', '━', '┃'];
+        for row in start.iter().chain(intermediate.iter()).chain(end.iter()) {
+            assert!(!row.chars().any(|c| BORDER_CHARS.contains(&c)), "이벤트 출력에 테두리 글자가 없어야 한다: {row:?}");
+        }
     }
 
-    /// (bpmn-shapes) 이름이 없는 이벤트는 위치 글자만 든 한 줄 높이 상자로, 패닉 없이 그려진다(요구사항 1.6).
+    /// (bpmn-event-shape-notation) 이름이 없는 이벤트는 위치 글자 하나만 1×1로 그려지고,
+    /// 패닉이 없다(요구사항 2.4).
     #[test]
     fn event_with_empty_body_has_one_line_height_and_does_not_panic() {
         let rows = draw_rows(Shape::Event(EventPosition::Start), vec![vec![]]);
-        assert_eq!(rows, vec!["╭────╮", "│ ○  │", "╰────╯"]);
+        assert_eq!(rows, vec!["○"]);
     }
 
-    /// (bpmn-shapes) 이벤트 둘째 줄 `«timer»`도 태스크와 같은 흐림·기울임 규칙을 따르고,
-    /// 한 줄 본문보다 높이가 하나 더 크다(요구사항 3.1, 3.3).
+    /// (bpmn-event-shape-notation) 이벤트 둘째 줄 `«timer»`는 이름 시작 열에 맞춰 다음 줄에
+    /// 오고, 태스크와 같은 흐림·기울임 규칙을 따른다. 위치 글자는 강조색이다(요구사항 2.5).
     #[test]
     fn event_stereotype_second_line_is_dim_and_italic() {
         let runs = draw_runs(Shape::Event(EventPosition::Start), vec![vec!["Go".into(), "«timer»".into()]]);
-        assert_eq!(runs.len(), 4, "테두리 두 줄 + 이름·둘째 줄");
+        assert_eq!(runs.len(), 2, "테두리 없이 이름 줄 + 둘째 줄");
         let name_row = runs.iter().find(|row| row.iter().any(|(text, _)| text.contains("Go"))).expect("이름 줄이 있어야 한다");
         let stereotype_row = runs.iter().find(|row| row.iter().any(|(text, _)| text.contains("«timer»"))).expect("둘째 줄이 있어야 한다");
         assert!(name_row.iter().any(|(text, style)| text.contains("Go") && style.bold && !style.dim));
+        assert!(name_row.iter().any(|(text, style)| text.contains('○') && *style == Theme::none().diagram_accent));
         assert!(stereotype_row.iter().any(|(text, style)| text.contains("«timer»") && style.dim && style.italic));
 
         let (_, single_line_height) = measure(Shape::Event(EventPosition::Start), &[vec!["Go".into()]]);
-        assert_eq!(single_line_height, 3);
+        assert_eq!(single_line_height, 1);
     }
 
     /// (bpmn-shapes) 접힌 서브프로세스: 테두리·본문은 `Round`와 같고, 아래 테두리 가운데에
