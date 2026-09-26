@@ -135,7 +135,7 @@
 
   | BPMN 요소 | dg 렌더링 | 비고 |
   |---|---|---|
-  | 시작/중간/종료 이벤트 | `Shape::Event(pos)`(신규): 둥근 상자, 테두리 안 왼쪽에 `○`/`◎`/`●`. 종료는 `LineKind::Heavy` 테두리 | 얇음/굵음 관례는 기존 선 종류로 해결. 중간 이벤트의 이중선(`╔═╗`)은 `LineKind::Double` 신규 추가가 필요해 후순위. **이 상자 렌더링은 `bpmn-event-shape-notation`이 대체함**(테두리 없는 위치 글자 + 이름) |
+  | 시작/중간/종료 이벤트 | `Shape::Event(pos)`(신규): 둥근 상자, 테두리 안 왼쪽에 `○`/`◎`/`●`. 종료는 `LineKind::Heavy` 테두리 | 얇음/굵음 관례는 기존 선 종류로 해결. 중간 이벤트의 이중선(`╔═╗`)은 `LineKind::Double` 신규 추가가 필요해 후순위. **이 상자 렌더링은 `bpmn-event-shape-notation`이 대체함**(테두리 없는 위치 글자 + 이름). **종료 글자는 `bpmn-event-notation-anchor`가 `●` → `◉`로 대체함** |
   | 이벤트 트리거(message/timer/error/signal 등 13종) | 이름 아래 둘째 줄에 `«message»`·`«timer»`·`«error»`… | `shape.rs::line_style()`이 이미 `«`로 시작하는 줄을 흐리게·기울여 그린다(PlantUML 스테레오타입 관례 재사용, 신규 로직 불필요). 아이콘 글자(✉◷⚡)는 폰트 커버리지 문제(CJK 모노 폰트 폴백 이력)로 v1 제외 |
   | 태스크(user/service/script/manual/business-rule/send/receive) | `Shape::Round` + 둘째 줄 `«user»`·`«service»`… | 종류 none이면 둘째 줄 생략 |
   | 접힌 서브프로세스 | `Shape::Subprocess`(신규): Round 아래 테두리 가운데 `[+]` | |

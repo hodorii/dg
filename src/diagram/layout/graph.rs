@@ -47,6 +47,10 @@ struct LayoutNode {
     extra_across: usize,
     across: usize,
     sections: Vec<Vec<String>>,
+    /// 접점·정렬 기준이 상자 가운데가 아니라 원점 칸인지(`Shape::is_point_anchored()`,
+    /// 가상 노드는 항상 false) — `center()`·`spread()`·크기 계산·`resolve_port_swaps()`가
+    /// 함께 참조한다.
+    point_anchored: bool,
 }
 
 impl LayoutNode {
@@ -54,6 +58,9 @@ impl LayoutNode {
         self.across_size + self.extra_across
     }
     fn center(&self) -> f64 {
+        if self.point_anchored {
+            return self.across as f64;
+        }
         self.across as f64 + self.across_size as f64 / 2.0
     }
 }
@@ -435,23 +442,26 @@ impl<'a> Layout<'a> {
                 } else {
                     (w, h)
                 };
+                let point_anchored = node.shape.is_point_anchored();
                 let (along_size, across_size) = match direction {
                     Direction::TopDown => {
                         // 접점마다 라벨이 붙을 수 있으면 상자를 그만큼 넓혀 접점 사이를 벌린다.
+                        // 점 표기 노드는 접점이 모두 원점 칸 하나로 모이므로 벌릴 필요가 없다.
                         let (incoming, outgoing) = degree[index];
                         let ports = incoming.max(outgoing);
                         let spacing = port_spacing_for(widest_end_label[index]);
-                        let needed = if ports > 1 && w > 2 { (ports - 1) * spacing + 3 } else { 0 };
+                        let needed = if !point_anchored && ports > 1 && w > 2 { (ports - 1) * spacing + 3 } else { 0 };
                         (h, w.max(needed))
                     }
                     Direction::LeftRight => {
                         // 왼쪽→오른쪽에서는 간선이 나가는 줄마다 라벨이 붙으므로 두 줄 간격이 필요하다.
+                        // 점 표기 노드는 벌리지 않는다(위와 같은 이유).
                         let (incoming, outgoing) = degree[index];
                         let needed = 2 * incoming.max(outgoing) + 1;
-                        (w, if h >= 3 { h.max(needed) } else { h })
+                        (w, if !point_anchored && h >= 3 { h.max(needed) } else { h })
                     }
                 };
-                LayoutNode { node: Some(0), edge: None, layer: 0, group: node.group, along_size, across_size, extra_across: 0, across: 0, sections }
+                LayoutNode { node: Some(0), edge: None, layer: 0, group: node.group, along_size, across_size, extra_across: 0, across: 0, sections, point_anchored }
             })
             .enumerate()
             .map(|(i, mut n)| {
@@ -661,6 +671,7 @@ impl<'a> Layout<'a> {
                     extra_across: 0,
                     across: 0,
                     sections: Vec::new(),
+                    point_anchored: false,
                 });
                 chain.push(self.lnodes.len() - 1);
             }
@@ -1277,6 +1288,11 @@ impl<'a> Layout<'a> {
     /// 들어가지 않으면 두 칸, 그것도 안 되면 고르게 나눈다.
     fn spread(&self, lnode: usize, index: usize, count: usize, spacing: usize) -> usize {
         let node = &self.lnodes[lnode];
+        if node.point_anchored {
+            // 접점 수와 무관하게 모두 원점 칸(= 위치 글자)으로 모인다 — 상태도 `●`/`◉`에
+            // 간선 여럿이 닿을 때와 같은 결과.
+            return node.across;
+        }
         if node.across_size <= 2 {
             return node.across;
         }
@@ -1531,7 +1547,7 @@ impl<'a> Layout<'a> {
                     let candidates = [(j, false), (i, true), (i, false), (j, true)];
                     let Some(&(s, is_exit)) = candidates.iter().find(|&&(s, is_exit)| {
                         let node = if is_exit { self.segments[s].from } else { self.segments[s].to };
-                        self.lnodes[node].node.is_some() && self.lnodes[node].across_size >= 4
+                        self.lnodes[node].node.is_some() && self.lnodes[node].across_size >= 4 && !self.lnodes[node].point_anchored
                     }) else {
                         continue;
                     };
@@ -2825,8 +2841,10 @@ mod tests {
         assert!(text.contains('▶'), "화살촉이 그대로 그려져야 한다: {text}");
     }
 
-    /// 요구사항 2.6: TB에서 가는 선 노드(`Round`)는 기존 접점 규칙(테두리 바로 위 줄)을
-    /// 그대로 따르고, 이벤트 노드(상자 없음)는 위치 글자 줄 바로 위 줄에 화살촉이 붙는다.
+    /// 요구사항 2.1, 2.6(bpmn-event-notation-anchor로 강화): TB에서 가는 선 노드(`Round`)는
+    /// 기존 접점 규칙(테두리 바로 위 줄)을 그대로 따르고, 이벤트 노드(상자 없음)는 원 글자와
+    /// 정확히 같은 열, 바로 위 줄에 화살촉이 붙는다 — "이벤트가 차지한 열 범위 안"이 아니라
+    /// "원 글자와 같은 열"로 강화(수정 전엔 이름이 있으면 덩어리 가운데 열에 떨어져 어긋난다).
     #[test]
     fn event_shapes_attach_edges_using_existing_contact_rules_top_down() {
         let mut g = Graph::default();
@@ -2841,19 +2859,14 @@ mod tests {
         // 텍스트 줄에서 두 줄 위(테두리 바로 위 줄)에 있다.
         let mid_row = row_of(&out, "Mid");
         assert!(out[mid_row - 2].contains('▼'), "가는 선 노드 테두리 바로 위 줄에 화살촉이 붙어야 한다: {text}");
-        // 종료 이벤트는 테두리가 없다 — `●` 글자 줄 바로 위 줄에, 이벤트가 차지한 열 범위 안에
-        // 화살촉이 온다(design §수정 방식의 접점 한계 (a): 화살촉은 원 글자 열이 아니라 덩어리
-        // 가운데 열 — 이름 위 — 에 올 수 있다).
-        let end_row = row_of(&out, "●");
-        let end_line: Vec<char> = out[end_row].chars().collect();
-        let first_col = end_line.iter().position(|&c| c != ' ').expect("종료 이벤트 줄에 글자가 있어야 한다");
-        let last_col = end_line.iter().rposition(|&c| c != ' ').expect("종료 이벤트 줄에 글자가 있어야 한다");
-        let above: Vec<char> = out[end_row - 1].chars().collect();
-        assert!((first_col..=last_col).any(|col| above.get(col) == Some(&'▼')), "이벤트가 차지한 열 범위 안, 바로 위 줄에 화살촉이 붙어야 한다: {text}");
+        // 종료 이벤트는 테두리가 없다 — `◉` 글자와 정확히 같은 열, 바로 위 줄에 화살촉이 온다.
+        let end_row = row_of(&out, "◉");
+        let glyph_col = char_col(&out[end_row], '◉');
+        assert_eq!(out[end_row - 1].chars().nth(glyph_col), Some('▼'), "화살촉이 원 글자(◉)와 정확히 같은 열에 있어야 한다: {text}");
     }
 
-    /// 요구사항 2.6: LR에서 이벤트 노드는 상자 테두리가 아니라 위치 글자 바로 왼쪽 칸에
-    /// 화살촉이 붙는다.
+    /// 요구사항 2.1(bpmn-event-notation-anchor로 강화): LR에서 이벤트 노드는 상자 테두리가
+    /// 아니라 위치 글자 바로 왼쪽 칸에 화살촉이 붙는다(글자는 `◉`).
     #[test]
     fn event_shapes_attach_edges_using_existing_contact_rules_left_right() {
         let mut g = Graph::default();
@@ -2863,9 +2876,95 @@ mod tests {
         g.direction = Some(Direction::LeftRight);
         let out = rows(render(&g, &Theme::none(), 80).unwrap());
         let text = out.join("\n");
-        let end_row = row_of(&out, "●");
-        let end_col = char_col(&out[end_row], '●');
-        assert_eq!(out[end_row].chars().nth(end_col - 1), Some('▶'), "화살촉이 종료 이벤트의 위치 글자(●) 바로 왼쪽에 있어야 한다: {text}");
+        let end_row = row_of(&out, "◉");
+        let end_col = char_col(&out[end_row], '◉');
+        assert_eq!(out[end_row].chars().nth(end_col - 1), Some('▶'), "화살촉이 종료 이벤트의 위치 글자(◉) 바로 왼쪽에 있어야 한다: {text}");
+    }
+
+    /// bugfix bpmn-event-notation-anchor 재현 1.1·1.5(수정 전 실패, 4열 vs 1열): 위→아래,
+    /// 이름 있는 종료 이벤트로 들어오는 간선은 이름 길이와 무관하게 원 글자(◉) 바로 위,
+    /// 정확히 같은 열에 닿아야 한다.
+    #[test]
+    fn end_event_incoming_edge_lands_directly_above_the_glyph_regardless_of_name_length() {
+        for name in ["", "Done", "주문 취소"] {
+            let mut g = Graph::default();
+            let task = g.intern("task", "Task", Shape::Round, None);
+            let end = g.intern("end", "end", Shape::Event(EventPosition::End), None);
+            g.set_label(end, name);
+            g.add_edge(Edge { from: task, to: end, head: Marker::Arrow, ..Edge::default() });
+            let out = rows(render(&g, &Theme::none(), 80).unwrap());
+            let text = out.join("\n");
+            let end_row = row_of(&out, "◉");
+            let glyph_col = char_col(&out[end_row], '◉');
+            assert_eq!(out[end_row - 1].chars().nth(glyph_col), Some('▼'), "이름 {name:?}: 화살촉이 원 글자(◉)와 정확히 같은 열에 있어야 한다: {text}");
+        }
+    }
+
+    /// bugfix bpmn-event-notation-anchor 재현 1.2(수정 전 실패): 위→아래, 이름 있는 시작
+    /// 이벤트에서 나가는 간선은 이름 길이와 무관하게 원 글자(○) 바로 아래, 같은 열에서
+    /// 나가야 한다(수정 전엔 이름 위 열에서 나간다).
+    #[test]
+    fn start_event_outgoing_edge_leaves_directly_below_the_glyph_regardless_of_name_length() {
+        for name in ["", "Go", "주문 접수 «message»"] {
+            let mut g = Graph::default();
+            let start = g.intern("start", "start", Shape::Event(EventPosition::Start), None);
+            g.set_label(start, name);
+            let task = g.intern("task", "Task", Shape::Round, None);
+            g.add_edge(Edge { from: start, to: task, head: Marker::Arrow, ..Edge::default() });
+            let out = rows(render(&g, &Theme::none(), 80).unwrap());
+            let text = out.join("\n");
+            let start_row = row_of(&out, "○");
+            let glyph_col = char_col(&out[start_row], '○');
+            // 바로 아래 줄은 화살촉이 아니라 선의 첫 칸(│)이지만, 그 열이 원 글자와 같아야
+            // 한다 — 화살촉 자체는 도착 노드 바로 위에서만 그려진다.
+            let exit_col = out[start_row + 1].chars().position(|c| c != ' ');
+            assert_eq!(exit_col, Some(glyph_col), "이름 {name:?}: 선이 원 글자(○)와 정확히 같은 열에서 나가야 한다: {text}");
+        }
+    }
+
+    /// bugfix bpmn-event-notation-anchor 재현 1.3(수정 전 실패): 위→아래, 종료 이벤트로
+    /// 들어오는 간선이 둘이면 화살촉 둘 다 원 글자 바로 위, 같은 열로 모여야 한다(수정
+    /// 전엔 이름 위에 벌려 놓여 어느 것도 원 글자에 닿지 않는다).
+    #[test]
+    fn end_event_two_incoming_edges_converge_directly_above_the_glyph() {
+        let mut g = Graph::default();
+        let a = g.intern("a", "A", Shape::Round, None);
+        let b = g.intern("b", "B", Shape::Round, None);
+        let end = g.intern("end", "Done", Shape::Event(EventPosition::End), None);
+        g.add_edge(Edge { from: a, to: end, head: Marker::Arrow, ..Edge::default() });
+        g.add_edge(Edge { from: b, to: end, head: Marker::Arrow, ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        let end_row = row_of(&out, "◉");
+        let glyph_col = char_col(&out[end_row], '◉');
+        let arrow_cols: Vec<usize> = out[end_row - 1].chars().enumerate().filter(|&(_, c)| c == '▼').map(|(i, _)| i).collect();
+        assert!(!arrow_cols.is_empty(), "화살촉이 있어야 한다: {text}");
+        for col in arrow_cols {
+            assert_eq!(col, glyph_col, "모든 화살촉이 원 글자(◉) 바로 위, 같은 열로 모여야 한다: {text}");
+        }
+    }
+
+    /// bugfix bpmn-event-notation-anchor 재현 1.4·1.7(수정 전 실패): 왼쪽→오른쪽, 본문
+    /// 세 줄인 종료 이벤트로 들어오는 간선이 둘이면 화살촉 모두 원 글자 바로 왼쪽, 같은
+    /// 줄로 모여야 한다(수정 전엔 원 글자가 접점 벌림으로 밀려 다른 줄에 있다).
+    #[test]
+    fn left_right_three_line_event_two_incoming_edges_converge_directly_left_of_the_glyph() {
+        let mut g = Graph::default();
+        let a = g.intern("a", "A", Shape::Round, None);
+        let b = g.intern("b", "B", Shape::Round, None);
+        let end = g.intern("end", "one\ntwo\nthree", Shape::Event(EventPosition::End), None);
+        g.add_edge(Edge { from: a, to: end, head: Marker::Arrow, ..Edge::default() });
+        g.add_edge(Edge { from: b, to: end, head: Marker::Arrow, ..Edge::default() });
+        g.direction = Some(Direction::LeftRight);
+        let out = rows(render(&g, &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        let end_row = row_of(&out, "◉");
+        let glyph_col = char_col(&out[end_row], '◉');
+        for (i, row) in out.iter().enumerate() {
+            if let Some(col) = row.chars().position(|c| c == '▶') {
+                assert_eq!((i, col), (end_row, glyph_col - 1), "화살촉은 원 글자(◉)와 같은 줄, 바로 왼쪽 칸에 있어야 한다: {text}");
+            }
+        }
     }
 
     /// 요구사항 2.2: 서브프로세스 아래로 간선이 나가도 `[+]`가 지워지지 않고, 그 아래 줄에
@@ -2941,7 +3040,7 @@ mod tests {
         assert!(lines.is_some(), "폭 100 안에서 렌더링돼야 한다");
         let out = rows(lines.unwrap());
         let text = out.join("\n");
-        for needle in ["○", "●", "«user»", "«service»", "× 재고 있음?", "예", "아니오"] {
+        for needle in ["○", "◉", "«user»", "«service»", "× 재고 있음?", "예", "아니오"] {
             assert!(text.contains(needle), "{needle:?}가 결과에 있어야 한다:\n{text}");
         }
     }

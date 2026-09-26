@@ -48,7 +48,8 @@ BPMN 이벤트를 활동(둥근 상자)과 한눈에 가르기 위해, `Shape::E
   받아들이는 한계: (a) 위→아래 화살촉은 원 글자 열이 아니라 덩어리 가운데 열(이름 위)에 온다,
   (b) 본문 세 줄 이상이면 왼쪽→오른쪽 접점 줄이 `h/2`라 원 글자 줄과 어긋난다 — `Interface`·`Actor`(아이콘
   + 이름, 테두리 없음)가 이미 같은 방식이며, 도형이 방향을 모르는 현 계약 안에서는 풀 수 없다(별도 배치
-  스펙 몫).
+  스펙 몫). → `bpmn-event-notation-anchor`가 배치기 쪽에 `Shape::is_point_anchored()` 술어를 더해 (a)(b) 모두
+  해소했다.
 - **bpmn-shapes 결정 수정(이 스펙이 명시적으로 뒤집는 것)**: 요구사항 1.1~1.3 "둥근 상자 안 …/테두리
   전체가 굵은 선" → 상자 없음·`●`; 1.4 "Round와 높이 같음" → 높이 = 본문 줄 수(최소 1; 근거였던 "위치 글자가
   줄을 추가하지 않는다"는 그대로 성립); 1.6 "한 줄 높이 상자" → `○` 1×1; design Key Decision "종료 이벤트는
@@ -93,4 +94,5 @@ BPMN 이벤트를 활동(둥근 상자)과 한눈에 가르기 위해, `Shape::E
   뒤집는 `bpmn-shapes` 결정은 위 `수정 방식`에 열거 — 구현 시 `bpmn-shapes/design.md` Key Decisions와
   `bpmn-xml/requirements.md` 4.1, `bpmn-support/research.md` 매핑표 이벤트 행에 이 스펙 이름을 가리키는
   한 줄씩만 더한다(`bpmn-message-flow-participant-endpoint` 선례).
-- 잔여(별도 스펙 후보): `Shape::Circle`이 `Round`와 같은 글자로 그려지는 같은 문제; 접점 한계 (a)(b).
+- 잔여(별도 스펙 후보): `Shape::Circle`이 `Round`와 같은 글자로 그려지는 같은 문제; 접점 한계 (a)(b) —
+  (a)(b)는 `bpmn-event-notation-anchor`가 해소.
