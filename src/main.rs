@@ -30,6 +30,7 @@ fn run() -> io::Result<()> {
         Some(match cli.lang {
             Some(LangArg::Mermaid) => Language::Mermaid,
             Some(LangArg::Plantuml) => Language::PlantUml,
+            Some(LangArg::Bpmn) => Language::Bpmn,
             None => diagram::language_of_source(cli.file.as_deref(), &source).unwrap_or(Language::Mermaid),
         })
     } else {
@@ -55,7 +56,7 @@ fn run() -> io::Result<()> {
         let block_width = explicit_width.unwrap_or(block_width);
         match diagram_language {
             Some(language) => {
-                let lang = if language == Language::Mermaid { "mermaid" } else { "plantuml" };
+                let lang = language.name();
                 match diagram::render(language, source, &theme, block_width, diagram_options) {
                     Some(lines) => {
                         let block = DiagramBlock { start: 0, end: lines.len(), lang: lang.to_string(), source: source.to_string() };
@@ -121,10 +122,7 @@ fn read_input(path: Option<&str>) -> io::Result<(String, String)> {
 }
 
 fn looks_like_diagram_file(path: Option<&str>) -> bool {
-    path.is_some_and(|p| {
-        let lower = p.to_ascii_lowercase();
-        [".puml", ".plantuml", ".pu", ".iuml", ".mmd", ".mermaid"].iter().any(|ext| lower.ends_with(ext))
-    })
+    path.is_some_and(|p| diagram::language_of_path(p).is_some())
 }
 
 fn pick_theme(style: StyleArg, stdout_is_tty: bool) -> Theme {

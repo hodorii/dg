@@ -1,9 +1,9 @@
 {
   "feature_name": "bpmn-model",
   "created_at": "2026-09-26T10:09:36Z",
-  "updated_at": "2026-09-26T12:00:00Z",
+  "updated_at": "2026-09-26T20:00:00Z",
   "language": "ko",
-  "phase": "tasks-approved",
+  "phase": "completed",
   "approvals": {
     "requirements": {
       "generated": true,

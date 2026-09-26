@@ -1,5 +1,6 @@
 //! 코드블록의 다이어그램 언어를 판별해 그림 줄로 바꾼다.
 
+pub mod bpmn;
 pub mod canvas;
 pub mod ir;
 pub mod layout;
@@ -16,6 +17,17 @@ pub use options::{DiagramOptions, ErNotation};
 pub enum Language {
     Mermaid,
     PlantUml,
+    Bpmn,
+}
+
+impl Language {
+    pub fn name(self) -> &'static str {
+        match self {
+            Language::Mermaid => "mermaid",
+            Language::PlantUml => "plantuml",
+            Language::Bpmn => "bpmn",
+        }
+    }
 }
 
 /// 코드 펜스의 언어 이름으로 다이어그램 언어를 고른다.
@@ -23,20 +35,30 @@ pub fn language_of_fence(lang: &str) -> Option<Language> {
     match lang.trim().to_ascii_lowercase().as_str() {
         "mermaid" | "mmd" => Some(Language::Mermaid),
         "plantuml" | "puml" | "uml" => Some(Language::PlantUml),
+        "bpmn" => Some(Language::Bpmn),
         _ => None,
     }
 }
 
+/// 파일 확장자 표의 단일 출처. 소스 언어 추정과 명령줄의 "다이어그램 파일인가" 판정이 함께 쓴다.
+pub fn language_of_path(path: &str) -> Option<Language> {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".puml") || lower.ends_with(".plantuml") || lower.ends_with(".pu") || lower.ends_with(".iuml") {
+        return Some(Language::PlantUml);
+    }
+    if lower.ends_with(".mmd") || lower.ends_with(".mermaid") {
+        return Some(Language::Mermaid);
+    }
+    if lower.ends_with(".bpmn") {
+        return Some(Language::Bpmn);
+    }
+    None
+}
+
 /// 파일 확장자나 본문으로 다이어그램 언어를 추정한다.
 pub fn language_of_source(path: Option<&str>, source: &str) -> Option<Language> {
-    if let Some(p) = path {
-        let lower = p.to_ascii_lowercase();
-        if lower.ends_with(".puml") || lower.ends_with(".plantuml") || lower.ends_with(".pu") || lower.ends_with(".iuml") {
-            return Some(Language::PlantUml);
-        }
-        if lower.ends_with(".mmd") || lower.ends_with(".mermaid") {
-            return Some(Language::Mermaid);
-        }
+    if let Some(language) = path.and_then(language_of_path) {
+        return Some(language);
     }
     let trimmed = source.trim_start();
     if trimmed.starts_with("@start") {
@@ -48,17 +70,16 @@ pub fn language_of_source(path: Option<&str>, source: &str) -> Option<Language> 
     if plantuml::kind_of(source).is_some() {
         return Some(Language::PlantUml);
     }
+    if bpmn::kind_of(source).is_some() {
+        return Some(Language::Bpmn);
+    }
     None
 }
 
 /// 다이어그램을 캡션(`◈ mermaid · flowchart ───`)과 함께 그린다. 지원하지 않거나 폭에 맞지 않으면 `None`.
 pub fn render(language: Language, source: &str, theme: &Theme, width: usize, options: DiagramOptions) -> Option<Vec<Line>> {
     let (kind, body) = render_body(language, source, theme, width, options)?;
-    let name = match language {
-        Language::Mermaid => "mermaid",
-        Language::PlantUml => "plantuml",
-    };
-    let mut out = vec![caption(name, kind, theme, width)];
+    let mut out = vec![caption(language.name(), kind, theme, width)];
     out.extend(body);
     Some(out)
 }
@@ -69,6 +90,7 @@ pub fn render_body(language: Language, source: &str, theme: &Theme, width: usize
     let (kind, mut body) = match language {
         Language::Mermaid => mermaid::render(source, theme, width, options)?,
         Language::PlantUml => plantuml::render(source, theme, width, options)?,
+        Language::Bpmn => bpmn::render(source, theme, width, options)?,
     };
     if body.iter().all(Line::is_blank) {
         return None;
@@ -87,6 +109,7 @@ pub fn kind_of(language: Language, source: &str) -> Option<&'static str> {
     match language {
         Language::Mermaid => mermaid::kind_of(source),
         Language::PlantUml => plantuml::kind_of(source),
+        Language::Bpmn => bpmn::kind_of(source),
     }
 }
 
@@ -198,5 +221,18 @@ mod robustness {
                 let _ = render(Language::PlantUml, source, &Theme::none(), width, DiagramOptions::default());
             }
         }
+        // 파서가 없는 언어(6.8) — 어떤 본문이든 항상 `None`이어야 한다.
+        let bpmn = ["", "<definitions></definitions>", "process:\n  id: p1\n", "임의의 한글 문장입니다"];
+        for source in bpmn {
+            for width in [8usize, 20, 40, 80, 200] {
+                assert_eq!(render(Language::Bpmn, source, &Theme::none(), width, DiagramOptions::default()), None);
+            }
+        }
+    }
+
+    #[test]
+    fn caption_uses_language_name_and_kind() {
+        let line = caption("bpmn", "collaboration", &Theme::none(), 40);
+        assert!(line.text().starts_with("◈ bpmn · collaboration "));
     }
 }

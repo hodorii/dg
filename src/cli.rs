@@ -77,4 +77,5 @@ pub enum StyleArg {
 pub enum LangArg {
     Mermaid,
     Plantuml,
+    Bpmn,
 }
