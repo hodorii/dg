@@ -66,11 +66,12 @@ pub fn validate(model: &Model) -> Result<(), Vec<ModelError>> {
     }
     for flow in &model.flows {
         let mut ok = true;
-        if !element_ids.contains(flow.source.as_str()) {
+        let is_valid_endpoint = |id: &str| element_ids.contains(id) || (matches!(flow.kind, FlowKind::Message) && model.participant_index(id).is_some());
+        if !is_valid_endpoint(flow.source.as_str()) {
             errors.push(ModelError::UnknownReference { owner: flow.id.clone(), reference: flow.source.clone() });
             ok = false;
         }
-        if !element_ids.contains(flow.target.as_str()) {
+        if !is_valid_endpoint(flow.target.as_str()) {
             errors.push(ModelError::UnknownReference { owner: flow.id.clone(), reference: flow.target.clone() });
             ok = false;
         }
@@ -126,9 +127,12 @@ fn collect_lane_ids<'a>(lanes: &'a [super::model::Lane], ids: &mut HashSet<&'a s
     }
 }
 
-/// 요소의 소속 참여자 인덱스. 요소를 못 찾거나 `container` 참조가 이미 깨졌으면 `None`
-/// (앞 규칙에서 이미 보고된 참조라 뒤 규칙은 건너뛴다).
+/// 흐름 끝의 소속 참여자 인덱스. 끝이 최상위 참여자 id면 그 참여자 자신. 요소를 못 찾거나
+/// `container` 참조가 이미 깨졌으면 `None`(앞 규칙에서 이미 보고된 참조라 뒤 규칙은 건너뛴다).
 fn pool_of(model: &Model, broken_container: &HashSet<&str>, element_id: &str) -> Option<Option<usize>> {
+    if let Some(i) = model.participant_index(element_id) {
+        return Some(Some(i));
+    }
     let element = model.element(element_id)?;
     if broken_container.contains(element.id.as_str()) {
         return None;
@@ -202,6 +206,24 @@ mod tests {
 
     fn sequence(id: &str, source: &str, target: &str) -> Flow {
         Flow { id: id.into(), source: source.into(), target: target.into(), label: String::new(), kind: FlowKind::Sequence { is_default: false } }
+    }
+
+    fn message(id: &str, source: &str, target: &str, label: &str) -> Flow {
+        Flow { id: id.into(), source: source.into(), target: target.into(), label: label.into(), kind: FlowKind::Message }
+    }
+
+    /// bugfix.md 재현 절차 2 — 블랙박스 풀 `customer`(요소 없음)가 레인 `sales`(참여자 `seller`
+    /// 소속) 안 `start`로 메시지를 보낸다.
+    fn blackbox_pool_message_flow_model() -> Model {
+        Model {
+            participants: vec![
+                Participant { id: "customer".into(), name: "고객".into(), lanes: Vec::new() },
+                Participant { id: "seller".into(), name: "판매사".into(), lanes: vec![Lane { id: "sales".into(), name: "영업".into(), sub_lanes: Vec::new() }] },
+            ],
+            elements: vec![flow_node("start", Some("sales")), flow_node("review", Some("sales"))],
+            flows: vec![sequence("s1", "start", "review"), message("m1", "customer", "start", "주문")],
+            ..Model::default()
+        }
     }
 
     #[test]
@@ -297,6 +319,54 @@ mod tests {
             ..Model::default()
         };
         assert_eq!(validate(&model), Err(vec![ModelError::BoundaryContainerMismatch("e3".into())]));
+    }
+
+    // --- bpmn-message-flow-participant-endpoint ---
+
+    #[test]
+    fn message_flow_ending_at_a_top_level_participant_id_is_accepted() {
+        let model = blackbox_pool_message_flow_model();
+        assert_eq!(validate(&model), Ok(()));
+    }
+
+    #[test]
+    fn message_flow_between_two_top_level_participant_ids_is_accepted() {
+        let mut model = blackbox_pool_message_flow_model();
+        model.flows.push(message("m2", "customer", "seller", ""));
+        assert_eq!(validate(&model), Ok(()));
+    }
+
+    #[test]
+    fn message_flow_from_a_participant_to_its_own_element_is_rejected_as_within_participant() {
+        let model = Model {
+            participants: vec![Participant { id: "customer".into(), name: "고객".into(), lanes: Vec::new() }],
+            elements: vec![flow_node("a", Some("customer"))],
+            flows: vec![message("m1", "customer", "a", "")],
+            ..Model::default()
+        };
+        assert_eq!(validate(&model), Err(vec![ModelError::MessageFlowWithinParticipant("m1".into())]));
+    }
+
+    #[test]
+    fn sequence_flow_ending_at_a_participant_id_is_still_unknown_reference() {
+        let model = Model {
+            participants: vec![Participant { id: "p1".into(), name: "P1".into(), lanes: Vec::new() }],
+            elements: vec![flow_node("a", Some("p1"))],
+            flows: vec![sequence("f1", "p1", "a")],
+            ..Model::default()
+        };
+        assert_eq!(validate(&model), Err(vec![ModelError::UnknownReference { owner: "f1".into(), reference: "p1".into() }]));
+    }
+
+    #[test]
+    fn message_flow_ending_at_a_lane_id_is_still_unknown_reference() {
+        let model = Model {
+            participants: vec![Participant { id: "p1".into(), name: "P1".into(), lanes: vec![Lane { id: "l1".into(), name: "L1".into(), sub_lanes: Vec::new() }] }],
+            elements: vec![flow_node("a", Some("l1"))],
+            flows: vec![message("f1", "l1", "a", "")],
+            ..Model::default()
+        };
+        assert_eq!(validate(&model), Err(vec![ModelError::UnknownReference { owner: "f1".into(), reference: "l1".into() }]));
     }
 
     #[test]

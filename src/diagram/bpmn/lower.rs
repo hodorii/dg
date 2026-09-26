@@ -11,8 +11,8 @@ pub fn lower(model: &Model) -> Graph {
 
     let group_of = add_pools_and_lanes(&mut graph, model);
     add_elements(&mut graph, model, &group_of);
+    add_flows(&mut graph, model, &group_of);
     add_placeholders_for_empty_groups(&mut graph);
-    add_flows(&mut graph, model);
     add_boundary_edges(&mut graph, model);
 
     graph
@@ -77,9 +77,21 @@ fn add_placeholders_for_empty_groups(graph: &mut Graph) {
     }
 }
 
-fn add_flows(graph: &mut Graph, model: &Model) {
+/// 끝을 노드에서 못 찾으면(참여자 자신 — 요소가 아니다) 메시지 흐름이고 최상위 참여자일 때만 그
+/// 참여자 그룹의 닻(`Graph::group_anchor`)으로 대신 해석한다. 그 외(모르는 id 등)는 건너뛴다.
+fn resolve_endpoint(graph: &mut Graph, model: &Model, group_of: &HashMap<String, usize>, kind: FlowKind, id: &str) -> Option<usize> {
+    if let Some(index) = graph.find(id) {
+        return Some(index);
+    }
+    if matches!(kind, FlowKind::Message) && model.participant_index(id).is_some() {
+        return Some(graph.group_anchor(group_of[id]));
+    }
+    None
+}
+
+fn add_flows(graph: &mut Graph, model: &Model, group_of: &HashMap<String, usize>) {
     for flow in &model.flows {
-        let (Some(from), Some(to)) = (graph.find(&flow.source), graph.find(&flow.target)) else { continue };
+        let (Some(from), Some(to)) = (resolve_endpoint(graph, model, group_of, flow.kind, &flow.source), resolve_endpoint(graph, model, group_of, flow.kind, &flow.target)) else { continue };
         let (kind, tail, head) = line_for(flow.kind);
         graph.add_edge(Edge { from, to, label: flow.label.clone(), kind, tail, head, ..Edge::default() });
     }
@@ -294,6 +306,48 @@ mod tests {
         let anchors_in = |group: usize| graph.nodes.iter().filter(|n| n.shape == Shape::Anchor && n.group == Some(group)).count();
         assert_eq!(anchors_in(empty_group), 1);
         assert_eq!(anchors_in(full_group), 0);
+    }
+
+    /// bugfix.md 재현 절차 2 — 검증을 거치지 않고 그대로 변환한다.
+    fn blackbox_pool_message_flow_model() -> Model {
+        Model {
+            participants: vec![
+                Participant { id: "customer".into(), name: "고객".into(), lanes: Vec::new() },
+                Participant {
+                    id: "seller".into(),
+                    name: "판매사".into(),
+                    lanes: vec![Lane { id: "sales".into(), name: "영업".into(), sub_lanes: Vec::new() }],
+                },
+            ],
+            elements: vec![
+                Element { id: "start".into(), name: "start".into(), kind: ElementKind::Task(TaskKind::None), container: Some("sales".into()), attached_to: None },
+                Element { id: "review".into(), name: "review".into(), kind: ElementKind::Task(TaskKind::None), container: Some("sales".into()), attached_to: None },
+            ],
+            flows: vec![
+                Flow { id: "s1".into(), source: "start".into(), target: "review".into(), label: String::new(), kind: FlowKind::Sequence { is_default: false } },
+                Flow { id: "m1".into(), source: "customer".into(), target: "start".into(), label: "주문".into(), kind: FlowKind::Message },
+            ],
+            ..Model::default()
+        }
+    }
+
+    #[test]
+    fn message_flow_ending_at_a_participant_id_becomes_an_edge_to_the_group_anchor() {
+        let model = blackbox_pool_message_flow_model();
+        let graph = lower(&model);
+        assert_eq!(graph.edges.len(), 2, "시퀀스 흐름과 메시지 흐름 둘 다 간선으로 남아야 한다");
+
+        let customer_group = graph.groups.iter().position(|g| g.title == "고객").expect("고객 풀 그룹이 있어야 한다");
+        let message_edge = graph.edges.iter().find(|e| e.label == "주문").expect("메시지 흐름 간선이 있어야 한다");
+        assert_eq!((message_edge.kind, message_edge.tail, message_edge.head), (LineKind::Dashed, Marker::Circle, Marker::OpenArrow));
+
+        let anchor_node = &graph.nodes[message_edge.from];
+        assert_eq!(anchor_node.shape, Shape::Anchor);
+        assert_eq!(anchor_node.group, Some(customer_group));
+        assert_eq!(graph.nodes[message_edge.to].id, "start");
+
+        let anchors_in_customer_group = graph.nodes.iter().filter(|n| n.shape == Shape::Anchor && n.group == Some(customer_group)).count();
+        assert_eq!(anchors_in_customer_group, 1, "블랙박스 풀 안 보이지 않는 노드는 하나뿐이어야 한다");
     }
 
     #[test]
