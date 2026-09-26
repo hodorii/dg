@@ -912,6 +912,16 @@ mod tests {
         assert!(out.iter().any(|l| l.contains("▼")));
     }
 
+    /// 파서가 없는 `bpmn` 코드펜스(6.8) — 코드블록으로 남고 앞뒤 문단은 그대로 렌더링된다.
+    #[test]
+    fn bpmn_fence_without_a_parser_falls_back_to_a_code_block() {
+        let out = plain("앞 문단\n\n```bpmn\n<definitions></definitions>\n```\n\n뒤 문단\n", 60);
+        assert!(out.contains(&"앞 문단".to_string()));
+        assert!(out.iter().any(|l| l.starts_with("╭─ bpmn ")));
+        assert!(out.contains(&"│ <definitions></definitions>".to_string()));
+        assert!(out.contains(&"뒤 문단".to_string()));
+    }
+
     #[test]
     fn front_matter_is_hidden() {
         let out = plain("---\ntitle: x\n---\n\nbody\n", 40);
