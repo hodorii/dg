@@ -29,8 +29,9 @@
   research.md`의 "`BPMNDI`의 `isHorizontal`만" 문구는 이 결정으로 대체됨)
 - **펼친 서브프로세스·노드 중첩·`ExpandPolicy`/`depth`**: `bizprocess-bpmn`. `ElementKind::Subprocess`는
   접힌 것만
-- **풀·레인을 흐름 끝으로(그룹 닻)·풀을 넘는 Group·경계 이벤트 테두리 부착·이중선**: 미지원
-  (`bpmn-support/research.md`)
+- **레인을 흐름 끝으로·풀을 넘는 Group·경계 이벤트 테두리 부착·이중선**: 미지원
+  (`bpmn-support/research.md`). 최상위 참여자를 메시지 흐름의 끝으로(그룹 닻) 쓰는 것은
+  `bpmn-message-flow-participant-endpoint`가 지원으로 바꿈
 - **`ir`·`layout` 변경**: 없음. 새 도형·표식·레인 규칙은 `bpmn-shapes`/`bpmn-lane-layout` 재개
 - **진단 UI**: `ModelError`는 `Display`까지; 화면 노출은 파서 스펙 몫
 
@@ -45,8 +46,9 @@
 - `layout::graph::render()`의 재시도 순서(선호 → 반대 → TB 접기)가 바뀌면 `Orientation` 매핑·6.4 재검토
 - `bpmn-lane-layout`이 구성원 없는 레인을 그리게 바뀌면 자리표시 닻 제거
 - `bpmn-shapes/design.md` "lower()가 만들어야 할 라벨" 계약이 바뀌면 `vocabulary` 라벨 열 동기화
-- 하류 스펙이 펼친 서브프로세스·풀 안 Group·풀을 끝으로 하는 메시지 흐름을 실제로 요구하면
-  `Model`에 `parent`/`groups` 도입을 그때 결정(지금은 넣지 않음)
+- 하류 스펙이 펼친 서브프로세스·풀 안 Group을 실제로 요구하면 `Model`에 `parent`/`groups` 도입을
+  그때 결정(지금은 넣지 않음). 풀을 끝으로 하는 메시지 흐름은 `bpmn-message-flow-participant-endpoint`
+  가 `Model` 변경 없이(평문 id 유지) 해결
 
 ## Architecture
 
