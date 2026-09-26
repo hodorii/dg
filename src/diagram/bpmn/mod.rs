@@ -297,5 +297,63 @@ mod tests {
         // `cargo test -- --nocapture`로 육안 확인(design §Key Decisions 표대로 보이는지).
         eprintln!("{rendered}");
     }
+
+    /// bpmn-message-flow-participant-endpoint 4.1 — 블랙박스 풀(요소 없는 참여자 `customer`)이
+    /// 판매사 풀 안 `start`로 메시지를 보내는 협업. bugfix.md 재현 절차 2와 같은 모델.
+    fn blackbox_pool_message_flow_model() -> Model {
+        Model {
+            title: "블랙박스 협업".into(),
+            participants: vec![
+                Participant { id: "customer".into(), name: "고객".into(), lanes: Vec::new() },
+                Participant {
+                    id: "seller".into(),
+                    name: "판매사".into(),
+                    lanes: vec![Lane { id: "sales".into(), name: "영업".into(), sub_lanes: Vec::new() }],
+                },
+            ],
+            elements: vec![
+                Element { id: "start".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Start, trigger: Some(EventTrigger::Message) }, container: Some("sales".into()), attached_to: None },
+                task("review", "주문 검토", Some("sales")),
+            ],
+            flows: vec![
+                Flow { id: "s1".into(), source: "start".into(), target: "review".into(), label: String::new(), kind: FlowKind::Sequence { is_default: false } },
+                Flow { id: "m1".into(), source: "customer".into(), target: "start".into(), label: "주문".into(), kind: FlowKind::Message },
+            ],
+            ..Model::default()
+        }
+    }
+
+    #[test]
+    fn blackbox_pool_message_flow_renders_as_collaboration_without_panicking() {
+        for orientation in [model::Orientation::Horizontal, model::Orientation::Vertical] {
+            let mut model = blackbox_pool_message_flow_model();
+            model.orientation = orientation;
+            assert_eq!(validate::validate(&model), Ok(()));
+            let (kind, lines) = render_model(&model, &Theme::none(), 100, DiagramOptions::default()).expect("렌더링돼야 한다");
+            assert_eq!(kind, "collaboration");
+            let rendered = lines.iter().map(Line::text).collect::<Vec<_>>().join("\n");
+            assert!(rendered.contains("고객"), "블랙박스 풀 제목이 있어야 한다:\n{rendered}");
+            assert!(rendered.contains('╌'), "메시지 흐름의 점선이 있어야 한다:\n{rendered}");
+            if orientation == model::Orientation::Horizontal {
+                eprintln!("--- LR ---\n{rendered}");
+            } else {
+                eprintln!("--- TD ---\n{rendered}");
+            }
+        }
+    }
+
+    #[test]
+    fn message_flow_between_two_participant_ids_and_element_to_participant_do_not_panic() {
+        let mut model = blackbox_pool_message_flow_model();
+        // 양끝이 참여자인 메시지 흐름(닻 ↔ 닻)을 요소 → 참여자 메시지 흐름과 섞는다.
+        model.flows.push(Flow { id: "m2".into(), source: "customer".into(), target: "seller".into(), label: String::new(), kind: FlowKind::Message });
+        for orientation in [model::Orientation::Horizontal, model::Orientation::Vertical] {
+            let mut model = model.clone();
+            model.orientation = orientation;
+            assert_eq!(validate::validate(&model), Ok(()));
+            let (kind, _) = render_model(&model, &Theme::none(), 100, DiagramOptions::default()).expect("렌더링돼야 한다");
+            assert_eq!(kind, "collaboration");
+        }
+    }
 }
 

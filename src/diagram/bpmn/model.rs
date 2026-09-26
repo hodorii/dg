@@ -147,6 +147,12 @@ impl Model {
     pub fn element(&self, id: &str) -> Option<&Element> {
         self.elements.iter().find(|e| e.id == id)
     }
+
+    /// 최상위 참여자 id 정확 일치 → 인덱스. 레인 id는 `None`(레인은 InteractionNode가 아니다 —
+    /// `MessageFlow.sourceRef`/`targetRef`로 쓸 수 있는 건 흐름 노드와 `Participant`뿐이다).
+    pub fn participant_index(&self, id: &str) -> Option<usize> {
+        self.participants.iter().position(|p| p.id == id)
+    }
 }
 
 fn lane_tree_contains(lanes: &[Lane], id: &str) -> bool {
@@ -175,6 +181,15 @@ mod tests {
         assert_eq!(model.participant_of_container("lane-1"), Some(0));
         assert_eq!(model.participant_of_container("lane-1-1"), Some(0));
         assert_eq!(model.participant_of_container("unknown"), None);
+    }
+
+    #[test]
+    fn participant_index_resolves_only_top_level_participant_ids() {
+        let model = nested_model();
+        assert_eq!(model.participant_index("pool-1"), Some(0));
+        assert_eq!(model.participant_index("lane-1"), None);
+        assert_eq!(model.participant_index("lane-1-1"), None);
+        assert_eq!(model.participant_index("unknown"), None);
     }
 
     #[test]
