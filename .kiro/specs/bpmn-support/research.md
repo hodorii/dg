@@ -141,7 +141,7 @@
   | 접힌 서브프로세스 | `Shape::Subprocess`(신규): Round 아래 테두리 가운데 `[+]` | |
   | 펼친 서브프로세스 | 레인 안 `Box` 종류 그룹(기존 중첩 그룹 그대로) | |
   | 호출 활동(Call Activity) | Round + `«call»` | |
-  | 게이트웨이(XOR/AND/OR/이벤트기반/복합) | `Shape::Diamond`, 라벨 = 기호+이름(`×` XOR, `+` AND, `○` OR, `∗` complex, `⬠` 이벤트기반) | `⬠`(U+2B20) 폰트 커버리지 불확실 → `glyphs.rs`에 ASCII 대체(`E`) 병기, 실측 후 결정(Risks 참고) |
+  | 게이트웨이(XOR/AND/OR/이벤트기반/복합) | `Shape::Diamond`, 라벨 = 기호+이름(`×` XOR, `+` AND, `○` OR, `*` complex, `◎` 이벤트기반) | **해결됨(`bpmn-shapes` 구현, 2026-09-25)**: `⬠`(U+2B20)·`∗`(U+2217) 둘 다 기본 CJK 모노 폰트 커버리지 밖으로 실측돼 각각 `◎`·ASCII `*`로 교체. 최종 표는 `bpmn/vocabulary.rs`(`bpmn-model`)가 SSoT |
   | 데이터 저장소 | `Shape::Cylinder`(기존) | |
   | 데이터 객체 | `Shape::Rect` + `«data»` | 접힌 모서리 도형은 후순위 |
   | 텍스트 주석 | `Shape::Note`(기존 점선 상자) | |
@@ -246,7 +246,14 @@
   `process`(레인 없으면 평면, 있으면 `laneSet`), 시작/중간/경계/종료
   이벤트(message·timer·error·signal 등 트리거), 태스크 7종·(접힌)
   서브프로세스·호출활동, 게이트웨이 5종(+`@default`), `sequenceFlow`,
-  기본 아티팩트, `BPMNDI`의 `isHorizontal`만.
+  기본 아티팩트.
+
+  **[2026-09-26 갱신, 사용자 결정으로 대체됨]**: `BPMNDI`(다이어그램 교환
+  계층) 파싱은 `isHorizontal`을 포함해 전부 영구 제외한다 — 충실도 대상은
+  BPMN 2.0.2 프로세스 모델(의미 계층: Process·Task·Event·Gateway…)이지
+  다이어그램 노드가 아니라는 사용자 결정(`bpmn-model/design.md` Key
+  Decisions). `bpmn-xml`은 `<bpmndi:*>` 구획을 통째로 건너뛰고, 방향은
+  `bpmn::model::Orientation` 기본값 + CLI `--direction` 옵션으로만 정한다.
 - **Rationale**: "의존성 4개·단일 정적 바이너리" 원칙 유지. 이 하위집합은
   mermaid #8313이 명시한 v1 목표이자 실제 도구(Camunda/bpmn.io) 샘플
   대부분을 커버한다.
@@ -280,23 +287,31 @@
     `mermaid/flow.rs::read_link`를 `pub(crate)`로 열어 재사용(SSoT, 새로
     안 만듦).
   - kind/trigger 어휘는 BPMN XML 로컬 요소명을 그대로 토큰으로 써서 XML·
-    YAML 두 파서가 `bpmn/glyphs.rs`(또는 `model.rs`)의 같은 표 하나를
-    보게 한다 — `bpmn-model` 스펙에서 이 표를 먼저 확정해야 함.
+    YAML 두 파서가 `bpmn/vocabulary.rs`의 같은 표 하나를 보게 한다 —
+    `bpmn-model` 스펙이 이 표를 이미 확정했다(완료, 2026-09-26).
   - 파일 구성: `bpmn/yaml.rs`(하위집합 리더 → `YamlValue{Scalar,Seq,Map}`
     트리) + `bpmn/parse_yaml.rs`(트리 → `Model`), 각 150~250줄 — 기존
     파서 규모(129~372줄) 안.
-  - **로드맵 순서 권고**(반영함): YAML이 XML보다 작고 사람이 읽기 쉬워
-    `bpmn-model`의 테스트 fixture로도 좋으므로, `bpmn-xml`을 쪼개
-    `bpmn-yaml`(먼저)·`bpmn-xml`(나중)로 진행한다.
+  - **로드맵 순서 권고**(2026-09-25, 한때 반영됨): YAML이 XML보다 작고
+    사람이 읽기 쉬워 `bpmn-model`의 테스트 fixture로도 좋으므로,
+    `bpmn-xml`을 쪼개 `bpmn-yaml`(먼저)·`bpmn-xml`(나중)로 진행한다.
+
+    **[2026-09-26 갱신, 사용자 결정으로 뒤집힘]**: 순서를 `bpmn-xml`(먼저)
+    → `bpmn-yaml`(나중)로 되돌린다 — 이유: "모델 충실도 유지". XML은 공식
+    표준이라 `bpmn::Model`의 충실도를 먼저 검증하는 기준이 될 수 있지만,
+    YAML은 이 프로젝트가 손으로 만든 편의 문법이라 그것이 먼저 모델 형태를
+    정하면 모델이 표준이 아니라 YAML에 맞춰질 위험이 있다. `bpmn-yaml`은
+    `bpmn-xml`이 검증한 모델을 그대로 옮기는 대안 직렬화로 재배치됐다
+    (`bpmn-support/roadmap.md`).
   - **미검증**: 실제 YAML 예시를 외부 YAML 파서(`yq` 등)로 돌려 유효성을
     기계 검증하지는 않음 — `bpmn-yaml` 스펙의 태스크로 넣을 것.
 
 ## Risks & Mitigations
 - 레인 배너·펼친 Sub-Process 폭 예산 초과 → 실제 문서로 `bpmn-lane-layout`
   구현 시 조기 실측, 안 들어가면 TB 폴백 모양이 읽을 만한지 별도 확인
-- 게이트웨이 글자(특히 이벤트 기반 게이트웨이 `⬠`) 폰트 커버리지 불확실
-  (CJK 모노 폰트 폴백으로 스크롤 느려진 전례, `diagram-crow-foot-orientation`
-  참고) → `glyphs.rs`에 ASCII 대체 문자를 함께 정의해 두고 실측 후 결정
+- ~~게이트웨이 글자(특히 이벤트 기반 게이트웨이 `⬠`) 폰트 커버리지 불확실~~
+  **해결됨**: `bpmn-shapes` 구현에서 실측 완료, `◎`·ASCII `*`로 교체(위
+  Decision 표 참고)
 - `fold_widest_row()`/`improve_by_swaps()`가 Lane 블록을 건드리지 않는지
   회귀 테스트로 못박기(레인 순서가 흐트러지면 방법론적으로 틀린 그림이 됨)
 - `biz-process.md` 태그 파싱이 실제 문서의 괄호 포함 이름·게이트 줄과
