@@ -39,6 +39,7 @@
 
 ### Revalidation Triggers
 - `Canvas::line_char()`가 굵은 둥근 모서리를 지원하게 되면 종료 이벤트 모서리 재검토
+  (이벤트가 더 이상 상자로 그려지지 않으므로 `bpmn-event-shape-notation` 이후 소멸)
 - `layout::graph::segment_span()`이 노드 테두리 칸에서 선을 시작하게 바뀌면 `[+]`
   보존(2.2) 재검토
 - `shape::draw_sections()`의 `x+1`/`w-2` 가운데 정렬 관례가 바뀌면 이벤트 위치 글자
@@ -68,7 +69,8 @@ flowchart LR
   기하가 같고 글자·선 종류만 다르다. 상태도의 `Shape::Start`/`End`와 이름 충돌 회피.
 - **종료 이벤트는 각진 굵은 모서리 `┏━┓`**: `rect(..., Heavy, round=false)` — 이유:
   `line_char()`가 `round`를 `heavy`보다 우선해 둥근+굵은은 가는 모서리에 굵은 변이
-  붙는 어색한 모양(research.md).
+  붙는 어색한 모양(research.md). (이벤트를 테두리 상자로 그리는 이 결정 전체는
+  `bpmn-event-shape-notation`이 대체함 — 테두리 없는 위치 글자 + 이름으로 바뀜.)
 - **태스크는 전부 `Shape::Round`(사용자 확정)**: 하위 종류별 새 모양 없음, 둘째 줄
   `«종류»`만 — 이유: 사용자 결정(2026-09-25, 구현상 문제가 없는 한 라운드렉트
   유지); 현재 코드에서 폭·글자 겹침 문제가 없음을 6.3 실물 렌더링으로 확인한다.

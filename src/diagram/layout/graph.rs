@@ -2825,8 +2825,8 @@ mod tests {
         assert!(text.contains('▶'), "화살촉이 그대로 그려져야 한다: {text}");
     }
 
-    /// 요구사항 1.5: TB·LR 모두에서 이벤트 노드(가는 선·굵은 선 둘 다)가 기존 접점 규칙을
-    /// 그대로 따른다 — 화살촉이 각 도착 노드 테두리 바로 바깥 칸에 붙는다.
+    /// 요구사항 2.6: TB에서 가는 선 노드(`Round`)는 기존 접점 규칙(테두리 바로 위 줄)을
+    /// 그대로 따르고, 이벤트 노드(상자 없음)는 위치 글자 줄 바로 위 줄에 화살촉이 붙는다.
     #[test]
     fn event_shapes_attach_edges_using_existing_contact_rules_top_down() {
         let mut g = Graph::default();
@@ -2837,14 +2837,23 @@ mod tests {
         g.add_edge(Edge { from: mid, to: end, head: Marker::Arrow, ..Edge::default() });
         let out = rows(render(&g, &Theme::none(), 80).unwrap());
         let text = out.join("\n");
-        // 노드는 테두리(위)·본문(텍스트 줄)·테두리(아래) 세 줄을 차지하므로, 화살촉은
+        // Round는 테두리(위)·본문(텍스트 줄)·테두리(아래) 세 줄을 차지하므로, 화살촉은
         // 텍스트 줄에서 두 줄 위(테두리 바로 위 줄)에 있다.
         let mid_row = row_of(&out, "Mid");
         assert!(out[mid_row - 2].contains('▼'), "가는 선 노드 테두리 바로 위 줄에 화살촉이 붙어야 한다: {text}");
-        let end_row = row_of(&out, "Done");
-        assert!(out[end_row - 2].contains('▼'), "굵은 테두리(종료 이벤트)에도 화살촉이 테두리 바로 위 줄에 붙어야 한다: {text}");
+        // 종료 이벤트는 테두리가 없다 — `●` 글자 줄 바로 위 줄에, 이벤트가 차지한 열 범위 안에
+        // 화살촉이 온다(design §수정 방식의 접점 한계 (a): 화살촉은 원 글자 열이 아니라 덩어리
+        // 가운데 열 — 이름 위 — 에 올 수 있다).
+        let end_row = row_of(&out, "●");
+        let end_line: Vec<char> = out[end_row].chars().collect();
+        let first_col = end_line.iter().position(|&c| c != ' ').expect("종료 이벤트 줄에 글자가 있어야 한다");
+        let last_col = end_line.iter().rposition(|&c| c != ' ').expect("종료 이벤트 줄에 글자가 있어야 한다");
+        let above: Vec<char> = out[end_row - 1].chars().collect();
+        assert!((first_col..=last_col).any(|col| above.get(col) == Some(&'▼')), "이벤트가 차지한 열 범위 안, 바로 위 줄에 화살촉이 붙어야 한다: {text}");
     }
 
+    /// 요구사항 2.6: LR에서 이벤트 노드는 상자 테두리가 아니라 위치 글자 바로 왼쪽 칸에
+    /// 화살촉이 붙는다.
     #[test]
     fn event_shapes_attach_edges_using_existing_contact_rules_left_right() {
         let mut g = Graph::default();
@@ -2854,9 +2863,9 @@ mod tests {
         g.direction = Some(Direction::LeftRight);
         let out = rows(render(&g, &Theme::none(), 80).unwrap());
         let text = out.join("\n");
-        let end_row = row_of(&out, "Done");
-        let end_left_border = char_col(&out[end_row], '┃');
-        assert_eq!(out[end_row].chars().nth(end_left_border - 1), Some('▶'), "화살촉이 종료 이벤트(굵은 테두리) 바로 왼쪽에 있어야 한다: {text}");
+        let end_row = row_of(&out, "●");
+        let end_col = char_col(&out[end_row], '●');
+        assert_eq!(out[end_row].chars().nth(end_col - 1), Some('▶'), "화살촉이 종료 이벤트의 위치 글자(●) 바로 왼쪽에 있어야 한다: {text}");
     }
 
     /// 요구사항 2.2: 서브프로세스 아래로 간선이 나가도 `[+]`가 지워지지 않고, 그 아래 줄에
@@ -2932,7 +2941,7 @@ mod tests {
         assert!(lines.is_some(), "폭 100 안에서 렌더링돼야 한다");
         let out = rows(lines.unwrap());
         let text = out.join("\n");
-        for needle in ["○", "●", "┃", "«user»", "«service»", "× 재고 있음?", "예", "아니오"] {
+        for needle in ["○", "●", "«user»", "«service»", "× 재고 있음?", "예", "아니오"] {
             assert!(text.contains(needle), "{needle:?}가 결과에 있어야 한다:\n{text}");
         }
     }
