@@ -48,10 +48,21 @@ pub enum Shape {
     End,
     /// 그룹을 가리키는 간선이 닿는 보이지 않는 점.
     Anchor,
-    /// BPMN 이벤트: 테두리 없음, 위치 글자(○/◎/●) 자체가 도형이고 이름이 그 오른쪽에 온다.
+    /// BPMN 이벤트: 테두리 없음, 위치 글자(○/◎/◉) 자체가 도형이고 이름이 그 오른쪽에 온다.
     Event(EventPosition),
     /// BPMN 접힌 서브프로세스: Round와 같은 테두리·본문에 아래 테두리 가운데 `[+]`.
     Subprocess,
+}
+
+impl Shape {
+    /// 이 모양의 간선 접점·정렬 기준이 상자 가운데가 아니라 원점 칸(= 위치 글자)인지.
+    /// `layout::graph`(접점 배정·정렬)와 `layout::shape`(그리기 오프셋)가 함께 참조하는
+    /// SSoT — 이벤트는 "테두리 없이 글자가 곧 도형"이라 덩어리 가운데가 아니라 그 글자 칸에
+    /// 선이 닿아야 한다(bpmn-event-notation-anchor). 상태도 `Start`/`End`는 이미 1×1이라
+    /// 넣지 않는다 — 넣으면 `center()`가 0.5 이동해 기존 상태도 배치가 흔들릴 수 있다.
+    pub fn is_point_anchored(self) -> bool {
+        matches!(self, Shape::Event(_))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

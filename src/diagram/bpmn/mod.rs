@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn prefix_less_single_process_renders_as_process_without_a_pool_band() {
         let source = r#"<definitions><process id="p1"><startEvent id="s"/><task id="t"/><endEvent id="e"/><sequenceFlow id="f1" sourceRef="s" targetRef="t"/><sequenceFlow id="f2" sourceRef="t" targetRef="e"/></process></definitions>"#;
-        // bpmn-event-shape-notation 이후 종료 이벤트는 테두리 없이 채운 원 글자(●)만 그리므로
+        // bpmn-event-shape-notation 이후 종료 이벤트는 테두리 없이 겹원 글자(◉)만 그리므로
         // `┃`는 더 이상 어디에서도 나타나지 않는다. "풀 띠 없음"은 모델 자체에 참여자가 없다는
         // 사실로 직접 확인한다(풀 띠는 참여자별로만 그려지므로 참여자가 없으면 띠도 없다).
         let model = parse_xml::parse(source).unwrap();
@@ -455,7 +455,7 @@ mod tests {
         let (kind, lines) = render_model(&model, &Theme::none(), 100, DiagramOptions::default()).expect("폭 100 안에서 렌더링돼야 한다");
         assert_eq!(kind, "collaboration");
         let rendered = lines.iter().map(Line::text).collect::<Vec<_>>().join("\n");
-        for glyph in ["○", "●", "◎", "«user»", "«service»", "«message»", "«error»", "× 재고 있음?", "╱", "╌"] {
+        for glyph in ["○", "◉", "◎", "«user»", "«service»", "«message»", "«error»", "× 재고 있음?", "╱", "╌"] {
             assert!(rendered.contains(glyph), "렌더링 결과에 {glyph:?}가 있어야 한다:\n{rendered}");
         }
         // `cargo test -- --nocapture`로 육안 확인(design §Key Decisions 표대로 보이는지).
@@ -534,7 +534,7 @@ mod tests {
         let (kind, lines) = render(&fixture, &Theme::none(), 100, DiagramOptions::default()).expect("폭 100 안에서 렌더링돼야 한다");
         assert_eq!(kind, "collaboration");
         let rendered = lines.iter().map(Line::text).collect::<Vec<_>>().join("\n");
-        for glyph in ["○", "●", "◎", "«user»", "«service»", "«message»", "«error»", "× 재고 있음?", "╱", "╌"] {
+        for glyph in ["○", "◉", "◎", "«user»", "«service»", "«message»", "«error»", "× 재고 있음?", "╱", "╌"] {
             assert!(rendered.contains(glyph), "렌더링 결과에 {glyph:?}가 있어야 한다:\n{rendered}");
         }
         // `&#10;`로 인코딩한 두 줄 이름이 실제로 두 줄로 보인다(2.2).

@@ -65,21 +65,22 @@ pub fn draw(canvas: &mut Canvas, x: usize, y: usize, shape: Shape, sections: &[V
             canvas.text_centered(x, y + h - 1, w, "[+]", border);
         }
         Shape::Event(position) => {
-            // 테두리 없음 — 위치 글자(○/◎/●) 자체가 도형이고, 이름·둘째 줄은 그 오른쪽에
+            // 테두리 없음 — 위치 글자(○/◎/◉) 자체가 도형이고, 이름·둘째 줄은 그 오른쪽에
             // 왼쪽 맞춤으로 붙는다. `draw_sections()`의 가운데 정렬 관례는 양옆 테두리를
-            // 전제하므로 쓰지 않는다(`Plain` 분기와 같은 이유).
-            let block_x = x + (w - measured_width) / 2;
-            let row0 = y + extra_top;
+            // 전제하므로 쓰지 않는다(`Plain` 분기와 같은 이유). 배치기가 접점 벌림·형제 정렬로
+            // `min_width`/`min_height`를 측정값보다 넓게 주더라도, 위치 글자는 항상 노드
+            // 원점(`x`, `y`)에 그려진다 — 배치기의 접점·정렬 기준(`Shape::is_point_anchored`)과
+            // 짝을 이루는 그리기 쪽 약속이다. 여분은 이름 뒤·아래로만 남는다(2.5).
             let glyph = match position {
                 EventPosition::Start => '○',
                 EventPosition::Intermediate => '◎',
-                EventPosition::End => '●',
+                EventPosition::End => '◉',
             };
-            canvas.put(block_x, row0, glyph, theme.diagram_accent);
-            let mut row = row0;
+            canvas.put(x, y, glyph, theme.diagram_accent);
+            let mut row = y;
             for section in sections {
                 for text in section {
-                    canvas.text(block_x + 2, row, text, line_style(0, text, theme));
+                    canvas.text(x + 2, row, text, line_style(0, text, theme));
                     row += 1;
                 }
             }
@@ -281,9 +282,9 @@ mod tests {
     /// design §Key Decisions에서 `◎`·`*`로 교체됐다 — 그 교체 결과만 허용 목록에 남는다.
     #[test]
     fn bpmn_glyph_codepoints_are_within_cjk_mono_coverage() {
-        const COVERED: [char; 7] = ['○', '●', '◎', '╱', '×', '+', '*'];
+        const COVERED: [char; 7] = ['○', '◎', '◉', '╱', '×', '+', '*'];
         let gateway_symbols = ['×', '+', '○', '*', '◎'];
-        let event_position_glyphs = ['○', '◎', '●'];
+        let event_position_glyphs = ['○', '◎', '◉'];
         let slash = ['╱'];
         for ch in gateway_symbols.into_iter().chain(event_position_glyphs).chain(slash) {
             assert!(COVERED.contains(&ch), "{ch:?}(U+{:04X})가 커버리지 허용 목록 안에 있어야 한다", ch as u32);
@@ -305,7 +306,7 @@ mod tests {
         assert_eq!(intermediate, vec!["◎ Go"]);
 
         let end = draw_rows(Shape::Event(EventPosition::End), vec![vec!["Go".into()]]);
-        assert_eq!(end, vec!["● Go"]);
+        assert_eq!(end, vec!["◉ Go"]);
 
         let round = draw_rows(Shape::Round, vec![vec!["Go".into()]]);
         assert_eq!(round, vec!["╭────╮", "│ Go │", "╰────╯"]);
@@ -338,6 +339,24 @@ mod tests {
 
         let (_, single_line_height) = measure(Shape::Event(EventPosition::Start), &[vec!["Go".into()]]);
         assert_eq!(single_line_height, 1);
+    }
+
+    /// bugfix bpmn-event-notation-anchor 검증 속성 (a)/2.5: 배치기가 측정값보다 넓게(+4)·
+    /// 높게(+2) 늘려도 원 글자는 항상 노드 원점 (0, 0)에 그려지고, 이름은 (2, 0)에서
+    /// 시작한다 — 여분은 이름 뒤·아래로만 남는다(수정 전엔 원 글자가 여분 폭 절반만큼
+    /// 밀려 (0, 0)이 아니었다, `block_x = x + (w - measured_width) / 2`).
+    #[test]
+    fn event_glyph_stays_pinned_to_the_node_origin_when_stretched_by_min_width_and_min_height() {
+        let sections = vec![vec!["Go".into()]];
+        let (measured_width, measured_height) = measure(Shape::Event(EventPosition::End), &sections);
+        let min_width = measured_width + 4;
+        let min_height = measured_height + 2;
+        let mut canvas = Canvas::new(min_width, min_height);
+        draw(&mut canvas, 0, 0, Shape::Event(EventPosition::End), &sections, &Theme::none(), min_width, min_height);
+        let rows: Vec<String> = canvas.into_lines().iter().map(Line::plain).collect();
+        let first_row: Vec<char> = rows[0].chars().collect();
+        assert_eq!(first_row.first(), Some(&'◉'), "원 글자가 노드 원점 (0, 0)에 있어야 한다: {rows:?}");
+        assert_eq!(first_row.get(2), Some(&'G'), "이름이 (2, 0)에서 시작해야 한다: {rows:?}");
     }
 
     /// (bpmn-shapes) 접힌 서브프로세스: 테두리·본문은 `Round`와 같고, 아래 테두리 가운데에

@@ -92,7 +92,7 @@ flowchart LR
 |---|---|---|
 | Event 크기 | `measure = (tw + 6, th.max(1) + 2)` — 테두리·공백·글자·공백·본문·공백·테두리 | 1.4, 1.6 |
 | Event 테두리 | Start·Intermediate: `rect(Solid, round=true)`; End: `rect(Heavy, round=false)`, 색 `theme.diagram_box` | 1.1~1.3 |
-| Event 위치 글자 | `(x+2, row0)`에 `○`/`◎`/`●`, 색 `theme.diagram_accent`(상태도 `Start`/`End`와 동일) | 1.1~1.3, 1.6 |
+| Event 위치 글자 | `(x+2, row0)`에 `○`/`◎`/`●`, 색 `theme.diagram_accent`(상태도 `Start`/`End`와 동일) — 종료 글자는 `bpmn-event-notation-anchor`가 `●` → `◉`로 대체(위치도 원점 고정으로 수정) | 1.1~1.3, 1.6 |
 | Event 본문 | `draw_sections(x+2, row0, w-2, sections, separators=false)` → 이름이 `x+4..` 가운데 정렬, 둘째 줄은 `line_style()` 그대로 | 1.1, 3.1, 3.3 |
 | Subprocess 크기·테두리·본문 | `Round`와 동일(`(tw+4, th+2)`, `rect(Solid, round=true)`, `draw_sections(x, row0, w, …, true)`) | 2.1, 3.2 |
 | Subprocess `[+]` | 본문 뒤 `text_centered(x, y+h-1, w, "[+]", theme.diagram_box)` — 테두리 줄의 `─` 세 칸을 글자 칸으로 바꿈; 이후 `add_line()`은 글자 칸을 건너뜀 | 2.1, 2.2, 2.3 |
