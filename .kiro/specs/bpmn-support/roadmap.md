@@ -43,10 +43,12 @@ BPMN 2.0 렌더링을 세 입력 문법(BPMN XML/biz-process.md/향후 mermaid)�
   수정(간격 -1, 배너, 순서 고정 등). 파서 없이 손으로 만든 `Graph`로 검증.
   Dependencies: none
 - [x] bpmn-shapes -- `Shape::Event(EventPosition)`·`Shape::Subprocess`·
-  `Marker::Slash` 등 BPMN 도형·표식 어휘, `bpmn/glyphs.rs` 표.
+  `Marker::Slash` 등 BPMN 도형·표식 어휘(`ir.rs`/`layout/shape.rs`/
+  `layout/graph.rs`에 직접 추가 — 별도 `glyphs.rs` 파일 없이 완료).
   Dependencies: bpmn-lane-layout
 - [ ] bpmn-model -- `bpmn::{Model, validate, lower}` + `render()` 배선,
-  `Language::Bpmn` 캡션·판별. 손으로 만든 `Model`로 end-to-end 테스트.
+  `Language::Bpmn` 캡션·판별, 토큰·라벨 어휘 표는 `bpmn/vocabulary.rs`.
+  손으로 만든 `Model`로 end-to-end 테스트.
   Dependencies: bpmn-shapes
 - [ ] bpmn-xml -- `bpmn/{xml, parse_xml}.rs`(OMG Descriptive Level 1
   하위집합). 실제 BPMN XML 샘플 fixture, 손상 입력 강건성 테스트. 공식
