@@ -46,11 +46,12 @@ BPMN 2.0 렌더링을 세 입력 문법(BPMN XML/biz-process.md/향후 mermaid)�
   `Marker::Slash` 등 BPMN 도형·표식 어휘(`ir.rs`/`layout/shape.rs`/
   `layout/graph.rs`에 직접 추가 — 별도 `glyphs.rs` 파일 없이 완료).
   Dependencies: bpmn-lane-layout
-- [ ] bpmn-model -- `bpmn::{Model, validate, lower}` + `render()` 배선,
+- [x] bpmn-model -- `bpmn::{Model, validate, lower}` + `render()` 배선,
   `Language::Bpmn` 캡션·판별, 토큰·라벨 어휘 표는 `bpmn/vocabulary.rs`.
-  손으로 만든 `Model`로 end-to-end 테스트.
+  손으로 만든 `Model`로 end-to-end 테스트. participant를 메시지 흐름 종점으로
+  잇는 버그픽스(`bpmn-message-flow-participant-endpoint`) 포함.
   Dependencies: bpmn-shapes
-- [ ] bpmn-xml -- `bpmn/{xml, parse_xml}.rs`(OMG Descriptive Level 1
+- [x] bpmn-xml -- `bpmn/{xml, parse_xml}.rs`(OMG Descriptive Level 1
   하위집합). 실제 BPMN XML 샘플 fixture, 손상 입력 강건성 테스트. 공식
   표준 그대로 구현해 `bpmn::Model`이 표준 충실도를 먼저 검증받도록
   YAML보다 앞에 둔다(사용자 결정, 2026-09-26 로드맵 재정렬 — "모델 충실도
