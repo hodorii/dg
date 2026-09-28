@@ -562,3 +562,138 @@ graph TD
     src_markdown_mod_rs_He44c4910 -->|"2"| text_rs_H94e4f82b
 %% analyzed 38 files, 580 atoms, 310 cross-module edges
 ```
+
+## 모듈 의존 그래프 (서브그래프로 묶은 버전)
+
+위 흐름도와 같은 실제 의존 데이터를, 이번엔 소스 디렉터리별 서브그래프 7개(`diagram 공통`·`배치기`·
+`mermaid 파서`·`PlantUML 파서`·`markdown`·`방법론 스크립트`·`진입점·기반`)로 묶어 다시 그린 것이다.
+68개 간선 중 37개가 그룹 경계를 넘나든다 — subgraph를 가로지르는 간선이 많으면 배치 재시도(방향
+전환·층 접기)가 느려지던 성능 결함(`layout-crossgroup-edge-blowup`)을 실제 데이터로 다시 확인하는
+회귀 방지용 예시다. 라벨이 길어 폭 250 이상(`dg -w 250` 이상)에서만 그림으로 뜨고, 그보다 좁으면
+dg가 원래 하는 대로 일반 코드블록으로 물러난다 — 어느 쪽이든 순간적으로 끝난다(수정 전이었다면
+접기 쳇바퀴로 수 초가 걸렸을 구조다).
+
+```mermaid
+flowchart TD
+  subgraph G_CORE["diagram 공통"]
+    diagram_canvas_rs_He0a65774["canvas — 15 fn, 2 struct, 0 trait"]
+    src_diagram_ir_rs_H56b46821["ir — 11 fn, 6 struct, 0 trait"]
+    src_diagram_mod_rs_H83fdbbae["mod — 6 fn"]
+    src_diagram_options_rs_H647c5fd4["options — 9 fn, 1 struct, 0 trait"]
+  end
+  subgraph G_LAYOUT["배치기(layout)"]
+    diagram_layout_shape_rs_Hb6b2de51["shape — 6 fn"]
+    src_diagram_layout_block_rs_Ha4e63d31["block — 14 fn, 4 struct, 0 trait"]
+    src_diagram_layout_chart_rs_He717f567["chart — 22 fn, 4 struct, 0 trait"]
+    src_diagram_layout_gitgraph_rs_H9035d785["gitgraph — 4 fn, 2 struct, 0 trait"]
+    src_diagram_layout_graph_rs_H4fec7bb7["graph — 79 fn, 5 struct, 0 trait"]
+    src_diagram_layout_mod_rs_Hc27390de["mod — 0 fn"]
+    src_diagram_layout_sequence_rs_H50ebd559["sequence — 12 fn, 3 struct, 0 trait"]
+  end
+  subgraph G_MERMAID["mermaid 파서"]
+    diagram_mermaid_class_rs_H72d56c82["class — 9 fn"]
+    diagram_mermaid_sequence_rs_H3f0d0563["sequence — 5 fn"]
+    diagram_mermaid_state_rs_H2d61ea31["state — 4 fn"]
+    src_diagram_mermaid_block_rs_H7e47890b["block — 10 fn, 4 struct, 0 trait"]
+    src_diagram_mermaid_er_rs_H44b0851c["er — 5 fn"]
+    src_diagram_mermaid_flow_rs_Hb01cc0be["flow — 8 fn, 2 struct, 0 trait"]
+    src_diagram_mermaid_gitgraph_rs_H04fd618f["gitgraph — 4 fn, 1 struct, 0 trait"]
+    src_diagram_mermaid_mod_rs_H865a6757["mod — 2 fn"]
+    src_diagram_mermaid_text_rs_Hb575b48f["text — 6 fn"]
+  end
+  subgraph G_PLANTUML["PlantUML 파서"]
+    diagram_plantuml_component_rs_H0e2ebd8a["component — 6 fn"]
+    diagram_plantuml_relation_rs_H5cad021b["relation — 4 fn, 1 struct, 0 trait"]
+    diagram_plantuml_sequence_rs_H642ad80f["sequence — 5 fn, 1 struct, 0 trait"]
+    diagram_plantuml_text_rs_H495e030d["text — 8 fn"]
+    src_diagram_plantuml_class_rs_H54a9b560["class — 8 fn"]
+    src_diagram_plantuml_mod_rs_H98fa624c["mod — 2 fn"]
+  end
+  subgraph G_MARKDOWN["markdown"]
+    markdown_table_rs_H348d2b01["table — 1 fn"]
+    markdown_wrap_rs_H2f95d28f["wrap — 2 fn, 1 struct, 0 trait"]
+    src_markdown_mod_rs_He44c4910["mod — 21 fn, 5 struct, 0 trait"]
+  end
+  subgraph G_TOOLING["방법론 스크립트"]
+    methodology_skills_multi_agent_sessions_scripts_session_py_H992745f8["session — 52 fn"]
+  end
+  subgraph G_ROOT["진입점·기반"]
+    examples_lib_usage_rs_Ha355b5c9["lib_usage — 1 fn"]
+    line_rs_Hc8ff652c["line — 17 fn, 3 struct, 0 trait"]
+    pager_rs_H4b0ff4c1["pager — 13 fn, 2 struct, 0 trait"]
+    src_cli_rs_Hb2812f19["cli — 1 fn, 1 struct, 0 trait"]
+    src_lib_rs_Hb1a35a68["lib — 5 fn, 1 struct, 0 trait"]
+    src_main_rs_H42cb6807["main — 7 fn"]
+    style_rs_Hd51fafb9["style — 13 fn, 2 struct, 0 trait"]
+    text_rs_H94e4f82b["text — 5 fn"]
+  end
+  diagram_canvas_rs_He0a65774 -->|"1"| line_rs_Hc8ff652c
+  diagram_canvas_rs_He0a65774 -->|"3"| text_rs_H94e4f82b
+  diagram_layout_shape_rs_Hb6b2de51 -->|"2"| text_rs_H94e4f82b
+  diagram_plantuml_component_rs_H0e2ebd8a -->|"2"| diagram_plantuml_relation_rs_H5cad021b
+  diagram_plantuml_component_rs_H0e2ebd8a -->|"5"| diagram_plantuml_text_rs_H495e030d
+  diagram_plantuml_sequence_rs_H642ad80f -->|"2"| diagram_plantuml_text_rs_H495e030d
+  examples_lib_usage_rs_Ha355b5c9 -->|"1"| style_rs_Hd51fafb9
+  line_rs_Hc8ff652c -->|"2"| text_rs_H94e4f82b
+  markdown_table_rs_H348d2b01 -->|"3"| line_rs_Hc8ff652c
+  markdown_table_rs_H348d2b01 -->|"1"| markdown_wrap_rs_H2f95d28f
+  markdown_table_rs_H348d2b01 -->|"1"| text_rs_H94e4f82b
+  markdown_wrap_rs_H2f95d28f -->|"2"| text_rs_H94e4f82b
+  pager_rs_H4b0ff4c1 -->|"3"| line_rs_Hc8ff652c
+  pager_rs_H4b0ff4c1 -->|"1"| src_markdown_mod_rs_He44c4910
+  pager_rs_H4b0ff4c1 -->|"2"| text_rs_H94e4f82b
+  src_diagram_layout_block_rs_Ha4e63d31 -->|"2"| diagram_layout_shape_rs_Hb6b2de51
+  src_diagram_layout_block_rs_Ha4e63d31 -->|"5"| text_rs_H94e4f82b
+  src_diagram_layout_chart_rs_He717f567 -->|"6"| line_rs_Hc8ff652c
+  src_diagram_layout_chart_rs_He717f567 -->|"6"| text_rs_H94e4f82b
+  src_diagram_layout_gitgraph_rs_H9035d785 -->|"2"| text_rs_H94e4f82b
+  src_diagram_layout_graph_rs_H4fec7bb7 -->|"3"| diagram_layout_shape_rs_Hb6b2de51
+  src_diagram_layout_graph_rs_H4fec7bb7 -->|"2"| line_rs_Hc8ff652c
+  src_diagram_layout_graph_rs_H4fec7bb7 -->|"6"| text_rs_H94e4f82b
+  src_diagram_layout_sequence_rs_H50ebd559 -->|"2"| diagram_layout_shape_rs_Hb6b2de51
+  src_diagram_layout_sequence_rs_H50ebd559 -->|"5"| text_rs_H94e4f82b
+  src_diagram_mermaid_block_rs_H7e47890b -->|"4"| src_diagram_mermaid_text_rs_Hb575b48f
+  src_diagram_mermaid_er_rs_H44b0851c -->|"1"| src_diagram_ir_rs_H56b46821
+  src_diagram_mermaid_er_rs_H44b0851c -->|"3"| src_diagram_mermaid_text_rs_Hb575b48f
+  src_diagram_mermaid_flow_rs_Hb01cc0be -->|"5"| src_diagram_mermaid_text_rs_Hb575b48f
+  src_diagram_mermaid_gitgraph_rs_H04fd618f -->|"3"| src_diagram_mermaid_text_rs_Hb575b48f
+  src_diagram_mermaid_mod_rs_H865a6757 -->|"1"| diagram_mermaid_state_rs_H2d61ea31
+  src_diagram_mermaid_mod_rs_H865a6757 -->|"1"| src_diagram_layout_block_rs_Ha4e63d31
+  src_diagram_mermaid_mod_rs_H865a6757 -->|"1"| src_diagram_layout_gitgraph_rs_H9035d785
+  src_diagram_mermaid_mod_rs_H865a6757 -->|"1"| src_diagram_layout_graph_rs_H4fec7bb7
+  src_diagram_mermaid_mod_rs_H865a6757 -->|"1"| src_diagram_layout_sequence_rs_H50ebd559
+  src_diagram_mermaid_mod_rs_H865a6757 -->|"1"| src_diagram_mermaid_block_rs_H7e47890b
+  src_diagram_mermaid_mod_rs_H865a6757 -->|"1"| src_diagram_mermaid_er_rs_H44b0851c
+  src_diagram_mermaid_mod_rs_H865a6757 -->|"1"| src_diagram_mermaid_flow_rs_Hb01cc0be
+  src_diagram_mermaid_mod_rs_H865a6757 -->|"1"| src_diagram_mermaid_gitgraph_rs_H04fd618f
+  src_diagram_mermaid_mod_rs_H865a6757 -->|"2"| src_diagram_mermaid_text_rs_Hb575b48f
+  src_diagram_mermaid_mod_rs_H865a6757 -->|"1"| src_diagram_plantuml_class_rs_H54a9b560
+  src_diagram_mod_rs_H83fdbbae -->|"1"| line_rs_Hc8ff652c
+  src_diagram_mod_rs_H83fdbbae -->|"3"| src_diagram_mermaid_mod_rs_H865a6757
+  src_diagram_mod_rs_H83fdbbae -->|"3"| src_diagram_plantuml_mod_rs_H98fa624c
+  src_diagram_mod_rs_H83fdbbae -->|"1"| text_rs_H94e4f82b
+  src_diagram_plantuml_class_rs_H54a9b560 -->|"2"| diagram_plantuml_relation_rs_H5cad021b
+  src_diagram_plantuml_class_rs_H54a9b560 -->|"5"| diagram_plantuml_text_rs_H495e030d
+  src_diagram_plantuml_class_rs_H54a9b560 -->|"1"| src_diagram_ir_rs_H56b46821
+  src_diagram_plantuml_class_rs_H54a9b560 -->|"5"| src_diagram_mermaid_text_rs_Hb575b48f
+  src_diagram_plantuml_mod_rs_H98fa624c -->|"1"| diagram_plantuml_component_rs_H0e2ebd8a
+  src_diagram_plantuml_mod_rs_H98fa624c -->|"1"| diagram_plantuml_relation_rs_H5cad021b
+  src_diagram_plantuml_mod_rs_H98fa624c -->|"1"| diagram_plantuml_sequence_rs_H642ad80f
+  src_diagram_plantuml_mod_rs_H98fa624c -->|"1"| src_diagram_layout_graph_rs_H4fec7bb7
+  src_diagram_plantuml_mod_rs_H98fa624c -->|"1"| src_diagram_layout_sequence_rs_H50ebd559
+  src_diagram_plantuml_mod_rs_H98fa624c -->|"2"| src_diagram_mermaid_text_rs_Hb575b48f
+  src_diagram_plantuml_mod_rs_H98fa624c -->|"1"| src_diagram_plantuml_class_rs_H54a9b560
+  src_lib_rs_Hb1a35a68 -->|"3"| src_diagram_mod_rs_H83fdbbae
+  src_lib_rs_Hb1a35a68 -->|"1"| src_markdown_mod_rs_He44c4910
+  src_lib_rs_Hb1a35a68 -->|"1"| style_rs_Hd51fafb9
+  src_main_rs_H42cb6807 -->|"2"| src_diagram_mod_rs_H83fdbbae
+  src_main_rs_H42cb6807 -->|"2"| src_diagram_options_rs_H647c5fd4
+  src_main_rs_H42cb6807 -->|"1"| src_markdown_mod_rs_He44c4910
+  src_main_rs_H42cb6807 -->|"3"| style_rs_Hd51fafb9
+  src_markdown_mod_rs_He44c4910 -->|"9"| line_rs_Hc8ff652c
+  src_markdown_mod_rs_He44c4910 -->|"1"| markdown_table_rs_H348d2b01
+  src_markdown_mod_rs_He44c4910 -->|"2"| markdown_wrap_rs_H2f95d28f
+  src_markdown_mod_rs_He44c4910 -->|"2"| src_diagram_mod_rs_H83fdbbae
+  src_markdown_mod_rs_He44c4910 -->|"2"| text_rs_H94e4f82b
+%% 그룹 7개, 노드 38개, 간선 68개(37개가 그룹 경계를 넘음) — layout-crossgroup-edge-blowup 회귀 확인용
+```
