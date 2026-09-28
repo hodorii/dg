@@ -3,10 +3,42 @@
 //! 종류별로 튜플 표 하나씩 두고, `xml_name()`·`from_xml_name()`·`label()`이 모두 같은 표를
 //! 읽는다 — `match`가 둘로 갈라지면 토큰과 라벨이 어긋난다.
 
-use super::model::{EventTrigger, GatewayKind, TaskKind};
+use super::model::{ElementKind, EventPosition, EventTrigger, GatewayKind, TaskKind};
 
 pub const CALL_ACTIVITY_LABEL: &str = "«call»";
 pub const DATA_OBJECT_LABEL: &str = "«data»";
+
+/// `startEvent` … `textAnnotation`(태스크·게이트웨이 제외 12행) — 이벤트는 항상 `trigger: None`으로
+/// 두고 호출자(XML은 `event_trigger_of`, YAML은 `trigger:` 필드)가 채운다.
+const ELEMENT_KIND_TABLE: &[(&str, ElementKind)] = &[
+    ("startEvent", ElementKind::Event { position: EventPosition::Start, trigger: None }),
+    ("intermediateCatchEvent", ElementKind::Event { position: EventPosition::Intermediate, trigger: None }),
+    ("intermediateThrowEvent", ElementKind::Event { position: EventPosition::Intermediate, trigger: None }),
+    ("boundaryEvent", ElementKind::Event { position: EventPosition::Intermediate, trigger: None }),
+    ("endEvent", ElementKind::Event { position: EventPosition::End, trigger: None }),
+    ("subProcess", ElementKind::Subprocess),
+    ("adHocSubProcess", ElementKind::Subprocess),
+    ("transaction", ElementKind::Subprocess),
+    ("callActivity", ElementKind::CallActivity),
+    ("dataObjectReference", ElementKind::DataObject),
+    ("dataStoreReference", ElementKind::DataStore),
+    ("textAnnotation", ElementKind::TextAnnotation),
+];
+
+/// 로컬 요소명 → 종류. 이벤트는 `trigger: None`으로 돌려주고 호출자가 채운다. `boundaryEvent`는
+/// `Intermediate`. 표에 없으면 태스크·게이트웨이 표를 차례로 본다. 대소문자 그대로 정확 일치만.
+pub fn element_kind_from_xml_name(token: &str) -> Option<ElementKind> {
+    if let Some((_, kind)) = ELEMENT_KIND_TABLE.iter().find(|(name, _)| *name == token) {
+        return Some(*kind);
+    }
+    if let Some(kind) = TaskKind::from_xml_name(token) {
+        return Some(ElementKind::Task(kind));
+    }
+    if let Some(kind) = GatewayKind::from_xml_name(token) {
+        return Some(ElementKind::Gateway(kind));
+    }
+    None
+}
 
 const TASK_KIND_TABLE: &[(TaskKind, &str, Option<&str>)] = &[
     (TaskKind::None, "task", None),
@@ -124,5 +156,23 @@ mod tests {
     #[test]
     fn kindless_task_has_no_label() {
         assert_eq!(TaskKind::None.label(), None);
+    }
+
+    #[test]
+    fn element_kind_table_covers_its_twelve_rows_plus_task_and_gateway_lookup() {
+        for &(token, kind) in ELEMENT_KIND_TABLE {
+            assert_eq!(element_kind_from_xml_name(token), Some(kind), "{token}");
+        }
+        assert_eq!(ELEMENT_KIND_TABLE.len(), 12);
+        assert_eq!(element_kind_from_xml_name("task"), Some(ElementKind::Task(TaskKind::None)));
+        assert_eq!(element_kind_from_xml_name("userTask"), Some(ElementKind::Task(TaskKind::User)));
+        assert_eq!(element_kind_from_xml_name("exclusiveGateway"), Some(ElementKind::Gateway(GatewayKind::Exclusive)));
+    }
+
+    #[test]
+    fn boundary_event_is_intermediate_and_unknown_tokens_are_none() {
+        assert_eq!(element_kind_from_xml_name("boundaryEvent"), Some(ElementKind::Event { position: EventPosition::Intermediate, trigger: None }));
+        assert_eq!(element_kind_from_xml_name("StartEvent"), None);
+        assert_eq!(element_kind_from_xml_name("foo"), None);
     }
 }

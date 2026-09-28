@@ -1,0 +1,45 @@
+participants:
+  - customer:
+      name: 고객
+      nodes:
+        - start-cust: startEvent 시작
+        - order-task: "userTask 주문서\n작성"
+        - end-cust: endEvent 완료
+  - vendor:
+      name: 판매사
+      lanes:
+        - lane-sales:
+            name: 영업
+            nodes:
+              - msg-start:
+                  kind: startEvent
+                  trigger: messageEventDefinition
+              - review-task: userTask 주문 검토
+              - boundary-error:
+                  kind: boundaryEvent
+                  name: 시한 초과
+                  trigger: errorEventDefinition
+                  attached_to: review-task
+              - end-cancel: endEvent 취소
+              - notify-oos: serviceTask 품절 안내
+              - end-oos: endEvent 품절 취소
+        - lane-warehouse:
+            name: 창고
+            nodes:
+              - gateway-stock:
+                  kind: exclusiveGateway
+                  name: 재고 있음?
+                  default: notify-oos
+              - prepare-task: userTask 출고 준비
+              - end-shipped: endEvent 완료
+flows:
+  - start-cust --> order-task
+  - order-task --> end-cust
+  - msg-start --> review-task
+  - review-task --> gateway-stock
+  - gateway-stock -- 예 --> prepare-task
+  - gateway-stock --> notify-oos
+  - boundary-error --> end-cancel
+  - notify-oos --> end-oos
+  - prepare-task --> end-shipped
+  - order-task -.-> msg-start

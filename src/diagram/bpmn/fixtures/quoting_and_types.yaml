@@ -1,0 +1,21 @@
+nodes:
+  - a:
+      kind: task
+      name: 'it''s a test'
+  - b:
+      kind: task
+      name: "line1\nline2"
+  - c:
+      kind: task
+      name: "007"
+  - d:
+      kind: task
+      name: true
+  - e:
+      kind: task
+      name: ~
+flows:
+  - a --> b
+  - b --> c
+  - c --> d
+  - d --> e

@@ -8,9 +8,11 @@
 pub mod lower;
 pub mod model;
 pub mod parse_xml;
+pub mod parse_yaml;
 pub mod validate;
 pub mod vocabulary;
 pub mod xml;
+pub mod yaml;
 
 use crate::diagram::layout;
 use crate::diagram::options::DiagramOptions;
@@ -18,15 +20,23 @@ use crate::line::Line;
 use crate::style::Theme;
 use model::Model;
 
-/// 코드펜스 본문의 문법 갈래: BPMN XML이면 `Some("xml")`(후속 스펙: `"yaml"` …).
+/// 코드펜스 본문의 문법 갈래: BPMN XML이면 `Some("xml")`, 아니면 YAML 스니핑이 참이면
+/// `Some("yaml")`(하류 `bizprocess-bpmn` 스펙이 다른 갈래를 더한다). XML 스니핑이 먼저다.
 pub fn kind_of(source: &str) -> Option<&'static str> {
-    parse_xml::looks_like_bpmn(source).then_some("xml")
+    if parse_xml::looks_like_bpmn(source) {
+        Some("xml")
+    } else if parse_yaml::looks_like_bpmn_yaml(source) {
+        Some("yaml")
+    } else {
+        None
+    }
 }
 
 /// `kind_of` → 갈래별 파서 → `render_model`. 파서 실패는 `None`.
 pub fn render(source: &str, theme: &Theme, width: usize, options: DiagramOptions) -> Option<(&'static str, Vec<Line>)> {
     let model = match kind_of(source)? {
         "xml" => parse_xml::parse(source).ok()?,
+        "yaml" => parse_yaml::parse(source).ok()?,
         _ => return None,
     };
     render_model(&model, theme, width, options)
@@ -168,6 +178,20 @@ pub(crate) mod fixtures {
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
 "#;
+
+    /// 주문 처리 협업 — 위 XML fixture와 같은 참여자·레인·노드·흐름 순서로 옮긴 YAML(7.4). 통합
+    /// 테스트가 XML fixture 렌더링과 줄 단위로 비교한다.
+    pub const ORDER_PROCESSING_YAML: &str = include_str!("fixtures/order_processing.yaml");
+    /// 같은 문서를 들여쓰기 폭 2/4/혼합으로 쓴 것(2.1) — 셋 다 같은 그림이어야 한다.
+    pub const WIDTH_TWO_YAML: &str = include_str!("fixtures/width_two.yaml");
+    pub const WIDTH_FOUR_YAML: &str = include_str!("fixtures/width_four.yaml");
+    pub const WIDTH_MIXED_YAML: &str = include_str!("fixtures/width_mixed.yaml");
+    /// 홑따옴표·겹따옴표 이스케이프와 타입처럼 보이는 평문(2.2, 2.4, 2.5).
+    pub const QUOTING_AND_TYPES_YAML: &str = include_str!("fixtures/quoting_and_types.yaml");
+    /// `participants:` 없이 최상위 `nodes:`만 있는 평면 문서(3.5).
+    pub const FLAT_NODES_YAML: &str = include_str!("fixtures/flat_nodes.yaml");
+    /// 참여자 안 레인 안 하위 레인(3.3).
+    pub const NESTED_LANES_YAML: &str = include_str!("fixtures/nested_lanes.yaml");
 }
 
 #[cfg(test)]
@@ -547,6 +571,96 @@ mod tests {
         assert_eq!(without_diagram.1.iter().map(Line::text).collect::<Vec<_>>(), lines.iter().map(Line::text).collect::<Vec<_>>());
 
         eprintln!("{rendered}");
+    }
+
+    // --- bpmn-yaml: 갈래 배선(3.1) ---
+
+    #[test]
+    fn kind_of_recognizes_xml_first_then_yaml_then_neither() {
+        assert_eq!(kind_of(&fixtures::order_processing_collaboration()), Some("xml"));
+        assert_eq!(kind_of(fixtures::ORDER_PROCESSING_YAML), Some("yaml"));
+        assert_eq!(kind_of("process:\n  id: p1\n"), None);
+    }
+
+    #[test]
+    fn flat_yaml_nodes_render_as_process_without_participants() {
+        let (kind, model_participants) = {
+            let model = parse_yaml::parse(fixtures::FLAT_NODES_YAML).expect("평면 문서는 파싱돼야 한다");
+            (render(fixtures::FLAT_NODES_YAML, &Theme::none(), 100, DiagramOptions::default()).map(|(k, _)| k), model.participants.len())
+        };
+        assert_eq!(kind, Some("process"));
+        assert_eq!(model_participants, 0);
+    }
+
+    #[test]
+    fn order_processing_yaml_renders_as_collaboration() {
+        let (kind, _) = render(fixtures::ORDER_PROCESSING_YAML, &Theme::none(), 100, DiagramOptions::default()).expect("렌더링돼야 한다");
+        assert_eq!(kind, "collaboration");
+    }
+
+    #[test]
+    fn a_yaml_document_with_a_schema_error_renders_nothing() {
+        // 최상위 키 목록에 없는 `nmae:`(6.3) — 스니핑은 통과하지 못하므로(구조 키가 없다)
+        // `nodes:`를 곁들여 스니핑은 통과시키고 스키마 오류만 남긴다.
+        assert_eq!(render("nodes:\n  - a:\n      nmae: 오타\n      kind: task\n", &Theme::none(), 100, DiagramOptions::default()), None);
+    }
+
+    #[test]
+    fn participants_without_any_nodes_render_nothing() {
+        assert_eq!(render("participants:\n  - p1: 이름만\n", &Theme::none(), 100, DiagramOptions::default()), None);
+    }
+
+    // --- bpmn-yaml: YAML fixture ≡ XML fixture 렌더링(4.1) ---
+
+    #[test]
+    fn yaml_fixture_matches_the_xml_fixture_element_and_flow_counts_and_rendering() {
+        let xml_fixture = fixtures::order_processing_collaboration();
+        let xml_model = parse_xml::parse(&xml_fixture).expect("XML fixture는 파싱돼야 한다");
+        let yaml_model = parse_yaml::parse(fixtures::ORDER_PROCESSING_YAML).expect("YAML fixture는 파싱돼야 한다");
+        assert_eq!(yaml_model.elements.len(), xml_model.elements.len());
+        assert_eq!(yaml_model.flows.len(), xml_model.flows.len());
+
+        let (xml_kind, xml_lines) = render(&xml_fixture, &Theme::none(), 100, DiagramOptions::default()).expect("XML fixture는 렌더링돼야 한다");
+        let (yaml_kind, yaml_lines) = render(fixtures::ORDER_PROCESSING_YAML, &Theme::none(), 100, DiagramOptions::default()).expect("YAML fixture는 렌더링돼야 한다");
+        assert_eq!(xml_kind, "collaboration");
+        assert_eq!(yaml_kind, "collaboration");
+        let xml_text = xml_lines.iter().map(Line::text).collect::<Vec<_>>();
+        let yaml_text = yaml_lines.iter().map(Line::text).collect::<Vec<_>>();
+        assert_eq!(yaml_text, xml_text, "YAML fixture 렌더링이 XML fixture 렌더링과 줄 단위로 같아야 한다");
+
+        let rendered = yaml_text.join("\n");
+        for glyph in ["○", "◉", "◎", "«user»", "«service»", "«message»", "«error»", "× 재고 있음?", "╱", "╌"] {
+            assert!(rendered.contains(glyph), "렌더링 결과에 {glyph:?}가 있어야 한다:\n{rendered}");
+        }
+        // `{text}` 육안 확인용(cargo test -- --nocapture): 풀 두 띠·레인 두 띠·경계 점선이 보이는지.
+        eprintln!("{rendered}");
+    }
+
+    #[test]
+    fn xml_fixture_rendering_is_unchanged_by_the_vocabulary_promotion() {
+        // 1.4의 어휘 승격 회귀(7.2) — XML fixture 렌더링에 이전과 같은 글자들이 그대로 있다.
+        let fixture = fixtures::order_processing_collaboration();
+        let (_, lines) = render(&fixture, &Theme::none(), 100, DiagramOptions::default()).expect("렌더링돼야 한다");
+        let rendered = lines.iter().map(Line::text).collect::<Vec<_>>().join("\n");
+        assert!(rendered.contains("× 재고 있음?"));
+        assert!(rendered.contains('╱'));
+        assert!(rendered.contains("«error»"));
+    }
+
+    #[test]
+    fn vertical_orientation_in_yaml_stacks_pool_titles_on_one_line_and_the_direction_option_overrides_it() {
+        // 참여자만 있고 노드가 없으면 `render_model`이 `None`이므로 노드를 하나씩 둔다.
+        let source = "orientation: vertical\nparticipants:\n  - p1:\n      name: 참여자1\n      nodes:\n        - a: task\n  - p2:\n      name: 참여자2\n      nodes:\n        - b: task\n";
+        let (_, lines) = render(source, &Theme::none(), 100, DiagramOptions::default()).expect("렌더링돼야 한다");
+        let rendered = lines.iter().map(Line::text).collect::<Vec<_>>().join("\n");
+        let row_of = |needle: &str| lines.iter().position(|l| l.text().contains(needle)).expect("있어야 한다");
+        assert_eq!(row_of("참여자1"), row_of("참여자2"), "orientation: vertical은 풀 제목을 한 줄에 나란히 둔다:\n{rendered}");
+
+        // 명령줄 방향 옵션(문서와 반대: LeftRight)이 문서의 `orientation: vertical`(TopDown)을 덮는다(3.8).
+        let options = DiagramOptions { direction: Some((crate::diagram::ir::Direction::LeftRight, false)), ..DiagramOptions::default() };
+        let (_, overridden) = render(source, &Theme::none(), 100, options).expect("렌더링돼야 한다");
+        let overridden_row_of = |needle: &str| overridden.iter().position(|l| l.text().contains(needle)).expect("있어야 한다");
+        assert_ne!(overridden_row_of("참여자1"), overridden_row_of("참여자2"), "덮어쓴 방향에서는 풀 제목이 다른 줄에 있어야 한다");
     }
 }
 

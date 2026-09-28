@@ -934,6 +934,27 @@ mod tests {
         assert!(out.contains(&"뒤 문단".to_string()));
     }
 
+    /// bpmn-yaml 6.5 — `bpmn` 펜스 안 YAML이 성공하면 `◈ bpmn · …` 캡션의 그림이 문단 사이에 놓인다.
+    #[test]
+    fn bpmn_fence_with_valid_yaml_becomes_a_diagram_between_paragraphs() {
+        let source = format!("앞 문단\n\n```bpmn\n{}\n```\n\n뒤 문단\n", crate::diagram::bpmn::fixtures::FLAT_NODES_YAML);
+        let out = plain(&source, 60);
+        assert!(out.contains(&"앞 문단".to_string()));
+        assert!(out.iter().any(|l| l.contains("bpmn · process")), "{out:?}");
+        assert!(out.contains(&"뒤 문단".to_string()));
+    }
+
+    /// bpmn-yaml 6.5 — 스니핑은 통과하지만 스키마 오류(모르는 종류 토큰)로 파싱에 실패한 YAML
+    /// 펜스는 그 펜스만 코드블록이 되고 앞뒤 문단은 정상 렌더링된다.
+    #[test]
+    fn bpmn_fence_with_invalid_yaml_falls_back_to_a_code_block() {
+        let out = plain("앞 문단\n\n```bpmn\nnodes:\n  - a: UnknownKind\n```\n\n뒤 문단\n", 60);
+        assert!(out.contains(&"앞 문단".to_string()));
+        assert!(out.iter().any(|l| l.starts_with("╭─ bpmn ")));
+        assert!(out.contains(&"│ nodes:".to_string()));
+        assert!(out.contains(&"뒤 문단".to_string()));
+    }
+
     #[test]
     fn front_matter_is_hidden() {
         let out = plain("---\ntitle: x\n---\n\nbody\n", 40);

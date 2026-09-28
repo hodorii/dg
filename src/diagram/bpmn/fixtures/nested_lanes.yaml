@@ -1,0 +1,16 @@
+participants:
+  - vendor:
+      name: 판매사
+      lanes:
+        - dept:
+            name: 부서
+            lanes:
+              - team:
+                  name: 팀
+                  nodes:
+                    - a: startEvent
+                    - b: task 처리
+                    - c: endEvent
+flows:
+  - a --> b
+  - b --> c

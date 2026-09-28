@@ -10,11 +10,11 @@ struct NodeRef {
     shape: Option<Shape>,
 }
 
-struct Link {
-    label: String,
-    kind: LineKind,
-    head: Marker,
-    tail: Marker,
+pub(crate) struct Link {
+    pub(crate) label: String,
+    pub(crate) kind: LineKind,
+    pub(crate) head: Marker,
+    pub(crate) tail: Marker,
 }
 
 pub fn parse(source: &str) -> Graph {
@@ -173,7 +173,7 @@ fn read_node(chars: &[char], cursor: &mut usize) -> Option<NodeRef> {
     Some(node)
 }
 
-fn read_link(chars: &[char], cursor: &mut usize) -> Option<Link> {
+pub(crate) fn read_link(chars: &[char], cursor: &mut usize) -> Option<Link> {
     skip_spaces(chars, cursor);
     let mut position = *cursor;
     let mut tail = Marker::None;

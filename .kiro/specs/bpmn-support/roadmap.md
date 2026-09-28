@@ -58,7 +58,7 @@ BPMN 2.0 렌더링을 세 입력 문법(BPMN XML/biz-process.md/향후 mermaid)�
   유지": YAML이 손으로 만든 편의 문법이라 그것이 먼저 모델 형태를 정하면
   모델이 표준이 아니라 YAML에 맞춰질 위험이 있음).
   Dependencies: bpmn-model
-- [ ] bpmn-yaml -- `bpmn/{yaml, parse_yaml}.rs`(YAML 블록 스타일 하위집합
+- [x] bpmn-yaml -- `bpmn/{yaml, parse_yaml}.rs`(YAML 블록 스타일 하위집합
   손파싱, 크레이트 추가 없음 — research.md의 fable 리서치로 확정된 문법
   · 예시 · 기존 파서 재사용 지점 그대로). `bpmn-xml`이 검증한 `bpmn::Model`을
   그대로 옮기는 대안 직렬화로 뒤에 둔다.
