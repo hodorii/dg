@@ -6,8 +6,8 @@
 `yaml` 갈래를 더하는 기능이다. 검증용 문서는 테스트 전용 fixture(문자열 리터럴과 `include_str!` 파일)이며
 `examples/` 파일은 추가하지 않는다.
 
-- [ ] 1. 기반: 회귀 기준선·YAML 리더·공유 이음새
-- [ ] 1.1 (P) 기존 출력의 바이트 기준선 채취
+- [x] 1. 기반: 회귀 기준선·YAML 리더·공유 이음새
+- [x] 1.1 (P) 기존 출력의 바이트 기준선 채취
   - 코드를 손대기 전에 `examples/*.md` 전부를 `dg -P --width 100`으로 렌더링해 스크래치 디렉터리에 저장(4.4의
     diff 기준). 기준선 테스트 수(434)도 함께 기록. XML fixture의 렌더링 동일성(7.2)은 4.1의 통합 테스트가 담당
   - DONE: 예제 파일마다 기준 출력 파일이 하나씩 있고, 같은 명령을 다시 돌려도 같은 내용
@@ -15,7 +15,7 @@
   - _Difficulty: low_
   - _Boundary: 검증_
 
-- [ ] 1.2 (P) YAML 리더 1 — 트리·스칼라·주석·들여쓰기
+- [x] 1.2 (P) YAML 리더 1 — 트리·스칼라·주석·들여쓰기
   - design §Components "bpmn::yaml"의 값·오류 타입을 그대로 만들고, 줄 단위로 따옴표 밖 `#`(줄 시작 또는 공백
     뒤) 주석 제거·줄 끝 공백 제거·빈 줄 건너뛰기 → 선두 공백 수로 들여쓰기 → `- `/줄 끝 `-` 시퀀스 항목과
     `키: 값`/`키:` 매핑 항목을 명시적 스택으로 트리에 쌓는다. `- 키: 값`은 `키` 열에서 시작하는 매핑이고 같은
@@ -32,7 +32,7 @@
   - _Difficulty: high_
   - _Boundary: bpmn::yaml_
 
-- [ ] 1.3 YAML 리더 2 — 거부 목록·구조 오류·깊이 상한
+- [x] 1.3 YAML 리더 2 — 거부 목록·구조 오류·깊이 상한
   - 평문이 `&`·`*`·`!`·`[`·`{`·`|`·`>`·`? `로 시작하면 해당 미지원 기능 오류, 첫 내용 줄이 아닌 `---`/`...`는 다중
     문서 오류. 선두 탭 → 탭 오류; 열린 어떤 수준과도 맞지 않는 내어쓰기와 매핑 값 다음 줄의 더 깊은 평문(여러 줄
     평문) → 들여쓰기 오류; `키:`도 `- `도 아닌 줄과 닫는 따옴표 뒤 남은 글 → 형식 오류; 같은 수준에 항목과 키
@@ -46,7 +46,7 @@
   - _Boundary: bpmn::yaml_
   - _Depends: 1.2_
 
-- [ ] 1.4 (P) 노드 종류 표를 어휘 모듈로 승격(XML 파서 동작 불변)
+- [x] 1.4 (P) 노드 종류 표를 어휘 모듈로 승격(XML 파서 동작 불변)
   - design §Components "bpmn::vocabulary"대로 로컬 이름 12개(`startEvent` … `textAnnotation`, `boundaryEvent`는
     중간 이벤트) → 종류 표를 어휘 모듈에 두고, 태스크·게이트웨이는 기존 두 표를 거치는 단일 조회 함수를 만든다.
     XML 파서의 요소 종류 판정은 이 함수의 결과에 이벤트 트리거만 얹도록 바꾼다 — 결과 동일
@@ -56,7 +56,7 @@
   - _Difficulty: mid_
   - _Boundary: bpmn::vocabulary, bpmn::parse_xml_
 
-- [ ] 1.5 (P) mermaid 화살 읽기의 크레이트 내부 공개(가시성만)
+- [x] 1.5 (P) mermaid 화살 읽기의 크레이트 내부 공개(가시성만)
   - mermaid 흐름도 파서의 화살 구조체(라벨·선 종류·머리·꼬리)와 화살 읽기 함수를 크레이트 내부에 공개한다.
     본문·시그니처·mermaid 테스트는 바꾸지 않는다
   - DONE: mermaid 흐름도 단위 테스트 전부 무수정 통과, `cargo clippy --all-targets -- -D warnings` 클린(7.7)
@@ -64,8 +64,8 @@
   - _Difficulty: low_
   - _Boundary: mermaid::flow_
 
-- [ ] 2. 핵심: 스키마 트리 → 모델
-- [ ] 2.1 BPMN YAML 스니핑 판정
+- [x] 2. 핵심: 스키마 트리 → 모델
+- [x] 2.1 BPMN YAML 스니핑 판정
   - 열 0 내용 줄(주석·빈 줄·선두 `---` 제외)이 전부 최상위 키 다섯(`title`·`orientation`·`participants`·`nodes`·
     `flows`) 중 하나의 `키:` 줄이고 구조 키(`participants`·`nodes`·`flows`)가 하나 이상이면 참. 문서를 파싱하지
     않는다. 최상위 키 목록은 상수 하나로 두어 2.2의 최상위 검사와 공유
@@ -76,7 +76,7 @@
   - _Boundary: bpmn::parse_yaml_
   - _Depends: 1.2_
 
-- [ ] 2.2 구조 — 최상위·제목·방향·참여자·레인·소속
+- [x] 2.2 구조 — 최상위·제목·방향·참여자·레인·소속
   - design "bpmn::parse_yaml" 빌드 순서 1~4: 루트는 매핑이고 키는 최상위 키 집합 안(아니면 모르는 키/모양 오류)
     → 제목 스칼라 trim → 방향은 `horizontal`/`vertical` 정확 일치(그 외 방향 오류) → 참여자 시퀀스의 항목은 단일
     키 매핑(키 = id): 값이 스칼라면 이름만 있는 참여자(레인·노드 없음), 매핑이면 키 ⊂ {`name`, `lanes`, `nodes`};
@@ -92,7 +92,7 @@
   - _Boundary: bpmn::parse_yaml_
   - _Depends: 1.3_
 
-- [ ] 2.3 노드 — 두 표기·종류·트리거·경계 부착·default 수집
+- [x] 2.3 노드 — 두 표기·종류·트리거·경계 부착·default 수집
   - 빌드 순서 5: 노드 항목(단일 키 매핑, 키 = id)의 값이 스칼라면 첫 공백 앞 = 종류 토큰, 뒤 trim = 이름; 매핑이면
     키 ⊂ {`kind`, `name`, `trigger`, `attached_to`, `default`}이고 `kind` 필수. 종류는 1.4의 어휘 조회(없으면 모르는
     종류 오류), 트리거는 이벤트에만 허용하고 어휘 표로 해석(없으면 모르는 트리거 오류, 비이벤트면 허용 안 됨
@@ -108,7 +108,7 @@
   - _Boundary: bpmn::parse_yaml_
   - _Depends: 1.3, 1.4_
 
-- [ ] 2.4 흐름 — 한 줄 표기·선 종류 표·default 적용·합성 id
+- [x] 2.4 흐름 — 한 줄 표기·선 종류 표·default 적용·합성 id
   - 빌드 순서 6~8: `flows` 항목은 스칼라(아니면 모양 오류) → 첫 공백 토큰 = 출발, 1.5의 화살 읽기(없으면 형식
     오류), 다음 공백 토큰 = 도착, 남은 글이 있으면 형식 오류 → design §Key Decisions의 `Link` → `FlowKind` 표
     (실선 화살 = 시퀀스, 점선 화살 = 한쪽 끝이 데이터 객체/저장소 노드면 데이터 연관 아니면 메시지, 점선 무표식 =
@@ -124,8 +124,8 @@
   - _Boundary: bpmn::parse_yaml_
   - _Depends: 1.5, 2.2, 2.3_
 
-- [ ] 3. 배선
-- [ ] 3.1 BPMN 언어 진입점의 `yaml` 갈래와 fixture 파일
+- [x] 3. 배선
+- [x] 3.1 BPMN 언어 진입점의 `yaml` 갈래와 fixture 파일
   - 갈래 판별을 "XML 스니핑 참이면 `xml`, 아니면 YAML 스니핑 참이면 `yaml`, 아니면 없음"으로, 소스 렌더링에 `yaml`
     팔(파서 → 실패면 없음 → 모델 렌더링)을 더한다. 긍정 fixture를 테스트 전용 파일로 만들어 `include_str!` 상수로
     노출한다: 주문 처리 협업(`bpmn-xml` fixture와 같은 노드·흐름 순서, 풀 `고객`·`판매사`, 레인 `영업`·`창고`,
@@ -140,8 +140,8 @@
   - _Boundary: bpmn::mod_
   - _Depends: 2.1, 2.4_
 
-- [ ] 4. 검증
-- [ ] 4.1 YAML fixture ≡ XML fixture 통합 렌더링
+- [x] 4. 검증
+- [x] 4.1 YAML fixture ≡ XML fixture 통합 렌더링
   - 3.1의 주문 처리 YAML을 폭 100으로 렌더링해 XML fixture와 대조한다; 드러나는 차이는 이 태스크 안에서 고친다
     (파서 쪽이면 2.x, fixture 순서 차이면 fixture, 모델 이후는 재검토 후 `bpmn-model` 결함으로 기록). XML fixture의
     렌더링이 이 기능 전과 같음도 같은 테스트로 못박는다(1.4의 어휘 승격 회귀)
@@ -155,7 +155,7 @@
   - _Boundary: bpmn::mod_
   - _Depends: 3.1_
 
-- [ ] 4.2 (P) 언어 판별·손상 입력 강건성·마크다운 펜스 폴백
+- [x] 4.2 (P) 언어 판별·손상 입력 강건성·마크다운 펜스 폴백
   - 언어 판별 테스트에 확장자·펜스 없는 YAML fixture → BPMN, `x.yaml`·`x.yml` 경로 → 확장자 판별 없음, 기존
     robustness PlantUML·mermaid 배열 전부와 `class A`·`title: 문서\n본문` 평문이 이전과 같은 언어를 추가한다.
     robustness의 BPMN "반드시 없음" 배열에 줄 중간·블록 중간 잘림·주석만·`---`만·앵커·탭·모르는 종류·`a-->b`·`==>`·
@@ -169,7 +169,7 @@
   - _Boundary: diagram::mod, markdown 테스트_
   - _Depends: 3.1_
 
-- [ ] 4.3 (P) 외부 YAML 파서로 fixture 유효성 기계 검증
+- [x] 4.3 (P) 외부 YAML 파서로 fixture 유효성 기계 검증
   - 스크래치 디렉터리에 Python 스크립트를 두고(`python3` + PyYAML 6.0.3, `yq`는 미설치) 모든 스칼라를 문자열로 읽는
     `yaml.BaseLoader`로 fixture 디렉터리의 `*.yaml` 전부를 읽는다. 주문 처리 fixture는 최상위 키 순서
     (`participants`, `flows`)·참여자 2·참여자별 레인 수 [0, 2]·노드 12·흐름 10을 단정하고, 폭 2/4/혼합 셋은 같은
@@ -182,7 +182,7 @@
   - _Boundary: 검증_
   - _Depends: 3.1_
 
-- [ ] 4.4 전체 스위트 + clippy + 바이트 동일 회귀 + 의존성 수 + 실물 실행
+- [x] 4.4 전체 스위트 + clippy + 바이트 동일 회귀 + 의존성 수 + 실물 실행
   - DONE: `cargo test` 전량 통과(기준선 434개 무수정 통과 + 신규), `cargo clippy --all-targets -- -D warnings` 클린,
     `examples/*.md`를 1.1과 같은 명령으로 렌더링해 기준선과 `diff` 무차이(7.1), 4.1의 XML fixture 동일 테스트 통과
     (7.2), `Cargo.toml` 의존성 4개 그대로(7.3), 주문 처리 YAML fixture를 스크래치 디렉터리에 복사해 `dg <파일>`과

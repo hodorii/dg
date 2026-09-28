@@ -6,8 +6,8 @@
 변환, `bizprocess` 언어 배선을 만드는 기능이다. 회귀 픽스처는 저장소의 실제 `biz-process.md` 7개(원본 경로
 `include_str!`)와 테스트 전용 합성 fixture이며 `examples/` 파일은 추가하지 않는다.
 
-- [ ] 1. 기반: 회귀 기준선·그룹 선 종류·모델 중첩·정책 옵션·검증 규칙
-- [ ] 1.1 (P) 기존 출력의 바이트 기준선 채취
+- [x] 1. 기반: 회귀 기준선·그룹 선 종류·모델 중첩·정책 옵션·검증 규칙
+- [x] 1.1 (P) 기존 출력의 바이트 기준선 채취
   - 코드를 손대기 전에 `examples/*.md` 전부와 BPMN XML·YAML fixture를 `dg -P --width 100`으로 렌더링해 스크래치
     디렉터리에 저장(6.5의 diff 기준). 기준선 테스트 수(488 + doc 2)도 기록
   - DONE: 입력마다 기준 출력 파일이 하나씩 있고 같은 명령을 다시 돌려도 같은 내용
@@ -15,7 +15,7 @@
   - _Difficulty: low_
   - _Boundary: 검증_
 
-- [ ] 1.2 (P) 그룹 테두리 선 종류 + 레인 안 상자 중첩 spike
+- [x] 1.2 (P) 그룹 테두리 선 종류 + 레인 안 상자 중첩 spike
   - design §"ir · layout::graph"대로 그래프 그룹에 선 종류(기본 실선)를 두고 설정 함수를 더하며, 그룹 상자 그리기가
     그 선 종류를 쓰게 한다(레인은 실선 그대로). 손으로 만든 그래프로 레인 > 파선 상자 > 실선 상자 > 노드 2단 중첩과
     레인 > 파선 상자 > 노드를 LR·TB로 렌더링해 상자가 레인 안에 놓이고 파선 글자로 그려지는지 실측한다. 어긋나면
@@ -26,7 +26,7 @@
   - _Difficulty: high_
   - _Boundary: ir, layout::graph_
 
-- [ ] 1.3 (P) 모델 중첩·그룹 확장(기존 파서 동작 불변)
+- [x] 1.3 (P) 모델 중첩·그룹 확장(기존 파서 동작 불변)
   - design §"bpmn::model"대로 요소에 부모(품은 Sub-Process id) 필드, 모델에 Group 아티팩트 목록(id·이름·부모·멤버)을
     더하고 자식 조회·깊이 조회 도우미를 만든다. XML·YAML 파서와 기존 테스트의 요소·모델 리터럴은 부모 없음·그룹
     없음으로 채운다
@@ -36,7 +36,7 @@
   - _Difficulty: mid_
   - _Boundary: bpmn::model, bpmn::parse_xml, bpmn::parse_yaml_
 
-- [ ] 1.4 (P) 정책 옵션 `depth`
+- [x] 1.4 (P) 정책 옵션 `depth`
   - design §"diagram::options"대로 펼침 정책 값(`Depth(n)`·`PerActivity`(기본)·`All`)과 문자열 판별(`all`·`activity`·
     음이 아닌 정수, 공백·대소문자 무시), 옵션 필드, 지시자 키 `depth`, 마크다운 주석 꼴 지시자(`<!-- dg: … -->`)를
     더한다. 기존 지시자 꼴은 그대로
@@ -46,7 +46,7 @@
   - _Difficulty: low_
   - _Boundary: diagram::options_
 
-- [ ] 1.5 중첩·그룹 검증 규칙과 참여자 전환 조회
+- [x] 1.5 중첩·그룹 검증 규칙과 참여자 전환 조회
   - design §"bpmn::validate"의 새 위반 6종(부모가 Sub-Process 아님·부모 사이클·Sub-Process 경계를 넘는 시퀀스 흐름·
     경계 이벤트 부모 불일치·그룹 멤버 부모 불일치·두 그룹에 든 요소)을 기존 규칙 순서 뒤에 더하고, 그룹 id는 중복
     검사에, 멤버 참조는 참조 해석에 포함한다. 안에서 소속(레인)이 바뀌는 Sub-Process id 목록을 돌려주는 조회를 만든다
@@ -57,8 +57,8 @@
   - _Boundary: bpmn::validate_
   - _Depends: 1.3_
 
-- [ ] 2. 핵심: 개요 리더
-- [ ] 2.1 괄호 태그 분리와 문서 스니핑
+- [x] 2. 핵심: 개요 리더
+- [x] 2.1 괄호 태그 분리와 문서 스니핑
   - design §"bpmn::bizprocess"의 태그 분리: 텍스트 끝 괄호를 뒤에서부터 벗기되 ID 목록(`1.1`·`1.1~1.5`를 쉼표로)은
     버리고 `키: 값` 목록은 태그로(값은 앞뒤 공백만 제거), 둘 다 아니면 그 괄호부터 이름; `키:` 목록의 조각에 `:`이 없으면
     값 쉼표 오류. 스니핑은 어떤 줄이든 `#`+공백을 벗기면 `L1` + 공백으로 시작하고 `:`를 포함할 때 참
@@ -71,7 +71,7 @@
   - _Difficulty: high_
   - _Boundary: bpmn::bizprocess_
 
-- [ ] 2.2 헤딩 트리·이어지는 줄·게이트 줄·Logic 항목
+- [x] 2.2 헤딩 트리·이어지는 줄·게이트 줄·Logic 항목
   - 줄 분류(헤딩 `L<n>`·게이트·`Logic(AST):`·`- ` 항목·이어지는 줄·그 외 무시)와 명시적 스택으로 트리를 쌓는다. 레벨은
     `L<n>` 토큰만(`#` 개수·들여쓰기·종류 낱말 무시), 부모 = 레벨이 더 작은 가장 가까운 열린 헤딩, 게이트 줄은 현재
     L1을 닫고 다음 L1까지 무시. 항목은 `IF c THEN r`·`ELSE IF`·`ELSE r`·`ELSE (m) THEN r`·`THROW e`·평문(`항상:` 포함)으로
@@ -85,8 +85,8 @@
   - _Difficulty: high_
   - _Boundary: bpmn::bizprocess_
 
-- [ ] 3. 핵심: 개요 → 모델
-- [ ] 3.1 구조 매핑 — 참여자 상속·레인·L1~L5 요소·흐름·그룹·id
+- [x] 3. 핵심: 개요 → 모델
+- [x] 3.1 구조 매핑 — 참여자 상속·레인·L1~L5 요소·흐름·그룹·id
   - design §Key Decisions 드릴다운 표와 §"bpmn::parse_bizprocess" id 규약대로: L1마다 모델 하나(제목 = L1 이름), 태그가
     하나라도 있으면 풀(이름 = L1) + 첫 등장 순서 레인, 없으면 참여자 없음; 유효 참여자는 자기 태그 또는 가장 가까운
     조상의 것 → 소속 레인; L2 = Sub-Process(부모 없음) + 안쪽 시작/종료, L3 하나면 L2 이름 둘째 줄·둘 이상이면 그룹
@@ -101,7 +101,7 @@
   - _Boundary: bpmn::parse_bizprocess_
   - _Depends: 1.3, 2.2_
 
-- [ ] 3.2 Logic 매핑 — 게이트웨이·default·THROW·주석·다음 L5
+- [x] 3.2 Logic 매핑 — 게이트웨이·default·THROW·주석·다음 L5
   - design §Key Decisions Logic 표대로: 갈래 항목이 하나라도 있으면 소유 태스크 뒤 이름 없는 배타 게이트웨이, `IF`/`ELSE
     IF`는 조건 라벨 흐름 → 결과 태스크, `ELSE`는 default 흐름(라벨 = 메모 또는 없음), `THROW e`는 갈래 끝 오류 종료
     이벤트 + 그 L5를 품은 L2에 경계 오류 이벤트(소속 = L2의 것, 부모 없음), `IF` 없는 항목은 소유 태스크당 주석 하나에
@@ -116,8 +116,8 @@
   - _Boundary: bpmn::parse_bizprocess_
   - _Depends: 3.1_
 
-- [ ] 4. 핵심: 정책별 여러 장
-- [ ] 4.1 한 장 정책 — `Depth(n)`·`All`과 기존 변환의 동일성
+- [x] 4. 핵심: 정책별 여러 장
+- [x] 4.1 한 장 정책 — `Depth(n)`·`All`과 기존 변환의 동일성
   - design §"bpmn::lower" 장 순서대로: 깊이 ≤ n 가시, 깊이 n의 자식 있는 Sub-Process는 접힘, 더 얕으면 실선 상자
     (부모 = 감싸는 상자 또는 레인, 제목 = 이름 첫 줄); 가시 그룹은 파선 상자(멤버 소속이 하나일 때만, 아니면 생략);
     가시 요소가 있는 레인만; 양끝 가시인 흐름만; 경계 이벤트 점선은 호스트 접힘 → 노드, 펼침 → 상자 닻. `All` = 전부
@@ -131,7 +131,7 @@
   - _Boundary: bpmn::lower_
   - _Depends: 1.2, 1.3, 1.5_
 
-- [ ] 4.2 여러 장 정책 — `PerActivity`와 `step` 재귀·제목
+- [x] 4.2 여러 장 정책 — `PerActivity`와 `step` 재귀·제목
   - `PerActivity` = `Depth(0)` Process 장 + 자식 있는 L2마다 Activity 장(루트 = L2, 상자 없음, 자손 전부 펼침, 종류에
     L2 이름) — 단 안에서 소속이 바뀌는 L4는 접고 그 뒤에 Step 장(루트 = L4)을 재귀로 붙인다. Process 장만 제목 = 모델
     제목, 나머지는 빈 제목. 캡션 종류 문자열(`process`·`activity: 이름`·`step: 이름`)
@@ -142,8 +142,8 @@
   - _Difficulty: high_
   - _Boundary: bpmn::lower_
 
-- [ ] 5. 배선
-- [ ] 5.1 `bizprocess` 렌더링 진입점과 fixture
+- [x] 5. 배선
+- [x] 5.1 `bizprocess` 렌더링 진입점과 fixture
   - design §"bpmn::mod"대로: 파싱 → L1마다 검증 → 정책 확정(`All`/`Depth(n ≥ 1)`인데 전환 있음 → `PerActivity` + 첫 줄
     안내 `※ depth=all 불가(참여자 전환) → activity`) → 여러 장 → 장마다 방향 옵션 적용·배치기 렌더링(하나라도 실패면
     전체 없음) → 한 본문(첫 장 종류 `process`, 둘째 장부터 빈 줄 + 캡션 줄; 캡션 함수는 언어 진입점의 것을 크레이트
@@ -158,7 +158,7 @@
   - _Boundary: bpmn::mod, diagram::mod(caption 가시성)_
   - _Depends: 1.4, 3.2, 4.2_
 
-- [ ] 5.2 언어·펜스·판별 순서·명령줄 옵션
+- [x] 5.2 언어·펜스·판별 순서·명령줄 옵션
   - design §"diagram::mod · cli · main"대로 `bizprocess` 언어(이름 `bizprocess`, 펜스 `bizprocess`/`biz-process`)를 더하고
     본문 판별 순서를 확장자 → `@start` → mermaid → BPMN → bizprocess → PlantUML로, 렌더 팔을 5.1의 진입점으로 잇는다.
     명령줄에 `--lang bizprocess`와 `--depth <all|activity|N>`(값 오류는 명령줄 오류)·환경변수 `DG_DEPTH`를 더한다. `.md`
@@ -170,8 +170,8 @@
   - _Difficulty: mid_
   - _Boundary: diagram::mod, cli, main_
 
-- [ ] 6. 검증
-- [ ] 6.1 실제 `biz-process.md` 7개 회귀 통합 렌더링
+- [x] 6. 검증
+- [x] 6.1 실제 `biz-process.md` 7개 회귀 통합 렌더링
   - 5.1의 실제 문서 상수 7개를 폭 100·80으로 렌더링해 대조한다; 드러나는 차이는 이 태스크 안에서 고친다(리더·빌더면
     2.x/3.x, 변환이면 4.x, 폭 초과면 원인 기록 후 재검토)
   - DONE: 통합 테스트에서 7개 모두 `Some`, Activity 캡션 수 = L2 헤딩 수, `dg-watch-mode`에 `감시 루프(백그라운드)`
@@ -182,7 +182,7 @@
   - _Boundary: bpmn::mod_
   - _Depends: 5.1_
 
-- [ ] 6.2 (P) 합성 fixture의 풀·레인·그룹·경계 이벤트 렌더링
+- [x] 6.2 (P) 합성 fixture의 풀·레인·그룹·경계 이벤트 렌더링
   - 5.1의 합성 fixture를 폭 100으로 `activity`·`all`·`1`·`0`으로 렌더링해 레인·파선 그룹·경계 오류 이벤트·오류 종료·
     default 꼬리·폴백 안내·step 장이 실제 글자로 보이는지 못박는다
   - DONE: 통합 테스트에서 풀 제목 = L1 이름과 역할 레인 제목들이 첫 등장 순서(3.10, 3.8); Activity 장에 파선 테두리
@@ -194,7 +194,7 @@
   - _Boundary: bpmn::mod_
   - _Depends: 5.2_
 
-- [ ] 6.3 (P) 손상 입력 강건성·마크다운 펜스 폴백
+- [x] 6.3 (P) 손상 입력 강건성·마크다운 펜스 폴백
   - robustness에 bizprocess "반드시 없음" 배열(빈 문자열·공백·헤딩 없는 평문·L1만·헤딩 중간 잘림·`Logic(AST):`만·
     `- IF`만·태그 값 쉼표)과 "패닉만 없음" 배열(실제 문서 7개·합성 fixture 둘·잘린 실제 문서)을 폭 8·20·40·80·200 ×
     정책 `0`·`1`·`2`·`all`·`activity`로 돈다. 마크다운 테스트에 `bizprocess` 펜스 성공·실패 두 경우를 더한다
@@ -205,7 +205,7 @@
   - _Boundary: diagram::mod, markdown 테스트_
   - _Depends: 5.2_
 
-- [ ] 6.4 전체 스위트 + clippy + 바이트 동일 회귀 + 의존성 수 + 실물 실행 + README
+- [x] 6.4 전체 스위트 + clippy + 바이트 동일 회귀 + 의존성 수 + 실물 실행 + README
   - README 지원 문법 표에 `bizprocess` 행(헤딩 규칙·`participant:` 태그·Logic 매핑·정책 요약), 옵션 표에 `--depth`·
     `DG_DEPTH`, `-l` 값 목록 `mermaid|plantuml|bpmn|bizprocess`
   - DONE: `cargo test` 전량 통과(기준선 488 + doc 2 무수정 통과 + 신규), `cargo clippy --all-targets -- -D warnings` 클린,
