@@ -1,9 +1,9 @@
 {
   "feature_name": "layout-crossgroup-edge-blowup",
   "created_at": "2026-09-28T10:21:29Z",
-  "updated_at": "2026-09-28T12:00:00Z",
+  "updated_at": "2026-09-29T03:40:00Z",
   "language": "ko",
-  "phase": "tasks-approved",
+  "phase": "completed",
   "approvals": {
     "bugfix": {
       "generated": true,
