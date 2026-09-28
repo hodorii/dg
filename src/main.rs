@@ -1,7 +1,7 @@
 mod cli;
 
 use clap::Parser;
-use cli::{Cli, LangArg, StyleArg};
+use cli::{Cli, StyleArg};
 use dg::diagram::{self, DiagramOptions, ErNotation, Language};
 use dg::markdown::{self, DiagramBlock, Document};
 use dg::pager;
@@ -28,9 +28,7 @@ fn run() -> io::Result<()> {
     let theme = pick_theme(cli.style, stdout_is_tty);
     let diagram_language = if cli.diagram || cli.lang.is_some() || looks_like_diagram_file(cli.file.as_deref()) {
         Some(match cli.lang {
-            Some(LangArg::Mermaid) => Language::Mermaid,
-            Some(LangArg::Plantuml) => Language::PlantUml,
-            Some(LangArg::Bpmn) => Language::Bpmn,
+            Some(lang) => lang.into(),
             None => diagram::language_of_source(cli.file.as_deref(), &source).unwrap_or(Language::Mermaid),
         })
     } else {
@@ -49,6 +47,7 @@ fn run() -> io::Result<()> {
                 cli::DirectionArg::Rl => (diagram::ir::Direction::LeftRight, true),
             })
             .or_else(|| std::env::var("DG_DIRECTION").ok().and_then(|v| diagram::options::parse_direction(&v))),
+        expand_policy: cli.depth.or_else(|| std::env::var("DG_DEPTH").ok().and_then(|v| diagram::options::parse_expand_policy(&v))).unwrap_or_default(),
     };
     // `source`를 인자로 받는다(캡처하지 않음) — 감시 모드에서 최신 내용을 그리려면 호출마다 다른
     // 소스를 넘길 수 있어야 한다.

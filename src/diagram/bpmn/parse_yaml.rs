@@ -171,7 +171,7 @@ fn build_model(root: &YamlValue) -> Result<Model, ParseError> {
     }
     apply_default_flows(&mut flows, default_pairs)?;
 
-    Ok(Model { title, orientation, participants, elements, flows })
+    Ok(Model { title, orientation, participants, elements, flows, groups: Vec::new() })
 }
 
 fn check_allowed_keys(entries: &[(String, YamlValue)], path: &str, allowed: &[&str]) -> Result<(), ParseError> {
@@ -289,7 +289,7 @@ fn build_element(raw: &RawNode, default_pairs: &mut Vec<(String, String)>) -> Re
         default_pairs.push((raw.id.clone(), target));
     }
 
-    Ok(Element { id: raw.id.clone(), name, kind, container: raw.container.clone(), attached_to })
+    Ok(Element { id: raw.id.clone(), name, kind, container: raw.container.clone(), attached_to, parent: None })
 }
 
 /// 경계 이벤트의 `container` := 호스트의 `container`(전부 만든 뒤, `parse_xml`과 같은 규칙).

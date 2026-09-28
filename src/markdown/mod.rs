@@ -955,6 +955,30 @@ mod tests {
         assert!(out.contains(&"뒤 문단".to_string()));
     }
 
+    /// bizprocess-bpmn 7.5 — `bizprocess` 펜스가 성공하면 `◈ bizprocess · process` 캡션의 그림이
+    /// 문단 사이에 놓인다(두 이름 `bizprocess`·`biz-process` 모두).
+    #[test]
+    fn bizprocess_fence_with_a_valid_document_becomes_a_diagram_between_paragraphs() {
+        let body = "## L1 Process: A\n### L2 Activity: B\n";
+        for fence in ["bizprocess", "biz-process"] {
+            let source = format!("앞 문단\n\n```{fence}\n{body}\n```\n\n뒤 문단\n");
+            let out = plain(&source, 100);
+            assert!(out.contains(&"앞 문단".to_string()), "{fence}");
+            assert!(out.iter().any(|l| l.contains("bizprocess · process")), "{fence}: {out:?}");
+            assert!(out.contains(&"뒤 문단".to_string()), "{fence}");
+        }
+    }
+
+    /// bizprocess-bpmn 7.5 — 파싱 실패(L2 없는 L1)는 그 펜스만 `╭─ bizprocess ` 코드블록이 되고
+    /// 앞뒤 문단은 정상 렌더링된다.
+    #[test]
+    fn bizprocess_fence_with_a_parse_error_falls_back_to_a_code_block() {
+        let out = plain("앞 문단\n\n```bizprocess\n## L1 Process: A만 있고 L2 없음\n```\n\n뒤 문단\n", 60);
+        assert!(out.contains(&"앞 문단".to_string()));
+        assert!(out.iter().any(|l| l.starts_with("╭─ bizprocess ")), "{out:?}");
+        assert!(out.contains(&"뒤 문단".to_string()));
+    }
+
     #[test]
     fn front_matter_is_hidden() {
         let out = plain("---\ntitle: x\n---\n\nbody\n", 40);

@@ -1,9 +1,9 @@
 {
   "feature_name": "bizprocess-bpmn",
   "created_at": "2026-09-28T02:05:43Z",
-  "updated_at": "2026-09-28T03:45:00Z",
+  "updated_at": "2026-09-28T04:30:00Z",
   "language": "ko",
-  "phase": "tasks-approved",
+  "phase": "completed",
   "approvals": {
     "requirements": {
       "generated": true,

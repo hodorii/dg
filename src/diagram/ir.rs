@@ -137,6 +137,9 @@ pub struct Group {
     pub title: String,
     pub parent: Option<usize>,
     pub kind: GroupKind,
+    /// 테두리 선 종류(기본 실선). 레인은 항상 실선으로 그려진다(`layout::graph::draw_groups`) —
+    /// 이 필드는 Box 그룹(BPMN L3 파선 그룹 등)에만 쓰인다.
+    pub line: LineKind,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -184,8 +187,14 @@ impl Graph {
     }
 
     pub fn add_group_with_id(&mut self, id: &str, title: &str, parent: Option<usize>) -> usize {
-        self.groups.push(Group { id: id.to_string(), title: title.to_string(), parent, kind: GroupKind::Box });
+        self.groups.push(Group { id: id.to_string(), title: title.to_string(), parent, kind: GroupKind::Box, line: LineKind::Solid });
         self.groups.len() - 1
+    }
+
+    /// 그룹의 테두리 선 종류를 바꾼다(기본 실선). 레인에 써도 `draw_groups`는 레인을 항상 실선으로
+    /// 그린다 — 이 메서드는 Box 그룹의 파선 표시에만 실질 효과가 있다.
+    pub fn set_group_line(&mut self, group: usize, line: LineKind) {
+        self.groups[group].line = line;
     }
 
     /// 레인 종류 그룹. id = title(기존 `add_group`과 같은 규약). 소속 범위(다이어그램 전체 또는

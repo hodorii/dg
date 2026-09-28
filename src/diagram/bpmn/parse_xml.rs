@@ -130,7 +130,7 @@ fn build_model(root: &XmlElement) -> Result<Model, ParseError> {
                 let name = element_name(&child.name, child);
                 let attached_to = if child.name == "boundaryEvent" { child.attribute("attachedToRef").map(str::to_string) } else { None };
                 let container = literal_id.and_then(|lid| node_lane_map.get(lid).cloned()).or_else(|| container_id.clone());
-                elements.push(Element { id, name, kind, container, attached_to });
+                elements.push(Element { id, name, kind, container, attached_to, parent: None });
             }
             if let Some(activity_id) = literal_id {
                 for association in child.children_named("dataInputAssociation") {
@@ -206,7 +206,7 @@ fn build_model(root: &XmlElement) -> Result<Model, ParseError> {
         .unwrap_or("")
         .to_string();
 
-    Ok(Model { title, orientation: super::model::Orientation::default(), participants, elements, flows })
+    Ok(Model { title, orientation: super::model::Orientation::default(), participants, elements, flows, groups: Vec::new() })
 }
 
 fn build_lane(lane_elem: &XmlElement, counter: &mut usize, node_lane_map: &mut HashMap<String, String>) -> Lane {
