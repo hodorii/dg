@@ -110,6 +110,8 @@ pub struct Element {
     pub container: Option<String>,
     /// 경계 이벤트의 호스트 활동 id.
     pub attached_to: Option<String>,
+    /// 품은 `Subprocess` 요소 id. `None` = 프로세스 최상위(펼쳐진 적 없는 XML·YAML 파서는 항상 `None`).
+    pub parent: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,6 +131,17 @@ pub struct Flow {
     pub kind: FlowKind,
 }
 
+/// BPMN Group 아티팩트(흐름 계층 밖 — 시각적으로만 요소들을 묶는다). `parse_bizprocess`가 L3
+/// (FunctionGroup/UI 등)을 표현하는 데 쓴다.
+#[derive(Clone, Debug, Default)]
+pub struct Group {
+    pub id: String,
+    pub name: String,
+    /// 품은 `Subprocess` 요소 id. `None` = 프로세스 최상위.
+    pub parent: Option<String>,
+    pub members: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Model {
     pub title: String,
@@ -136,6 +149,7 @@ pub struct Model {
     pub participants: Vec<Participant>,
     pub elements: Vec<Element>,
     pub flows: Vec<Flow>,
+    pub groups: Vec<Group>,
 }
 
 impl Model {
@@ -152,6 +166,26 @@ impl Model {
     /// `MessageFlow.sourceRef`/`targetRef`로 쓸 수 있는 건 흐름 노드와 `Participant`뿐이다).
     pub fn participant_index(&self, id: &str) -> Option<usize> {
         self.participants.iter().position(|p| p.id == id)
+    }
+
+    /// `parent`가 정확히 `parent_id`인 요소들, 선언 순서.
+    pub fn children_of<'a>(&'a self, parent_id: &'a str) -> impl Iterator<Item = &'a Element> {
+        self.elements.iter().filter(move |e| e.parent.as_deref() == Some(parent_id))
+    }
+
+    /// `parent` 사슬 길이(자기 자신 제외). 모르는 id·부모 없음은 0. 사이클은 `validate`가 막으므로
+    /// 여기서는 상한 64에서 끊어 무한 루프만 피한다.
+    pub fn depth_of(&self, id: &str) -> usize {
+        let mut depth = 0;
+        let mut cursor = self.element(id).and_then(|e| e.parent.clone());
+        while let Some(parent_id) = cursor {
+            depth += 1;
+            if depth >= 64 {
+                break;
+            }
+            cursor = self.element(&parent_id).and_then(|e| e.parent.clone());
+        }
+        depth
     }
 }
 
@@ -207,6 +241,38 @@ mod tests {
         assert!(!ElementKind::Gateway(GatewayKind::Exclusive).is_activity());
         assert!(!ElementKind::Event { position: EventPosition::Start, trigger: None }.is_activity());
         assert!(!ElementKind::DataObject.is_activity());
+    }
+
+    fn element(id: &str, parent: Option<&str>) -> Element {
+        Element { id: id.into(), name: id.into(), kind: ElementKind::Task(TaskKind::None), container: None, attached_to: None, parent: parent.map(str::to_string) }
+    }
+
+    #[test]
+    fn children_of_preserves_declaration_order() {
+        let model = Model {
+            elements: vec![element("a2", Some("root")), element("a1", Some("root")), element("other", Some("elsewhere"))],
+            ..Model::default()
+        };
+        let children: Vec<&str> = model.children_of("root").map(|e| e.id.as_str()).collect();
+        assert_eq!(children, vec!["a2", "a1"]);
+    }
+
+    #[test]
+    fn depth_of_counts_the_parent_chain_and_stops_at_an_unknown_or_missing_parent() {
+        let model = Model {
+            elements: vec![element("l5", Some("l4")), element("l4", Some("l2")), element("l2", None)],
+            ..Model::default()
+        };
+        assert_eq!(model.depth_of("l2"), 0);
+        assert_eq!(model.depth_of("l4"), 1);
+        assert_eq!(model.depth_of("l5"), 2);
+        assert_eq!(model.depth_of("unknown"), 0);
+    }
+
+    #[test]
+    fn depth_of_is_capped_at_64_if_the_parent_chain_cycles() {
+        let model = Model { elements: vec![element("a", Some("b")), element("b", Some("a"))], ..Model::default() };
+        assert_eq!(model.depth_of("a"), 64);
     }
 
     #[test]

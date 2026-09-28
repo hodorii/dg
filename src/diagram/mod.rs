@@ -18,6 +18,7 @@ pub enum Language {
     Mermaid,
     PlantUml,
     Bpmn,
+    BizProcess,
 }
 
 impl Language {
@@ -26,6 +27,7 @@ impl Language {
             Language::Mermaid => "mermaid",
             Language::PlantUml => "plantuml",
             Language::Bpmn => "bpmn",
+            Language::BizProcess => "bizprocess",
         }
     }
 }
@@ -36,6 +38,7 @@ pub fn language_of_fence(lang: &str) -> Option<Language> {
         "mermaid" | "mmd" => Some(Language::Mermaid),
         "plantuml" | "puml" | "uml" => Some(Language::PlantUml),
         "bpmn" => Some(Language::Bpmn),
+        "bizprocess" | "biz-process" => Some(Language::BizProcess),
         _ => None,
     }
 }
@@ -72,6 +75,11 @@ pub fn language_of_source(path: Option<&str>, source: &str) -> Option<Language> 
     if bpmn::kind_of(source).is_some() {
         return Some(Language::Bpmn);
     }
+    // bizprocess도 PlantUML의 포괄 판별보다 먼저(같은 이유) — mermaid·BPMN 소스에는 `L1` 헤딩
+    // 줄이 없으므로 이 순서가 오판을 만들지 않는다(design §Key Decisions).
+    if bpmn::bizprocess::looks_like_bizprocess(source) {
+        return Some(Language::BizProcess);
+    }
     if plantuml::kind_of(source).is_some() {
         return Some(Language::PlantUml);
     }
@@ -93,6 +101,7 @@ pub fn render_body(language: Language, source: &str, theme: &Theme, width: usize
         Language::Mermaid => mermaid::render(source, theme, width, options)?,
         Language::PlantUml => plantuml::render(source, theme, width, options)?,
         Language::Bpmn => bpmn::render(source, theme, width, options)?,
+        Language::BizProcess => bpmn::render_bizprocess(source, theme, width, options)?,
     };
     if body.iter().all(Line::is_blank) {
         return None;
@@ -112,10 +121,12 @@ pub fn kind_of(language: Language, source: &str) -> Option<&'static str> {
         Language::Mermaid => mermaid::kind_of(source),
         Language::PlantUml => plantuml::kind_of(source),
         Language::Bpmn => bpmn::kind_of(source),
+        Language::BizProcess => bpmn::bizprocess::looks_like_bizprocess(source).then_some("process"),
     }
 }
 
-fn caption(language: &str, kind: &str, theme: &Theme, width: usize) -> Line {
+/// 캡션 줄(`◈ 언어 · 종류 ───`)의 SSoT. `bpmn::render_bizprocess`가 여러 장 사이 캡션에 재사용한다.
+pub(crate) fn caption(language: &str, kind: &str, theme: &Theme, width: usize) -> Line {
     let text = format!("◈ {language} · {kind} ");
     let pad = width.saturating_sub(width_of(&text)).min(40);
     Line::from_spans(vec![Span::new(text, theme.diagram_caption), Span::new("─".repeat(pad), theme.rule)])
@@ -124,6 +135,7 @@ fn caption(language: &str, kind: &str, theme: &Theme, width: usize) -> Line {
 #[cfg(test)]
 mod robustness {
     use super::*;
+    use crate::diagram::options::ExpandPolicy;
 
     /// 잘리거나 이상한 입력에도 패닉 없이 결과 또는 `None`을 돌려줘야 한다.
     #[test]
@@ -298,6 +310,43 @@ mod robustness {
                 let _ = render(Language::Bpmn, source, &Theme::none(), width, DiagramOptions::default());
             }
         }
+
+        // bizprocess(7.3, 7.4) — 반드시 `None`인 입력들: 빈 문자열·공백만·헤딩 없는 평문·L1만·
+        // 헤딩 중간 잘림·`Logic(AST):`만·`- IF`만·태그 값 쉼표.
+        let bizprocess_must_be_none: Vec<String> = vec![
+            "".into(),
+            "   \n  ".into(),
+            "그냥 평문입니다".into(),
+            "## L1 Process: A만 있고 L2 없음".into(),
+            "## L1 Process: A\n### L2 Ac".into(),
+            "- IF 항목만 있고 헤딩 없음\n".into(),
+            "## L1 Process: A (participant: 학습자, 멘토)\n### L2 Activity: B\n".into(),
+        ];
+        let policies = [ExpandPolicy::Depth(0), ExpandPolicy::Depth(1), ExpandPolicy::Depth(2), ExpandPolicy::All, ExpandPolicy::PerActivity];
+        for source in &bizprocess_must_be_none {
+            for width in [8usize, 20, 40, 80, 200] {
+                for policy in policies {
+                    let options = DiagramOptions { expand_policy: policy, ..DiagramOptions::default() };
+                    assert_eq!(render(Language::BizProcess, source, &Theme::none(), width, options), None, "{source:?} (width {width}, {policy:?})는 None이어야 한다");
+                }
+            }
+        }
+
+        // 패닉만 없으면 되는 입력들(7.4) — 실제 문서 7개 + 합성 fixture 둘 + 잘린 실제 문서.
+        let mut bizprocess_may_render: Vec<String> = bpmn::fixtures::BIZPROCESS_REAL.iter().map(|(_, source)| source.to_string()).collect();
+        bizprocess_may_render.push(bpmn::fixtures::TAGGED_PROCESS_MD.to_string());
+        bizprocess_may_render.push(bpmn::fixtures::TRANSITION_IN_STEP_MD.to_string());
+        bizprocess_may_render.push("## L1 Process: A\n### L2 Activity: B\nLogic(AST):\n".to_string());
+        let watch_mode = bpmn::fixtures::BIZPROCESS_REAL.iter().find(|(name, _)| *name == "dg-watch-mode").unwrap().1;
+        bizprocess_may_render.push(watch_mode[..watch_mode.len() / 2].to_string());
+        for source in &bizprocess_may_render {
+            for width in [8usize, 20, 40, 80, 200] {
+                for policy in policies {
+                    let options = DiagramOptions { expand_policy: policy, ..DiagramOptions::default() };
+                    let _ = render(Language::BizProcess, source, &Theme::none(), width, options);
+                }
+            }
+        }
     }
 
     #[test]
@@ -351,5 +400,42 @@ mod robustness {
         ] {
             assert_eq!(language_of_source(None, source), Some(Language::PlantUml), "{source:?}는 그대로 PlantUML이어야 한다");
         }
+    }
+
+    // --- bizprocess-bpmn: 언어·펜스·판별 순서(5.2) ---
+
+    #[test]
+    fn both_fence_spellings_select_bizprocess() {
+        assert_eq!(language_of_fence("bizprocess"), Some(Language::BizProcess));
+        assert_eq!(language_of_fence("biz-process"), Some(Language::BizProcess));
+        assert_eq!(language_of_fence("BizProcess"), Some(Language::BizProcess));
+    }
+
+    #[test]
+    fn a_real_document_without_extension_or_fence_sniffs_as_bizprocess() {
+        let source = bpmn::fixtures::BIZPROCESS_REAL[0].1;
+        assert_eq!(language_of_source(None, source), Some(Language::BizProcess));
+    }
+
+    #[test]
+    fn md_extension_path_does_not_affect_source_detection() {
+        // `.md`는 판별에 끼어들지 않는다(1.3) — 확장자 표에 없으므로 본문 스니핑을 그대로 따른다.
+        assert_eq!(language_of_path("x.md"), None);
+        let source = bpmn::fixtures::BIZPROCESS_REAL[0].1;
+        assert_eq!(language_of_source(Some("x.md"), source), Some(Language::BizProcess));
+    }
+
+    #[test]
+    fn bpmn_fence_body_with_an_l1_heading_is_still_not_sniffed_as_bizprocess_by_bpmn_kind_of() {
+        // `bpmn::kind_of`는 건드리지 않았으므로 `## L1 …` 본문의 `bpmn` 펜스는 그대로 코드블록(1.5).
+        assert_eq!(bpmn::kind_of("## L1 Process: A\n### L2 Activity: B\n"), None);
+    }
+
+    #[test]
+    fn existing_language_detection_for_mermaid_plantuml_xml_and_yaml_is_unaffected_by_bizprocess() {
+        assert_eq!(language_of_source(None, "flowchart TB\n A --> B"), Some(Language::Mermaid));
+        assert_eq!(language_of_source(None, "@startuml\nA -> B\n@enduml"), Some(Language::PlantUml));
+        assert_eq!(language_of_source(None, &bpmn::fixtures::order_processing_collaboration()), Some(Language::Bpmn));
+        assert_eq!(language_of_source(None, bpmn::fixtures::ORDER_PROCESSING_YAML), Some(Language::Bpmn));
     }
 }

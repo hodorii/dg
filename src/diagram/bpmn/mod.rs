@@ -5,8 +5,10 @@
 //! 넘기고 결과 `Model`을 [`render_model`]로 그린다. 손으로 만든 `Model`을 직접 그리려면
 //! `render_model`을 바로 부른다.
 
+pub mod bizprocess;
 pub mod lower;
 pub mod model;
+pub mod parse_bizprocess;
 pub mod parse_xml;
 pub mod parse_yaml;
 pub mod validate;
@@ -15,7 +17,7 @@ pub mod xml;
 pub mod yaml;
 
 use crate::diagram::layout;
-use crate::diagram::options::DiagramOptions;
+use crate::diagram::options::{DiagramOptions, ExpandPolicy};
 use crate::line::Line;
 use crate::style::Theme;
 use model::Model;
@@ -54,6 +56,63 @@ pub fn render_model(model: &Model, theme: &Theme, width: usize, options: Diagram
     let lines = layout::graph::render(&graph, theme, width)?;
     let kind = if model.participants.len() >= 2 { "collaboration" } else { "process" };
     Some((kind, lines))
+}
+
+/// `biz-process.md` 개요 문법 진입점 — `parse_bizprocess::parse` → L1마다 검증·정책 확정·
+/// `lower_with` → 장마다 배치기 렌더링. 파싱 실패·검증 실패·어느 한 장이라도 폭 초과 → `None`.
+/// 종류는 항상 `"process"`(정적) — 둘째 장부터는 본문 안에 빈 줄 + 캡션을 직접 넣는다(design
+/// §Key Decisions "여러 장 = 한 본문"). `All`/`Depth(n ≥ 1)`인데 참여자 전환이 있으면 `PerActivity`로
+/// 자동 폴백하고 본문 첫 줄에 안내를 남긴다(6.4).
+pub fn render_bizprocess(source: &str, theme: &Theme, width: usize, options: DiagramOptions) -> Option<(&'static str, Vec<Line>)> {
+    let parsed = parse_bizprocess::parse(source).ok()?;
+    if parsed.models.is_empty() {
+        return None;
+    }
+    let mut body: Vec<Line> = Vec::new();
+    let mut fallback_notice: Option<String> = None;
+    let mut is_first_chapter = true;
+
+    for model in &parsed.models {
+        validate::validate(model).ok()?;
+        let transitioning = validate::participant_transitions(model);
+        let (policy, fell_back) = resolve_expand_policy(options.expand_policy, &transitioning);
+        if fell_back && fallback_notice.is_none() {
+            fallback_notice = Some(fallback_notice_text(options.expand_policy));
+        }
+        for diagram in lower::lower_with(model, policy) {
+            let mut graph = diagram.graph;
+            options.apply_to_graph(&mut graph);
+            let lines = layout::graph::render(&graph, theme, width)?;
+            if !is_first_chapter {
+                body.push(Line::empty());
+                body.push(crate::diagram::caption(crate::diagram::Language::BizProcess.name(), &diagram.kind.caption_kind(), theme, width));
+            }
+            body.extend(lines);
+            is_first_chapter = false;
+        }
+    }
+
+    if let Some(message) = fallback_notice {
+        body.insert(0, Line::single(message, theme.diagram_note));
+    }
+    Some(("process", body))
+}
+
+/// `All`/`Depth(n ≥ 1)`이고 `participant_transitions`가 비지 않으면 `PerActivity`로 자동
+/// 폴백한다(`Depth(0)`은 어차피 참여자 전환을 넘나들 일이 없어 폴백하지 않는다). 두 번째 값은
+/// 폴백이 일어났는지.
+fn resolve_expand_policy(requested: ExpandPolicy, transitioning: &[String]) -> (ExpandPolicy, bool) {
+    let needs_full_expansion = matches!(requested, ExpandPolicy::All) || matches!(requested, ExpandPolicy::Depth(n) if n >= 1);
+    if needs_full_expansion && !transitioning.is_empty() { (ExpandPolicy::PerActivity, true) } else { (requested, false) }
+}
+
+fn fallback_notice_text(requested: ExpandPolicy) -> String {
+    let value = match requested {
+        ExpandPolicy::All => "all".to_string(),
+        ExpandPolicy::Depth(n) => n.to_string(),
+        ExpandPolicy::PerActivity => "activity".to_string(),
+    };
+    format!("※ depth={value} 불가(참여자 전환) → activity")
 }
 
 /// bpmn.io 형식 그대로 쓴 공용 XML fixture(테스트 전용). `examples/`에는 두지 않는다(design §Out-of-Scope).
@@ -192,6 +251,25 @@ pub(crate) mod fixtures {
     pub const FLAT_NODES_YAML: &str = include_str!("fixtures/flat_nodes.yaml");
     /// 참여자 안 레인 안 하위 레인(3.3).
     pub const NESTED_LANES_YAML: &str = include_str!("fixtures/nested_lanes.yaml");
+
+    // --- bizprocess-bpmn: 회귀 픽스처 ---
+
+    /// 저장소의 실제 `biz-process.md` 7개(원본 경로 `include_str!` — 복사본 없음, SSoT). (스펙 이름,
+    /// 본문) 쌍, 7.1의 회귀 렌더링이 쓴다.
+    pub const BIZPROCESS_REAL: &[(&str, &str)] = &[
+        ("dg-watch-mode", include_str!("../../../.kiro/specs/dg-watch-mode/biz-process.md")),
+        ("gitgraph-branch-distinction", include_str!("../../../.kiro/specs/gitgraph-branch-distinction/biz-process.md")),
+        ("gitgraph-junction-polish", include_str!("../../../.kiro/specs/gitgraph-junction-polish/biz-process.md")),
+        ("markdown-gfm-alerts", include_str!("../../../.kiro/specs/markdown-gfm-alerts/biz-process.md")),
+        ("markdown-link-navigation", include_str!("../../../.kiro/specs/markdown-link-navigation/biz-process.md")),
+        ("markdown-source-view", include_str!("../../../.kiro/specs/markdown-source-view/biz-process.md")),
+        ("sequence-fragment-frame-distinction", include_str!("../../../.kiro/specs/sequence-fragment-frame-distinction/biz-process.md")),
+    ];
+    /// 태그·`THROW`·`ELSE IF`·L3 둘·L4 Sub-Process·이어지는 줄·괄호 이름을 담은 합성 fixture
+    /// (테스트 전용, `examples/` 밖).
+    pub const TAGGED_PROCESS_MD: &str = include_str!("fixtures/tagged_process.md");
+    /// L4 안 참여자 전환(6.5) — `step` 장 재귀 확인용.
+    pub const TRANSITION_IN_STEP_MD: &str = include_str!("fixtures/transition_in_step.md");
 }
 
 #[cfg(test)]
@@ -202,16 +280,16 @@ mod tests {
     use crate::diagram::options::DiagramOptions;
 
     fn task(id: &str, name: &str, container: Option<&str>) -> Element {
-        Element { id: id.into(), name: name.into(), kind: ElementKind::Task(TaskKind::None), container: container.map(str::to_string), attached_to: None }
+        Element { id: id.into(), name: name.into(), kind: ElementKind::Task(TaskKind::None), container: container.map(str::to_string), attached_to: None, parent: None }
     }
 
     fn one_pool_model() -> Model {
         Model {
             participants: vec![Participant { id: "p1".into(), name: "프로세스".into(), lanes: Vec::new() }],
             elements: vec![
-                Element { id: "start".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Start, trigger: None }, container: Some("p1".into()), attached_to: None },
+                Element { id: "start".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Start, trigger: None }, container: Some("p1".into()), attached_to: None, parent: None },
                 task("t1", "처리", Some("p1")),
-                Element { id: "end".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("p1".into()), attached_to: None },
+                Element { id: "end".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("p1".into()), attached_to: None, parent: None },
             ],
             flows: vec![
                 Flow { id: "f1".into(), source: "start".into(), target: "t1".into(), label: String::new(), kind: FlowKind::Sequence { is_default: false } },
@@ -322,8 +400,8 @@ mod tests {
                 // container를 호스트와 같은 값으로 명시(1.7 "소속이 없거나 호스트와 같음") — 검증의
                 // 풀 판정은 리터럴 container만 보므로(호스트 상속은 lower 몫), 풀 안쪽으로 나가는
                 // 시퀀스 흐름(5.2)이 통과하려면 여기서 명시적으로 맞춰 둔다.
-                Element { id: "boundary".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: Some("p1".into()), attached_to: Some("host".into()) },
-                Element { id: "end".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("p1".into()), attached_to: None },
+                Element { id: "boundary".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: Some("p1".into()), attached_to: Some("host".into()), parent: None },
+                Element { id: "end".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("p1".into()), attached_to: None, parent: None },
             ],
             flows: vec![Flow { id: "f1".into(), source: "boundary".into(), target: "end".into(), label: String::new(), kind: FlowKind::Sequence { is_default: false } }],
             ..Model::default()
@@ -390,9 +468,9 @@ mod tests {
             elements: vec![
                 task("a", "", Some("l1-1")),
                 task("b", "", Some("l1-1")),
-                Element { id: "boundary1".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Timer) }, container: None, attached_to: Some("a".into()) },
-                Element { id: "boundary2".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: None, attached_to: Some("a".into()) },
-                Element { id: "gw".into(), name: "".into(), kind: ElementKind::Gateway(GatewayKind::Exclusive), container: Some("l1-1".into()), attached_to: None },
+                Element { id: "boundary1".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Timer) }, container: None, attached_to: Some("a".into()), parent: None },
+                Element { id: "boundary2".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: None, attached_to: Some("a".into()), parent: None },
+                Element { id: "gw".into(), name: "".into(), kind: ElementKind::Gateway(GatewayKind::Exclusive), container: Some("l1-1".into()), attached_to: None, parent: None },
             ],
             flows: vec![
                 Flow { id: "self".into(), source: "a".into(), target: "a".into(), label: String::new(), kind: FlowKind::Sequence { is_default: false } },
@@ -413,7 +491,7 @@ mod tests {
     /// design §Testing Strategy 8.3 — 풀 `고객`, 풀 `판매사`(레인 `영업`·`창고`)의 주문 처리
     /// 협업. 파일을 파싱하지 않고 손으로 만든 `Model`로만 검증한다.
     fn order_processing_collaboration_model() -> Model {
-        let user_task = |id: &str, name: &str, container: &str| Element { id: id.into(), name: name.into(), kind: ElementKind::Task(TaskKind::User), container: Some(container.into()), attached_to: None };
+        let user_task = |id: &str, name: &str, container: &str| Element { id: id.into(), name: name.into(), kind: ElementKind::Task(TaskKind::User), container: Some(container.into()), attached_to: None, parent: None };
         Model {
             title: "주문 처리".into(),
             orientation: model::Orientation::Horizontal,
@@ -427,11 +505,11 @@ mod tests {
             ],
             elements: vec![
                 // 고객
-                Element { id: "start-cust".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Start, trigger: None }, container: Some("customer".into()), attached_to: None },
+                Element { id: "start-cust".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Start, trigger: None }, container: Some("customer".into()), attached_to: None, parent: None },
                 user_task("order-task", "주문서 작성", "customer"),
-                Element { id: "end-cust".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("customer".into()), attached_to: None },
+                Element { id: "end-cust".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("customer".into()), attached_to: None, parent: None },
                 // 판매사 · 영업
-                Element { id: "msg-start".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Start, trigger: Some(EventTrigger::Message) }, container: Some("lane-sales".into()), attached_to: None },
+                Element { id: "msg-start".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Start, trigger: Some(EventTrigger::Message) }, container: Some("lane-sales".into()), attached_to: None, parent: None },
                 user_task("review-task", "주문 검토", "lane-sales"),
                 // container를 호스트(review-task)와 같은 값으로 명시 — 검증의 풀 판정은 리터럴
                 // container만 보므로(호스트 상속은 lower 몫), 뒤이은 시퀀스 흐름(5.2)이 통과하려면
@@ -442,14 +520,15 @@ mod tests {
                     kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) },
                     container: Some("lane-sales".into()),
                     attached_to: Some("review-task".into()),
+                    parent: None,
                 },
-                Element { id: "end-cancel".into(), name: "취소".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("lane-sales".into()), attached_to: None },
-                Element { id: "notify-oos".into(), name: "품절 안내".into(), kind: ElementKind::Task(TaskKind::Service), container: Some("lane-sales".into()), attached_to: None },
-                Element { id: "end-oos".into(), name: "품절 취소".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("lane-sales".into()), attached_to: None },
+                Element { id: "end-cancel".into(), name: "취소".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("lane-sales".into()), attached_to: None, parent: None },
+                Element { id: "notify-oos".into(), name: "품절 안내".into(), kind: ElementKind::Task(TaskKind::Service), container: Some("lane-sales".into()), attached_to: None, parent: None },
+                Element { id: "end-oos".into(), name: "품절 취소".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("lane-sales".into()), attached_to: None, parent: None },
                 // 판매사 · 창고
-                Element { id: "gateway-stock".into(), name: "재고 있음?".into(), kind: ElementKind::Gateway(GatewayKind::Exclusive), container: Some("lane-warehouse".into()), attached_to: None },
+                Element { id: "gateway-stock".into(), name: "재고 있음?".into(), kind: ElementKind::Gateway(GatewayKind::Exclusive), container: Some("lane-warehouse".into()), attached_to: None, parent: None },
                 user_task("prepare-task", "출고 준비", "lane-warehouse"),
-                Element { id: "end-shipped".into(), name: "완료".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("lane-warehouse".into()), attached_to: None },
+                Element { id: "end-shipped".into(), name: "완료".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("lane-warehouse".into()), attached_to: None, parent: None },
             ],
             flows: vec![
                 // 고객
@@ -469,6 +548,7 @@ mod tests {
                 // 창고 → 영업(같은 풀, 다른 레인) — default 흐름
                 Flow { id: "f-cross-2".into(), source: "gateway-stock".into(), target: "notify-oos".into(), label: String::new(), kind: FlowKind::Sequence { is_default: true } },
             ],
+            groups: Vec::new(),
         }
     }
 
@@ -500,7 +580,7 @@ mod tests {
                 },
             ],
             elements: vec![
-                Element { id: "start".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Start, trigger: Some(EventTrigger::Message) }, container: Some("sales".into()), attached_to: None },
+                Element { id: "start".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Start, trigger: Some(EventTrigger::Message) }, container: Some("sales".into()), attached_to: None, parent: None },
                 task("review", "주문 검토", Some("sales")),
             ],
             flows: vec![
@@ -663,4 +743,176 @@ mod tests {
         assert_ne!(overridden_row_of("참여자1"), overridden_row_of("참여자2"), "덮어쓴 방향에서는 풀 제목이 다른 줄에 있어야 한다");
     }
 }
+
+/// `render_bizprocess` 통합 테스트(tasks 5.1, 6.1, 6.2, 6.3) — 실제 문서 7개 + 합성 fixture.
+#[cfg(test)]
+mod bizprocess_render_tests {
+    use super::*;
+    use crate::diagram::options::ExpandPolicy;
+    use crate::style::Theme;
+
+    fn render(source: &str, width: usize, options: DiagramOptions) -> Option<(&'static str, Vec<Line>)> {
+        render_bizprocess(source, &Theme::none(), width, options)
+    }
+
+    fn text_of(lines: &[Line]) -> String {
+        lines.iter().map(Line::text).collect::<Vec<_>>().join("\n")
+    }
+
+    fn options_with_depth(policy: ExpandPolicy) -> DiagramOptions {
+        DiagramOptions { expand_policy: policy, ..DiagramOptions::default() }
+    }
+
+    // --- 7.1: 실제 문서 7개 회귀 ---
+
+    #[test]
+    fn every_real_document_renders_with_one_activity_caption_per_l2_and_no_leaked_structure() {
+        for (name, source) in fixtures::BIZPROCESS_REAL {
+            let (kind, lines) = render(source, 100, DiagramOptions::default()).unwrap_or_else(|| panic!("{name}은 렌더링돼야 한다"));
+            assert_eq!(kind, "process");
+            let rendered = text_of(&lines);
+            let model = &parse_bizprocess::parse(source).unwrap().models[0];
+            let l2_count = model.elements.iter().filter(|e| matches!(e.kind, model::ElementKind::Subprocess) && e.parent.is_none()).count();
+            let activity_captions = rendered.matches("◈ bizprocess · activity: ").count();
+            assert_eq!(activity_captions, l2_count, "{name}: Activity 캡션 수가 L2 수와 같아야 한다\n{rendered}");
+            for leaked in ["검토 요청", "valueChainRef", "VC-DG-", "(1.1", "(2.1", "(3.1"] {
+                assert!(!rendered.contains(leaked), "{name}: {leaked:?}가 그림에 남으면 안 된다");
+            }
+        }
+    }
+
+    #[test]
+    fn dg_watch_mode_shows_five_collapsed_l2_boxes_and_the_gateway_glyphs() {
+        let source = fixtures::BIZPROCESS_REAL.iter().find(|(name, _)| *name == "dg-watch-mode").unwrap().1;
+        let (_, process_lines) = render(source, 100, DiagramOptions::default()).unwrap();
+        let process_text = text_of(&process_lines);
+        let process_only = process_text.split("◈ bizprocess · activity").next().unwrap_or(&process_text);
+        assert_eq!(process_only.matches("[+]").count(), 5, "Process 장에 접힌 상자 5개:\n{process_only}");
+
+        let activity_text = process_text.split("activity: 감시 모드를 켠다").nth(1).unwrap();
+        let this_activity = activity_text.split("◈ bizprocess").next().unwrap();
+        assert!(this_activity.contains('×'));
+        assert!(this_activity.contains('╱'));
+        assert!(this_activity.contains("--watch"));
+    }
+
+    // --- 6.1~6.4: 정책 ---
+
+    #[test]
+    fn default_policy_is_activity_with_one_caption_per_non_empty_l2() {
+        let source = fixtures::BIZPROCESS_REAL[0].1;
+        let (_, lines) = render(source, 100, DiagramOptions::default()).unwrap();
+        assert_eq!(text_of(&lines).matches("◈ bizprocess · activity: ").count(), 5);
+    }
+
+    #[test]
+    fn depth_0_has_no_in_body_caption_and_all_is_one_chapter() {
+        let source = fixtures::BIZPROCESS_REAL[0].1;
+        let (_, lines0) = render(source, 100, options_with_depth(ExpandPolicy::Depth(0))).unwrap();
+        assert!(!text_of(&lines0).contains("◈ bizprocess"), "Depth(0)은 장이 하나라 본문 안 캡션이 없어야 한다");
+
+        let (_, lines_all) = render(source, 100, options_with_depth(ExpandPolicy::All)).unwrap();
+        assert!(!text_of(&lines_all).contains("◈ bizprocess"), "실제 문서는 참여자 태그가 없어 all이 그대로 한 장이어야 한다");
+    }
+
+    #[test]
+    fn tagged_fixture_with_all_falls_back_with_a_notice_and_activity_captions() {
+        let (_, lines) = render(fixtures::TAGGED_PROCESS_MD, 100, options_with_depth(ExpandPolicy::All)).expect("폴백 후 렌더링돼야 한다");
+        let text = text_of(&lines);
+        assert!(text.starts_with("※ depth=all 불가(참여자 전환) → activity"), "{text}");
+        assert!(text.contains("◈ bizprocess · activity: "));
+    }
+
+    #[test]
+    fn transition_fixture_produces_a_step_caption() {
+        let (_, lines) = render(fixtures::TRANSITION_IN_STEP_MD, 100, DiagramOptions::default()).expect("렌더링돼야 한다");
+        assert!(text_of(&lines).contains("◈ bizprocess · step: "));
+    }
+
+    #[test]
+    fn two_l1_headings_add_one_more_in_body_process_caption() {
+        let source = "## L1 Process: A\n### L2 Activity: X\n## L1 Process: B\n### L2 Activity: Y\n";
+        let (kind, lines) = render(source, 100, DiagramOptions::default()).expect("렌더링돼야 한다");
+        assert_eq!(kind, "process");
+        assert_eq!(text_of(&lines).matches("◈ bizprocess · process ").count(), 1, "본문 안 process 캡션이 하나 더 있어야 한다(첫 장 캡션은 diagram::render가 바깥에서 붙인다)");
+    }
+
+    #[test]
+    fn width_eight_yields_none() {
+        let source = fixtures::BIZPROCESS_REAL[0].1;
+        assert_eq!(render(source, 8, DiagramOptions::default()), None);
+    }
+
+    #[test]
+    fn a_parse_error_document_yields_none() {
+        assert_eq!(render("그냥 평문입니다\n", 100, DiagramOptions::default()), None);
+        assert_eq!(render("## L1 Process: A만 있고 L2 없음\n", 100, DiagramOptions::default()), None);
+    }
+
+    // --- 6.2: 합성 fixture의 풀·레인·그룹·경계 이벤트 렌더링 ---
+
+    #[test]
+    fn tagged_fixture_shows_pool_title_and_lanes_in_first_appearance_order() {
+        let (_, lines) = render(fixtures::TAGGED_PROCESS_MD, 100, DiagramOptions::default()).unwrap();
+        let text = text_of(&lines);
+        assert!(text.contains("신청 처리"), "풀 제목(L1 이름):\n{text}");
+        let row_of = |needle: &str| lines.iter().position(|l| l.text().contains(needle));
+        let gap_row = row_of("갑").expect("갑 레인이 있어야 한다");
+        let eul_row = row_of("을").expect("을 레인이 있어야 한다");
+        assert!(gap_row < eul_row, "첫 등장 순서(갑이 먼저)대로 레인이 위에서 아래로 있어야 한다");
+    }
+
+    #[test]
+    fn tagged_fixture_activity_chapter_shows_dashed_group_borders_and_both_l3_titles() {
+        let (_, lines) = render(fixtures::TAGGED_PROCESS_MD, 100, DiagramOptions::default()).unwrap();
+        let text = text_of(&lines);
+        let activity = text.split("activity: 분류한다").nth(1).unwrap().split("◈ bizprocess").next().unwrap();
+        assert!(activity.contains('╌') || activity.contains('╎'), "파선 그룹 테두리:\n{activity}");
+        assert!(activity.contains("창구"));
+        assert!(activity.contains("확인"));
+    }
+
+    #[test]
+    fn tagged_fixture_shows_boundary_error_on_the_process_chapter_and_the_error_end_event_on_the_activity_chapter() {
+        let (_, lines) = render(fixtures::TAGGED_PROCESS_MD, 100, DiagramOptions::default()).unwrap();
+        let text = text_of(&lines);
+        let process_only = text.split("◈ bizprocess · activity").next().unwrap();
+        assert!(process_only.contains("«error»"), "Process 장 L2 옆 경계 오류 이벤트:\n{process_only}");
+        let activity = text.split("activity: 심사한다").nth(1).unwrap();
+        assert!(activity.contains("◉ 용량초과") || activity.contains("용량초과"), "{activity}");
+        assert!(activity.contains("«error»"));
+        assert!(activity.contains('╱'), "default 흐름의 빗금 꼬리");
+        assert!(activity.contains("정상") && activity.contains("서류초과") && activity.contains("형식 아님"), "조건 라벨 셋:\n{activity}");
+    }
+
+    #[test]
+    fn depth_1_notice_mentions_the_numeric_depth() {
+        let (_, lines) = render(fixtures::TAGGED_PROCESS_MD, 100, options_with_depth(ExpandPolicy::Depth(1))).unwrap();
+        assert!(text_of(&lines).starts_with("※ depth=1 불가(참여자 전환) → activity"));
+    }
+
+    /// 회귀(독립 검증에서 발견) — L3 하나·L4 하나·L5 하나(갈래 없음)처럼 상자 안 내용이 아주
+    /// 단순한 Activity 장에서, 상자를 우회하는 시작→끝 통과선 때문에 상자 높이가 내용과 무관하게
+    /// 부풀지 않아야 한다(`layout::graph::place_block`의 제목-폭 오프셋 규칙이 위→아래 배치
+    /// 전용이어야 했는데 왼쪽→오른쪽에도 적용되던 결함).
+    #[test]
+    fn a_single_leaf_activity_chapter_does_not_inflate_its_box_height() {
+        let source = "## L1 Process: 테스트\n### L2 Activity: 하나\n  ### L3 FunctionGroup/UI: 그룹\n    ### L4 Step: 단계\n      ### L5 DetailStep: 상세1\n";
+        let (_, lines) = render(source, 100, DiagramOptions::default()).expect("렌더링돼야 한다");
+        let text = text_of(&lines);
+        let activity = text.split("activity: 하나").nth(1).unwrap();
+        let box_lines = activity.lines().take_while(|l| l.contains('│') || l.contains('┌') || l.contains('└')).count();
+        assert!(box_lines <= 12, "상자가 내용(노드 하나)에 비해 지나치게 부풀면 안 된다({box_lines}줄):\n{activity}");
+    }
+
+    #[test]
+    fn direction_tb_option_puts_pool_titles_on_one_line() {
+        let options = DiagramOptions { direction: Some((crate::diagram::ir::Direction::TopDown, false)), ..DiagramOptions::default() };
+        let (_, lines) = render(fixtures::TAGGED_PROCESS_MD, 200, options).unwrap();
+        let row_of = |needle: &str| lines.iter().position(|l| l.text().contains(needle));
+        assert_eq!(row_of("갑"), row_of("을"), "세로 배치에서는 레인 제목들이 한 줄에 나란해야 한다");
+    }
+}
+
+
 

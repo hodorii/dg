@@ -36,6 +36,30 @@ pub struct DiagramOptions {
     /// 다만 폭에 들어가지 않으면 반대 방향으로 다시 시도하는 것은 그대로다.
     /// `(축, 뒤집힘)` — 뒤집힘은 BT(TopDown 축)·RL(LeftRight 축)일 때 켠다.
     pub direction: Option<(Direction, bool)>,
+    /// `bizprocess` 드릴다운 펼침 정책(기본 `PerActivity`). `bpmn::lower::lower_with`가 소비한다.
+    pub expand_policy: ExpandPolicy,
+}
+
+/// `bizprocess` 드릴다운을 한 장으로 얼마나 펼칠지. `bpmn::lower::lower_with`가 소비한다 —
+/// `options`는 이 값의 의미를 모르고 파싱·전달만 한다(design §Allowed Dependencies).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ExpandPolicy {
+    /// 깊이 n까지 펼침(L2 = 0, L4 = 1, L5 = 2).
+    Depth(usize),
+    /// Process 장 + Activity(L2)마다 별도 장(기본).
+    #[default]
+    PerActivity,
+    /// 전부 펼친 한 장.
+    All,
+}
+
+/// `"all"` | `"activity"` | 음이 아닌 정수(공백·대소문자 무시). 그 외 `None`.
+pub fn parse_expand_policy(value: &str) -> Option<ExpandPolicy> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "all" => Some(ExpandPolicy::All),
+        "activity" => Some(ExpandPolicy::PerActivity),
+        other => other.parse::<usize>().ok().map(ExpandPolicy::Depth),
+    }
 }
 
 /// `tb`·`td`·`bt`·`lr`·`rl`과 그 별칭을 (축, 뒤집힘)으로 판별한다.
@@ -67,6 +91,8 @@ impl DiagramOptions {
                 key_value_pairs(rest)
             } else if let Some(rest) = trimmed.strip_prefix('\'').and_then(|r| r.trim().strip_prefix("dg:")) {
                 key_value_pairs(rest)
+            } else if let Some(rest) = trimmed.strip_prefix("<!--").and_then(|r| r.trim_start().strip_prefix("dg:")).and_then(|r| r.rsplit_once("-->").map(|(body, _)| body)) {
+                key_value_pairs(rest)
             } else {
                 continue;
             };
@@ -87,6 +113,11 @@ impl DiagramOptions {
             "direction" | "dir" | "layout" => {
                 if let Some(direction) = parse_direction(value) {
                     self.direction = Some(direction);
+                }
+            }
+            "depth" => {
+                if let Some(policy) = parse_expand_policy(value) {
+                    self.expand_policy = policy;
                 }
             }
             _ => {}
@@ -179,5 +210,23 @@ mod tests {
         assert_eq!(base.with_source("!pragma dg direction=TB").direction, Some((Direction::TopDown, false)));
         assert_eq!(base.with_source("%% dg: direction=bt").direction, Some((Direction::TopDown, true)));
         assert_eq!(base.with_source("%% dg: direction=rl").direction, Some((Direction::LeftRight, true)));
+    }
+
+    #[test]
+    fn parse_expand_policy_reads_all_activity_and_non_negative_integers_case_and_space_insensitively() {
+        assert_eq!(parse_expand_policy("all"), Some(ExpandPolicy::All));
+        assert_eq!(parse_expand_policy(" All "), Some(ExpandPolicy::All));
+        assert_eq!(parse_expand_policy("activity"), Some(ExpandPolicy::PerActivity));
+        assert_eq!(parse_expand_policy("0"), Some(ExpandPolicy::Depth(0)));
+        assert_eq!(parse_expand_policy("2"), Some(ExpandPolicy::Depth(2)));
+        assert_eq!(parse_expand_policy("deep"), None);
+        assert_eq!(parse_expand_policy("-1"), None);
+        assert_eq!(parse_expand_policy(""), None);
+    }
+
+    #[test]
+    fn depth_directive_is_read_from_markdown_comment_and_existing_mermaid_comment_forms() {
+        assert_eq!(DiagramOptions::default().with_source("<!-- dg: depth=all -->\nbizprocess").expand_policy, ExpandPolicy::All);
+        assert_eq!(DiagramOptions::default().with_source("%% dg: depth=1").expand_policy, ExpandPolicy::Depth(1));
     }
 }

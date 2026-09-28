@@ -72,11 +72,12 @@ dg -s light -w 80 doc.md      # 밝은 테마, 폭 80
 | `-s, --style auto\|dark\|light\|none` | 색 테마. auto는 TTY면 dark, `COLORFGBG`로 밝은 배경 감지 |
 | `-P, --print` | 페이저 없이 stdout으로 (파이프면 자동) |
 | `-d, --diagram` | 입력을 다이어그램 소스로 취급 |
-| `-l, --lang mermaid\|plantuml` | 다이어그램 언어 지정 (기본 자동 판별) |
+| `-l, --lang mermaid\|plantuml\|bpmn\|bizprocess` | 다이어그램 언어 지정 (기본 자동 판별) |
 | `--er-notation crow\|text\|both` | ERD 카디널리티 표기: 까치발(기본)·글자(`1`, `0..N`)·둘 다. 환경변수 `DG_ER_NOTATION` |
 | `--direction tb\|lr` | 그래프(흐름도·클래스·ER·상태·컴포넌트)·gitGraph 배치 방향 강제. 폭에 안 들어가면 반대 방향으로 재시도. 환경변수 `DG_DIRECTION` |
+| `--depth all\|activity\|N` | `bizprocess` 드릴다운 펼침 정책: 전부 펼침(`all`)·Process+Activity(`activity`, 기본)·깊이 `N`(0 이상 정수). 참여자 전환이 있으면 `all`/`N≥1`은 `activity`로 자동 폴백. 환경변수 `DG_DEPTH` |
 
-환경변수: `DG_STYLE=dark|light|none|auto`, `DG_ER_NOTATION=crow|text|both`, `DG_DIRECTION=tb|lr`, `NO_COLOR`.
+환경변수: `DG_STYLE=dark|light|none|auto`, `DG_ER_NOTATION=crow|text|both`, `DG_DIRECTION=tb|lr`, `DG_DEPTH=all|activity|N`, `NO_COLOR`.
 
 ### 소스 안 지시자
 
@@ -140,6 +141,21 @@ dg -s light -w 80 doc.md      # 밝은 테마, 폭 80
 | WBS(`@startwbs`) | OrgMode 깊이 표기(`*`/`**`/`***`, 단계를 건너뛰어도 직전 항목의 자식으로), 최상위 `*`가 여럿이면 각각 독립 뿌리, `_` 접미사(`*_`)로 테두리 없는 노드, `:`~`;`로 여러 줄 본문. 좌우로 갈라지는 산술 표기(`+`/`-`의 방향 의미)·`<`/`>`·노드 간 화살표·인라인 색상·`<style>`은 무시 |
 
 `skinparam`, `hide/show`, `!전처리`, `'주석`, `/' 블록 '/`, `legend`, `header/footer`는 무시한다.
+
+### bizprocess (` ```bizprocess `, ` ```biz-process `)
+
+Kiro 방법론의 `biz-process.md`(L1~L5 헤딩 계층 + `Logic(AST)`)를 BPMN Sub-Process 드릴다운으로 그린다.
+`-d`·표준입력·`--lang bizprocess`로도 판별된다(`## L1 …:` 헤딩 스니핑, 확장자 `.md`는 판별 대상 아님).
+
+| 요소 | 지원 |
+|------|------|
+| 헤딩 | `# 개수+공백+L<n> 종류: 이름` — 레벨은 `L<n>` 토큰만으로 정해지고(`#` 개수·들여쓰기·종류 낱말 무관), L1~L5 지원. 다음 줄로 이어지는 이름도 한 칸 띄워 합침 |
+| 괄호 태그 | 헤딩 끝 `(참여자: 이름)`(`participant`만 의미 있음, 대소문자·공백 그대로)와 ID 목록 `(1.1, 2.3)`(제거)을 뒤에서부터 구분. 그 외 괄호는 이름의 일부 |
+| 드릴다운 | L1 → Process 그림(풀 띠, 태그 있으면), L2 → 접힌 Sub-Process(`[+]`), L3 둘 이상 → 파선 그룹 상자, L4(L5 있으면 Sub-Process·없으면 태스크), L5 → 태스크. 형제는 문서 순서로 순차 연결 |
+| `Logic(AST):` | `- IF 조건 THEN 결과`/`ELSE IF`/`ELSE 결과`/`ELSE (메모) THEN 결과` → 배타 게이트웨이 + 라벨 흐름(`ELSE`는 default `╱`), `THROW 오류` → 오류 종료 이벤트 + L2 경계 `«error»`, 그 외 항목은 텍스트 주석 |
+| `--depth` 정책 | `activity`(기본, Process 1장 + L2마다 Activity 1장) · `all`(전부 펼친 1장) · `N`(깊이 `N`까지 펼침). 참여자 전환이 있는 곳은 못 펼치므로 자동으로 `activity`로 물러나고 안내 한 줄을 남김 |
+
+캡션은 장마다 `◈ bizprocess · process` / `· activity: 이름` / `· step: 이름`(참여자가 바뀌어 접힌 L4의 속). 구조가 깨진 문서는 원문 코드블록으로 물러난다.
 
 ## 라이브러리로 쓰기
 

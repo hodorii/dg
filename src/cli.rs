@@ -35,6 +35,10 @@ pub struct Cli {
     #[arg(long, value_enum)]
     pub direction: Option<DirectionArg>,
 
+    /// `bizprocess` 드릴다운 펼침 정책: `all`·`activity`(기본)·0 이상 정수(레벨). 소스 안 지시자가 우선
+    #[arg(long, value_parser = parse_depth)]
+    pub depth: Option<dg::diagram::options::ExpandPolicy>,
+
     /// 파일 변경을 감시해 자동으로 다시 렌더링(페이저·print 모드 모두 지원, 표준입력 불가)
     #[arg(short = 'W', long)]
     pub watch: bool,
@@ -78,4 +82,21 @@ pub enum LangArg {
     Mermaid,
     Plantuml,
     Bpmn,
+    Bizprocess,
+}
+
+impl From<LangArg> for dg::diagram::Language {
+    fn from(value: LangArg) -> Self {
+        match value {
+            LangArg::Mermaid => dg::diagram::Language::Mermaid,
+            LangArg::Plantuml => dg::diagram::Language::PlantUml,
+            LangArg::Bpmn => dg::diagram::Language::Bpmn,
+            LangArg::Bizprocess => dg::diagram::Language::BizProcess,
+        }
+    }
+}
+
+/// `--depth` 값 판별. 실패하면 명령줄 오류로 비제로 종료(clap이 처리).
+fn parse_depth(value: &str) -> Result<dg::diagram::options::ExpandPolicy, String> {
+    dg::diagram::options::parse_expand_policy(value).ok_or_else(|| format!("`all`·`activity`·0 이상 정수여야 합니다: {value:?}"))
 }

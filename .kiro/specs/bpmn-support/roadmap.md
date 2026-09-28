@@ -63,7 +63,7 @@ BPMN 2.0 렌더링을 세 입력 문법(BPMN XML/biz-process.md/향후 mermaid)�
   · 예시 · 기존 파서 재사용 지점 그대로). `bpmn-xml`이 검증한 `bpmn::Model`을
   그대로 옮기는 대안 직렬화로 뒤에 둔다.
   Dependencies: bpmn-model, bpmn-xml
-- [ ] bizprocess-bpmn -- `bpmn/bizprocess.rs`(L1~L5+Logic(AST) → Model,
+- [x] bizprocess-bpmn -- `bpmn/bizprocess.rs`(L1~L5+Logic(AST) → Model,
   `participant:` 태그 파싱, `ExpandPolicy`/`depth` 옵션), 저장소의 기존
   `biz-process.md` 7개를 회귀 fixture로 사용.
   Dependencies: bpmn-model

@@ -879,8 +879,13 @@ impl<'a> Layout<'a> {
                 })
                 .max()
                 .unwrap_or(0);
-            // 닻(그룹으로 드나드는 화살표 자리)은 테두리 제목 글자와 겹치지 않게 제목 오른쪽에 둔다.
-            if let Child::Node(i) = child
+            // 닻(그룹으로 드나드는 화살표 자리)은 테두리 제목 글자와 겹치지 않게 제목 오른쪽에
+            // 둔다 — 위→아래 배치에서만 뜻이 있다: 제목이 상자 위 테두리를 가로로 차지하므로
+            // 그 글자 폭만큼 `start`(가로 위치)를 밀어야 겹치지 않는다. 왼쪽→오른쪽 배치에서는
+            // `start`가 세로 위치라 제목 "폭"과 무관하다 — 그대로 적용하면 제목이 길수록 닻이
+            // 아래로 밀려 상자가 실제 내용과 무관하게 부풀어 오른다(bizprocess-bpmn 회귀).
+            if self.direction == Direction::TopDown
+                && let Child::Node(i) = child
                 && self.lnodes[i].node.is_some_and(|n| self.graph.nodes[n].shape == Shape::Anchor)
                 && let Some(g) = self.blocks[block].group
             {
@@ -1831,7 +1836,9 @@ impl<'a> Layout<'a> {
             let (x0, y0) = self.to_canvas(top, block.start);
             let (x1, y1) = self.to_canvas(bottom, block.start + block.width - 1);
             let (w, h) = (x1 - x0 + 1, y1 - y0 + 1);
-            canvas.rect(x0, y0, w, h, LineKind::Solid, self.theme.diagram_group, false);
+            // 레인은 항상 실선 — 파선은 Box 그룹(BPMN L3 등)에만 의미가 있다.
+            let line = if self.is_lane(b) { LineKind::Solid } else { self.graph.groups[block.group.unwrap()].line };
+            canvas.rect(x0, y0, w, h, line, self.theme.diagram_group, false);
             if self.is_lane(b) {
                 // 구분선: 배너 전체와 내용 상자를 가르는 교차선. `group_top(b)`가 이미
                 // `layer_start[0] + 2*rank`(레인은 rank 0이라 사슬 전체가 같은 줄)를 준다.
@@ -2528,6 +2535,76 @@ mod tests {
             out[sub_title_row + 1].contains('┌'),
             "SubLane 제목 줄 바로 다음이 구분선 겸 s1 상자 윗변이어야 한다(이중 구분선 없음): {text}"
         );
+    }
+
+    // ── 그룹 테두리 선 종류(bizprocess-bpmn 1.2) ─────────────────────────
+
+    /// 레인 > 파선 Box 그룹 > 실선 Box 그룹 > 노드의 2단 중첩. 파선 그룹은 대시 글자로, 그
+    /// 안의 실선 그룹은 이전과 같은 실선 글자로 그려지고, 노드는 레인 띠 안쪽에 있다.
+    #[test]
+    fn dashed_box_group_renders_with_dash_glyphs_nested_inside_a_solid_box_inside_a_lane() {
+        for direction in [Direction::TopDown, Direction::LeftRight] {
+            let mut g = Graph { direction: Some(direction), ..Graph::default() };
+            let lane = g.add_lane("Lane", None);
+            let dashed = g.add_group_with_id("dashed", "Dashed", Some(lane));
+            g.set_group_line(dashed, LineKind::Dashed);
+            let solid = g.add_group_with_id("solid", "Solid", Some(dashed));
+            let n = g.intern("n", "n", Shape::Rect, Some(solid));
+            let m = g.intern("m", "m", Shape::Rect, Some(lane));
+            g.add_edge(Edge { from: n, to: m, head: Marker::Arrow, ..Edge::default() });
+            let out = rows(render(&g, &Theme::none(), 100).unwrap());
+            let text = out.join("\n");
+            assert!(text.contains('╌') || text.contains('╎'), "파선 그룹 테두리에 대시 글자가 있어야 한다({direction:?}): {text}");
+            assert!(text.contains('┌') && text.contains('└'), "실선 그룹 테두리는 이전과 같은 실선 글자여야 한다({direction:?}): {text}");
+            let lane_left = char_col(&out[0], '┌');
+            let lane_right = char_rcol(&out[0], '┐');
+            let n_row = out.iter().position(|l| l.contains('n')).unwrap_or_else(|| panic!("n not found({direction:?}): {text}"));
+            let n_col = out[n_row].find('n').unwrap();
+            assert!(n_col > lane_left && n_col < lane_right, "노드가 레인 띠 안쪽 칸에 있어야 한다({direction:?}): {text}");
+        }
+    }
+
+    /// 레인 > 파선 Box 그룹 > 노드(1단 중첩)도 대시 글자로 그려지고 기존 실선 그룹·레인 전용
+    /// 테스트는 전부 무수정으로 통과한다(회귀 없음은 이 파일의 나머지 테스트가 증명한다).
+    #[test]
+    fn dashed_box_group_directly_inside_a_lane_renders_with_dash_glyphs() {
+        let mut g = Graph::default();
+        let lane = g.add_lane("Lane", None);
+        let dashed = g.add_group_with_id("dashed", "Dashed", Some(lane));
+        g.set_group_line(dashed, LineKind::Dashed);
+        g.intern("n", "n", Shape::Rect, Some(dashed));
+        let out = rows(render(&g, &Theme::none(), 100).unwrap());
+        let text = out.join("\n");
+        assert!(text.contains('╌') || text.contains('╎'), "파선 그룹 테두리에 대시 글자가 있어야 한다: {text}");
+    }
+
+    /// 기본 Box 그룹은 `line` 필드를 손대지 않으면 실선 그대로다(바이트 동일 보장).
+    #[test]
+    fn plain_box_group_defaults_to_solid_line() {
+        let mut g = Graph::default();
+        let group = g.add_group("Backend", None);
+        assert_eq!(g.groups[group].line, LineKind::Solid);
+    }
+
+    /// bizprocess-bpmn 회귀 — `place_block`의 "닻은 제목 글자 폭만큼 오른쪽에 둔다" 규칙은
+    /// 위→아래 배치에서만 뜻이 있다(제목이 상자 위 테두리를 가로로 차지하므로). 왼쪽→오른쪽
+    /// 배치에서 그 규칙을 그대로 적용하면 제목 길이만큼 닻(그리고 층을 공유하는 형제 내용)이
+    /// 세로로 밀려 상자가 내용과 무관하게 부풀어 오른다 — 이 latent 결함은 `layout::graph`
+    /// 자체(그룹 id를 간선 끝으로 쓰는 모든 곳, 예: mermaid `subgraph` id를 향한 간선)에 있었고
+    /// bizprocess의 L2/L4 Sub-Process 상자가 처음으로 크게 드러냈을 뿐이다.
+    #[test]
+    fn a_titled_box_groups_height_does_not_grow_with_its_title_length_in_left_to_right_layout() {
+        let mut g = Graph { direction: Some(Direction::LeftRight), ..Graph::default() };
+        let group = g.add_group_with_id("box", "아주 길고 긴 상자 제목입니다 정말로 깁니다", None);
+        g.intern("inner", "inner", Shape::Rect, Some(group));
+        let start = g.intern("start", "start", Shape::Rect, None);
+        let end = g.intern("end", "end", Shape::Rect, None);
+        let anchor_in = g.group_anchor(group);
+        g.add_edge(Edge { from: start, to: anchor_in, head: Marker::Arrow, ..Edge::default() });
+        let anchor_out = g.group_anchor(group);
+        g.add_edge(Edge { from: anchor_out, to: end, head: Marker::Arrow, ..Edge::default() });
+        let out = rows(render(&g, &Theme::none(), 200).unwrap());
+        assert!(out.len() <= 12, "제목이 길어도 상자 높이는 내용(노드 하나)에 비례해야 한다({}줄):\n{}", out.len(), out.join("\n"));
     }
 
     /// 요구사항 4.1, 4.6: TB에서 레인 제목 줄이 첫 노드 줄보다 위이고 테두리 선(─)과 겹치지
