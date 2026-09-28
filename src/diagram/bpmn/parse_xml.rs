@@ -4,7 +4,7 @@
 //! 흐름을 채운다. 검증은 하지 않는다(`render_model`이 `validate`를 부른다). 어휘는
 //! `super::vocabulary`의 `from_xml_name`만 호출 — 새 매핑표를 두지 않는다.
 
-use super::model::{Element, ElementKind, EventPosition, EventTrigger, Flow, FlowKind, GatewayKind, Lane, Model, Participant, TaskKind};
+use super::model::{Element, ElementKind, EventTrigger, Flow, FlowKind, Lane, Model, Participant};
 use super::xml::{self, XmlElement, XmlError};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -222,26 +222,14 @@ fn build_lane(lane_elem: &XmlElement, counter: &mut usize, node_lane_map: &mut H
     Lane { id, name, sub_lanes }
 }
 
+/// `vocabulary::element_kind_from_xml_name`의 결과에 이벤트 트리거만 얹는다(동작은 이 승격
+/// 이전과 완전히 같다 — design §Key Decisions, 7.2).
 fn element_kind_of(local_name: &str, elem: &XmlElement) -> Option<ElementKind> {
-    match local_name {
-        "startEvent" => Some(ElementKind::Event { position: EventPosition::Start, trigger: event_trigger_of(elem) }),
-        "intermediateCatchEvent" | "intermediateThrowEvent" | "boundaryEvent" => Some(ElementKind::Event { position: EventPosition::Intermediate, trigger: event_trigger_of(elem) }),
-        "endEvent" => Some(ElementKind::Event { position: EventPosition::End, trigger: event_trigger_of(elem) }),
-        "subProcess" | "adHocSubProcess" | "transaction" => Some(ElementKind::Subprocess),
-        "callActivity" => Some(ElementKind::CallActivity),
-        "dataObjectReference" => Some(ElementKind::DataObject),
-        "dataStoreReference" => Some(ElementKind::DataStore),
-        "textAnnotation" => Some(ElementKind::TextAnnotation),
-        other => {
-            if let Some(kind) = TaskKind::from_xml_name(other) {
-                return Some(ElementKind::Task(kind));
-            }
-            if let Some(kind) = GatewayKind::from_xml_name(other) {
-                return Some(ElementKind::Gateway(kind));
-            }
-            None
-        }
-    }
+    let kind = super::vocabulary::element_kind_from_xml_name(local_name)?;
+    Some(match kind {
+        ElementKind::Event { position, .. } => ElementKind::Event { position, trigger: event_trigger_of(elem) },
+        other => other,
+    })
 }
 
 /// 해석되는 `*EventDefinition` 자식 0개 → `None`, 1개 → 그것, 2개 이상 → `parallelMultiple="true"`면
@@ -284,6 +272,7 @@ fn collect_ids(elem: &XmlElement, ids: &mut HashSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::model::{EventPosition, GatewayKind, TaskKind};
 
     // --- looks_like_bpmn ---
 

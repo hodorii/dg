@@ -1,0 +1,7 @@
+nodes:
+  - a: startEvent
+  - b: task 처리
+  - c: endEvent
+flows:
+  - a --> b
+  - b --> c

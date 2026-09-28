@@ -245,6 +245,30 @@ mod robustness {
             r#"<definitions><collaboration id="c1"><participant id="p1" processRef="pr1"/><participant id="p2" processRef="pr2"/></collaboration><process id="pr1"><task id="a"/></process><process id="pr2"><task id="b"/><sequenceFlow id="f1" sourceRef="a" targetRef="b"/></process></definitions>"#.into(),
             // 중복 id(5.8) — validate가 거부.
             r#"<definitions><process id="p1"><task id="dup"/><task id="dup"/></process></definitions>"#.into(),
+            // --- bpmn-yaml(6.1~6.5, 4.10, 5.9) ---
+            // 줄 중간에서 잘림 — 아스키 문자열 경계에서 잘라 안전하다.
+            {
+                let fixture = crate::diagram::bpmn::fixtures::ORDER_PROCESSING_YAML;
+                let cut_at = fixture.find("boundary-error").expect("fixture에 있어야 한다");
+                fixture[..cut_at + 5].to_string()
+            },
+            // 블록 중간에서 잘림 — `lane-warehouse:` 블록 전체가 사라진다.
+            {
+                let fixture = crate::diagram::bpmn::fixtures::ORDER_PROCESSING_YAML;
+                let cut_at = fixture.find("lane-warehouse").expect("fixture에 있어야 한다");
+                fixture[..cut_at].to_string()
+            },
+            "# 주석만 있는 문서\n".into(),
+            "---\n".into(),
+            "nodes:\n  - a:\n      kind: task\n      name: &anchor\n".into(), // 앵커(2.8)
+            "nodes:\n\t- a: task\n".into(),                                  // 탭 들여쓰기(2.9)
+            "nodes:\n  - a: UnknownKind\n".into(),                           // 모르는 종류(4.8)
+            "nodes:\n  - a: task\n  - b: task\nflows:\n  - a-->b\n".into(),  // 화살 앞뒤 공백 없음(5.7)
+            "nodes:\n  - a: task\n  - b: task\nflows:\n  - a ==> b\n".into(), // 지원하지 않는 화살(5.6)
+            "nodes:\n  - gw:\n      kind: exclusiveGateway\n      default: ghost\n".into(), // default 대상 흐름 없음(4.7)
+            // 레인 끝 메시지 흐름(5.9) — validate가 거부.
+            "participants:\n  - p1:\n      lanes:\n        - lane1: 레인\n  - p2:\n      nodes:\n        - a: task\nflows:\n  - lane1 -.-> a\n".into(),
+            "nodes:\n  - a: task\n  - a: task\n".into(), // 중복 id(4.10) — validate가 거부.
         ];
         for source in &bpmn_must_be_none {
             for width in [8usize, 20, 40, 80, 200] {
@@ -260,6 +284,14 @@ mod robustness {
             r#"<process id="p1"><task id="a"/><task id="b"/><sequenceFlow sourceRef="a" targetRef="b"/></process>"#.into(), // id 없는 흐름
             r#"<process id="p1"><startEvent id="s"><messageEventDefinition/><timerEventDefinition/></startEvent></process>"#.into(), // 이벤트 정의 2개
             r#"<process id="p1"><startEvent id="s"/><subProcess id="sp"><task id="inner"/><startEvent id="inner-s"/></subProcess><endEvent id="e"/><sequenceFlow id="f1" sourceRef="s" targetRef="sp"/><sequenceFlow id="f2" sourceRef="sp" targetRef="e"/></process>"#.into(), // subProcess 안 노드
+            // --- bpmn-yaml fixture 전부(6.6) ---
+            crate::diagram::bpmn::fixtures::ORDER_PROCESSING_YAML.into(),
+            crate::diagram::bpmn::fixtures::WIDTH_TWO_YAML.into(),
+            crate::diagram::bpmn::fixtures::WIDTH_FOUR_YAML.into(),
+            crate::diagram::bpmn::fixtures::WIDTH_MIXED_YAML.into(),
+            crate::diagram::bpmn::fixtures::QUOTING_AND_TYPES_YAML.into(),
+            crate::diagram::bpmn::fixtures::FLAT_NODES_YAML.into(),
+            crate::diagram::bpmn::fixtures::NESTED_LANES_YAML.into(),
         ];
         for source in &bpmn_may_render {
             for width in [8usize, 20, 40, 80, 200] {
@@ -289,11 +321,28 @@ mod robustness {
         assert_eq!(language_of_source(None, "<html><body></body></html>"), Some(Language::PlantUml));
     }
 
+    /// tasks 4.2 — 확장자·펜스 없는 BPMN YAML도 BPMN으로 판별되고(1.4), `.yaml`/`.yml` 확장자는
+    /// 그 자체로 BPMN을 뜻하지 않는다(1.5, 본문 스니핑을 따른다).
+    #[test]
+    fn yaml_fixture_without_extension_or_fence_is_recognized_as_bpmn_and_yaml_extensions_defer_to_sniffing() {
+        assert_eq!(language_of_source(None, crate::diagram::bpmn::fixtures::ORDER_PROCESSING_YAML), Some(Language::Bpmn));
+        assert_eq!(language_of_path("x.yaml"), None);
+        assert_eq!(language_of_path("x.yml"), None);
+        // 확장자가 판별에 끼어들지 않으므로, 경로가 `.yaml`이어도 본문 스니핑 결과를 따른다.
+        assert_eq!(language_of_source(Some("x.yaml"), crate::diagram::bpmn::fixtures::ORDER_PROCESSING_YAML), Some(Language::Bpmn));
+        // `.yml` 확장자는 그 자체로 아무 언어도 뜻하지 않으므로, 구조 키 없는 본문은 PlantUML의
+        // 포괄 판별(점수 없으면 `Some("class")`)로 떨어진다 — 이 기능 이전과 같은 결과.
+        assert_eq!(language_of_source(Some("x.yml"), "그냥 평문"), Some(Language::PlantUml));
+    }
+
     /// tasks 3.2 — 기존 PlantUML·mermaid 판별은 이 스펙 이후에도 그대로다(1.6).
     #[test]
     fn language_of_source_leaves_existing_plantuml_and_mermaid_detection_unchanged() {
         assert_eq!(language_of_source(None, "class A"), Some(Language::PlantUml));
         assert_eq!(language_of_source(None, "flowchart TB\n A --> B"), Some(Language::Mermaid));
+        // `title:`만 있고 구조 키(participants·nodes·flows)가 없는 평문은 BPMN YAML로 스니핑되지
+        // 않으므로(1.3) 이 기능 이전과 같은 판별 결과로 남는다.
+        assert_eq!(language_of_source(None, "title: 문서\n본문"), Some(Language::PlantUml));
         for source in [
             "@startuml\n@enduml",
             "@startuml\nA -> B\n@enduml",

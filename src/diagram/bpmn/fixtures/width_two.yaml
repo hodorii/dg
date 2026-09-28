@@ -1,0 +1,8 @@
+title: 폭 확인
+nodes:
+  - a: startEvent
+  - b:
+      kind: task
+      name: 처리
+flows:
+  - a --> b

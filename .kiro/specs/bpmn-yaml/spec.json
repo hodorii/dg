@@ -1,9 +1,9 @@
 {
   "feature_name": "bpmn-yaml",
   "created_at": "2026-09-27T16:51:49Z",
-  "updated_at": "2026-09-27T17:30:00Z",
+  "updated_at": "2026-09-28T00:00:00Z",
   "language": "ko",
-  "phase": "tasks-approved",
+  "phase": "completed",
   "approvals": {
     "requirements": {
       "generated": true,
