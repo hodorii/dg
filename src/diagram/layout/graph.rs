@@ -124,8 +124,20 @@ struct Layout<'a> {
     /// 원천을 마지막 층에, 도착을 첫 층에 두게 되어 그 뒤로는 보통 TB/LR과 똑같이 그려진다).
     reverse_along: bool,
     segments: Vec<Segment>,
+    /// 노드별 나가는/들어오는 구간 번호(구간 색인 오름차순) — `make_segments()` 끝에서 만든다.
+    /// `assign_ports()`·`straighten_layer()`가 전체 구간을 훑는 대신 이 목록을 읽는다(결과
+    /// 동일 변환: 원래 `segments.iter().filter(...)`와 원소·순서가 같다).
+    outgoing_of: Vec<Vec<usize>>,
+    incoming_of: Vec<Vec<usize>>,
+    /// (d) 층별 구성원 색인(노드 색인 오름차순) — `make_segments()` 끝에서 만든다.
+    /// `straighten_layer()`가 매번 `0..lnodes.len()`을 훑어 층을 거르는 대신 이걸 복제해 쓴다
+    /// (원소가 원래 필터와 같으므로 `across`로 다시 정렬해도 같은 결과).
+    layer_members: Vec<Vec<usize>>,
     adjacency: Vec<Vec<usize>>,
     blocks: Vec<Block>,
+    /// (d) 블록별 등록된 레인 자식 목록(자식 순서) — `build_blocks()` 끝에서 만든다. 레인 자식이
+    /// 있는 블록은 `reorder()`·`improve_by_swaps()`가 건너뛰므로 `children` 순서가 안 바뀐다.
+    lane_children: Vec<Vec<usize>>,
     lnode_block: Vec<usize>,
     layer_count: usize,
     layer_start: Vec<usize>,
@@ -162,6 +174,16 @@ const SWAP_REACH_LARGE: usize = 2;
 const CROSSING_PENALTY: f64 = 12.0;
 /// 폭이 줄지 않는 접기를 연속으로 참아 주는 횟수.
 const FOLD_PATIENCE: usize = 12;
+/// 접기 재시도 한 시도 안에서 구간 수가 이 상한을 넘으면 그 시도를 접는다(`None`). 정체
+/// 계산(`stalls`)·`FOLD_PATIENCE`·`MAX_FOLDS`·접기 후보 로직은 그대로 두고, 배치 한 번의
+/// 크기(구간 수)에만 절대 상한을 건다 — design.md가 표본 실측(수정 전 12초 타임아웃 안에
+/// 그림으로 끝난 건의 최종 구간 수 최대 992)으로 근거를 댄 값이라 조정하지 않는다. 12초 밖의
+/// 입력(예: `labels_s3_c20`·`base_s9_c40`)은 접기 도중 구간 수가 수천~1만 대까지 갔다가도
+/// 회복하는 사례가 있어 patience(연속 초과 허용)로 구제하려 했으나, streak 7·8~17까지도
+/// 회복하지 않는 반례가 함께 나와 유한한 patience로는 "곧 회복"과 "영원히 회복 안 함"을
+/// 가릴 수 없다는 게 확인됐다(research.md) — 그래서 원안대로 되돌렸다: 12초 밖 입력은
+/// bugfix.md 2.4에 따라 결과가 바뀔 수 있고 그게 맞다.
+const FOLD_SEGMENT_LIMIT: usize = 1500;
 
 impl<'a> Layout<'a> {
     fn build(graph: &'a Graph, theme: &'a Theme, direction: Direction, cap: usize, width: usize, allow_fold: bool) -> Option<Canvas> {
@@ -198,6 +220,11 @@ impl<'a> Layout<'a> {
             }
             layout.reset_arrangement();
             layout.arrange(false);
+            // (a) 접기 재시도의 구간 수 절대 상한: 접기 쳇바퀴(폭이 안 줄면서 층·가상 노드·구간
+            // 수만 누적)에 빠진 시도를 배치 한 번의 크기가 커지기 전에 접는다.
+            if layout.segments.len() > FOLD_SEGMENT_LIMIT {
+                return None;
+            }
             let folded_width = layout.canvas_size().0;
             if folded_width < best_width {
                 best_width = folded_width;
@@ -253,8 +280,12 @@ impl<'a> Layout<'a> {
             node.across = 0;
         }
         self.segments.clear();
+        self.outgoing_of.clear();
+        self.incoming_of.clear();
+        self.layer_members.clear();
         self.adjacency.clear();
         self.blocks.clear();
+        self.lane_children.clear();
         self.lnode_block.clear();
         self.extra_across = 0;
         self.block_extra.clear();
@@ -479,8 +510,12 @@ impl<'a> Layout<'a> {
             reversed: vec![false; graph.edges.len()],
             reverse_along: graph.direction_reversed,
             segments: Vec::new(),
+            outgoing_of: Vec::new(),
+            incoming_of: Vec::new(),
+            layer_members: Vec::new(),
             adjacency: Vec::new(),
             blocks: Vec::new(),
+            lane_children: Vec::new(),
             lnode_block: Vec::new(),
             layer_count: 0,
             layer_start: Vec::new(),
@@ -700,6 +735,23 @@ impl<'a> Layout<'a> {
             self.adjacency[segment.from].push(segment.to);
             self.adjacency[segment.to].push(segment.from);
         }
+        // (c) 노드별 구간 색인: 구간 색인 오름차순으로 쌓으므로 원소·순서가
+        // `segments.iter().filter(|s| s.from == i)`(또는 `to == i`)와 정확히 같다.
+        self.outgoing_of = vec![Vec::new(); self.lnodes.len()];
+        self.incoming_of = vec![Vec::new(); self.lnodes.len()];
+        for (s, segment) in self.segments.iter().enumerate() {
+            self.outgoing_of[segment.from].push(s);
+            self.incoming_of[segment.to].push(s);
+        }
+        // (d) 층별 구성원 색인: 노드 색인 오름차순으로 쌓으므로
+        // `(0..lnodes.len()).filter(|&i| lnodes[i].layer == layer)`와 원소·순서가 같다.
+        self.layer_members = vec![Vec::new(); self.layer_count];
+        for i in 0..self.lnodes.len() {
+            let layer = self.lnodes[i].layer;
+            if layer < self.layer_members.len() {
+                self.layer_members[layer].push(i);
+            }
+        }
     }
 
     /// 그룹마다 유효 층 범위 — Lane은 부모의 유효 범위(부모 없으면 다이어그램 전체), Box는
@@ -796,6 +848,19 @@ impl<'a> Layout<'a> {
                 let g = self.blocks[block].group.unwrap();
                 self.blocks[block].layer_min = effective[g].0;
                 self.blocks[block].layer_max = effective[g].1;
+            }
+        }
+        // (d) 블록별 등록된 레인 자식 목록: `children` 순서 그대로(레인 자식이 있는 블록은
+        // `reorder()`·`improve_by_swaps()`가 건너뛰므로 이 순서는 이후 안 바뀐다).
+        self.lane_children = vec![Vec::new(); self.blocks.len()];
+        for block in 0..self.blocks.len() {
+            for &child in &self.blocks[block].children {
+                if let Child::Block(b) = child
+                    && self.is_lane(b)
+                    && self.blocks[b].registered
+                {
+                    self.lane_children[block].push(b);
+                }
             }
         }
     }
@@ -1153,7 +1218,9 @@ impl<'a> Layout<'a> {
     }
 
     fn straighten_layer(&mut self, layer: usize, use_upper: bool) {
-        let mut members: Vec<usize> = (0..self.lnodes.len()).filter(|&i| self.lnodes[i].layer == layer).collect();
+        // (d) 층별 구성원 색인: 매번 `0..lnodes.len()`을 훑어 층을 거르는 대신 복제해 정렬한다
+        // (원소는 원래 필터와 같으므로 안정 정렬 결과도 같다).
+        let mut members: Vec<usize> = self.layer_members.get(layer).cloned().unwrap_or_default();
         members.sort_by_key(|&i| self.lnodes[i].across);
         for (k, &i) in members.iter().enumerate() {
             let has_upper = self.adjacency[i].iter().any(|&n| self.lnodes[n].layer + 1 == layer);
@@ -1161,19 +1228,27 @@ impl<'a> Layout<'a> {
                 continue;
             }
             // 접점끼리 맞아떨어지는 시작 위치들의 중앙값을 목표로 한다.
-            let mut targets: Vec<i64> = self
-                .segments
-                .iter()
-                .filter_map(|segment| {
-                    if use_upper && segment.to == i && self.lnodes[segment.from].layer + 1 == layer {
-                        Some(self.lnodes[segment.from].across as i64 + segment.exit_offset as i64 - segment.entry_offset as i64)
-                    } else if !use_upper && segment.from == i && self.lnodes[segment.to].layer == layer + 1 {
-                        Some(self.lnodes[segment.to].across as i64 + segment.entry_offset as i64 - segment.exit_offset as i64)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            // (c) 노드별 구간 색인: 전체 구간 대신 이 노드가 닿은 구간만 훑는다(원소·순서는
+            // 원래 `segments.iter().filter(...)`와 같다 — 둘 다 구간 색인 오름차순).
+            let mut targets: Vec<i64> = if use_upper {
+                self.incoming_of[i]
+                    .iter()
+                    .filter_map(|&s| {
+                        let segment = &self.segments[s];
+                        (self.lnodes[segment.from].layer + 1 == layer)
+                            .then(|| self.lnodes[segment.from].across as i64 + segment.exit_offset as i64 - segment.entry_offset as i64)
+                    })
+                    .collect()
+            } else {
+                self.outgoing_of[i]
+                    .iter()
+                    .filter_map(|&s| {
+                        let segment = &self.segments[s];
+                        (self.lnodes[segment.to].layer == layer + 1)
+                            .then(|| self.lnodes[segment.to].across as i64 + segment.entry_offset as i64 - segment.exit_offset as i64)
+                    })
+                    .collect()
+            };
             if targets.is_empty() {
                 continue;
             }
@@ -1199,9 +1274,10 @@ impl<'a> Layout<'a> {
             // 레인 형제 블록은 실제 구성원이 없는 층에도 (다이어그램 전체를 관통하므로) 자리를
             // 차지한다 — 그 층에 같은 층 이웃이 없어 위 두 검사로 못 잡는다. 레인 상자 밖에
             // 그려져야 하는 노드(요구사항 3.3)가 침범하지 않게 별도로 막는다.
-            for child in self.blocks[container].children.clone() {
-                let Child::Block(b) = child else { continue };
-                if !(self.is_lane(b) && self.blocks[b].registered && self.blocks[b].layer_min <= layer && layer <= self.blocks[b].layer_max) {
+            // (d) 블록별 등록된 레인 자식 목록: `is_lane(b)`·`registered`는 이미 걸러져 있으므로
+            // 층 범위만 확인한다(이건 `layer`마다 달라 미리 걸러 둘 수 없다).
+            for &b in self.lane_children.get(container).map(Vec::as_slice).unwrap_or_default() {
+                if !(self.blocks[b].layer_min <= layer && layer <= self.blocks[b].layer_max) {
                     continue;
                 }
                 let (bstart, bend) = (self.blocks[b].start, self.blocks[b].start + self.blocks[b].width);
@@ -1332,7 +1408,7 @@ impl<'a> Layout<'a> {
         let count = self.lnodes.len();
         for i in 0..count {
             let base = self.lnodes[i].across;
-            let mut outgoing: Vec<usize> = (0..self.segments.len()).filter(|&s| self.segments[s].from == i).collect();
+            let mut outgoing: Vec<usize> = self.outgoing_of[i].clone();
             outgoing.sort_by(|&a, &b| {
                 let ca = self.lnodes[self.segments[a].to].center();
                 let cb = self.lnodes[self.segments[b].to].center();
@@ -1344,7 +1420,7 @@ impl<'a> Layout<'a> {
                 self.segments[s].exit_offset = self.spread(i, k, total, spacing) - base;
                 self.segments[s].exit_rank = (k, total);
             }
-            let mut incoming: Vec<usize> = (0..self.segments.len()).filter(|&s| self.segments[s].to == i).collect();
+            let mut incoming: Vec<usize> = self.incoming_of[i].clone();
             incoming.sort_by(|&a, &b| {
                 let ca = self.lnodes[self.segments[a].from].center();
                 let cb = self.lnodes[self.segments[b].from].center();
@@ -1505,8 +1581,16 @@ impl<'a> Layout<'a> {
         }
     }
 
+    /// 모든 구간의 접점(exit/entry)을 다시 계산한다 — `refresh_ports_for()`의 전체 버전(SSoT).
     fn refresh_ports(&mut self) {
-        for s in 0..self.segments.len() {
+        self.refresh_ports_for(0..self.segments.len());
+    }
+
+    /// (b) 국소 갱신: 주어진 구간만 접점(exit/entry)을 다시 계산한다. 전체 `refresh_ports()`와
+    /// 같은 값을 내는 이유는 design.md 불변식 ①②(아래 `resolve_port_swaps()` 주석) — 나머지
+    /// 구간은 입력(출발/도착 노드·층·across·오프셋)이 그대로라 다시 계산해도 같은 값이 나온다.
+    fn refresh_ports_for<I: IntoIterator<Item = usize>>(&mut self, segments: I) {
+        for s in segments {
             let (from, to) = (self.segments[s].from, self.segments[s].to);
             self.segments[s].exit = self.lnodes[from].across + self.segments[s].exit_offset;
             self.segments[s].entry = self.lnodes[to].across + self.segments[s].entry_offset;
@@ -1515,12 +1599,35 @@ impl<'a> Layout<'a> {
 
     /// 같은 통로에서 두 간선이 서로의 열을 맞바꾸는 X자 교차(i.exit == j.entry, j.exit == i.entry)는
     /// 줄 순서로는 풀 수 없다. 실제 노드에 붙은 접점을 한 칸 옮겨 열을 어긋나게 한다.
+    /// (b) X자 교차 해소: 짝 후보를 "출발 층이 같은 구간"으로만 좁히고(층별 버킷), 접점 갱신을
+    /// 전체가 아니라 바뀐 구간만 국소로 한다. 동치가 성립하는 불변식(후속 변경이 조용히
+    /// 깨뜨리지 않도록 여기 적는다):
+    /// ① `make_segments()` 이후 구간의 출발/도착 노드와 층은 바뀌지 않는다(이 함수 안에서
+    ///    바뀌는 건 `across`·오프셋뿐) — 그래서 층별 버킷을 함수 시작에 한 번만 만들어 8회차
+    ///    내내 그대로 써도 된다.
+    /// ② 이 함수 안에서 `across`가 바뀌는 노드는 교환된 두 가상 노드뿐이고, 오프셋이 바뀌는
+    ///    구간은 nudge된 구간뿐이다 — 그래서 그 둘에 닿은 구간만 다시 계산해도 전체
+    ///    `refresh_ports()`와 값이 같다(나머지 구간은 입력이 그대로).
+    /// ③ nudge된 구간 집합은 다음 교환 시점 또는 회차 끝 전체 갱신에서 반드시 비운다(drain).
+    ///    교환 시에는 교환된 두 가상 노드의 `from`·`to` 양쪽 구간을 모두 갱신 대상에 넣는다.
     fn resolve_port_swaps(&mut self) {
+        // 방문하는 (i, j) 쌍·순서는 원래 이중 루프(i×j 전체를 돌며 출발 층이 다르면 건너뜀)와
+        // 정확히 같다: 바깥 i는 구간 색인 순서 그대로, 안쪽은 i와 같은 층 버킷 안에서 색인
+        // 오름차순으로만 돈다(불변식 ①).
+        let mut by_from_layer: Vec<Vec<usize>> = vec![Vec::new(); self.layer_count];
+        for (s, segment) in self.segments.iter().enumerate() {
+            let layer = self.lnodes[segment.from].layer;
+            if layer < by_from_layer.len() {
+                by_from_layer[layer].push(s);
+            }
+        }
+        let mut nudged: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for _ in 0..8 {
-            let mut nudged = false;
+            let mut any_nudged = false;
             for i in 0..self.segments.len() {
-                for j in 0..self.segments.len() {
-                    if i == j || self.lnodes[self.segments[i].from].layer != self.lnodes[self.segments[j].from].layer {
+                let layer = self.lnodes[self.segments[i].from].layer;
+                for &j in &by_from_layer[layer] {
+                    if i == j {
                         continue;
                     }
                     let (a, b) = (&self.segments[i], &self.segments[j]);
@@ -1539,9 +1646,15 @@ impl<'a> Layout<'a> {
                         let (x, y) = (self.lnodes[a_to].across, self.lnodes[b_to].across);
                         self.lnodes[a_to].across = y;
                         self.lnodes[b_to].across = x;
-                        // 같은 회차에서 반대 순서로 다시 만나 되돌리지 않도록 바로 갱신한다.
-                        self.refresh_ports();
-                        nudged = true;
+                        // 같은 회차에서 반대 순서로 다시 만나 되돌리지 않도록 바로 갱신한다 — 교환된
+                        // 두 가상 노드에 닿는 구간(출발·도착 양쪽) + 그때까지 밀어 둔 nudge 구간(③).
+                        nudged.extend(self.outgoing_of[a_to].iter().copied());
+                        nudged.extend(self.incoming_of[a_to].iter().copied());
+                        nudged.extend(self.outgoing_of[b_to].iter().copied());
+                        nudged.extend(self.incoming_of[b_to].iter().copied());
+                        let drained: Vec<usize> = nudged.drain().collect();
+                        self.refresh_ports_for(drained);
+                        any_nudged = true;
                         continue;
                     }
                     // 출발점 쪽은 바꾸지 않는다: 교차를 아래로만 밀어 실제 노드 앞에서 멈추게 해야
@@ -1560,13 +1673,15 @@ impl<'a> Layout<'a> {
                     let limit = self.lnodes[node].across_size - 2;
                     let offset = if is_exit { &mut self.segments[s].exit_offset } else { &mut self.segments[s].entry_offset };
                     *offset = if *offset < limit { *offset + 1 } else { offset.saturating_sub(1).max(1) };
-                    nudged = true;
+                    nudged.insert(s);
+                    any_nudged = true;
                 }
             }
-            if !nudged {
+            if !any_nudged {
                 return;
             }
-            self.refresh_ports();
+            let drained: Vec<usize> = nudged.drain().collect();
+            self.refresh_ports_for(drained);
         }
     }
 
@@ -3120,5 +3235,179 @@ mod tests {
         for needle in ["○", "◉", "«user»", "«service»", "× 재고 있음?", "예", "아니오"] {
             assert!(text.contains(needle), "{needle:?}가 결과에 있어야 한다:\n{text}");
         }
+    }
+
+    // ── layout-crossgroup-edge-blowup: 재현·회귀 테스트 ──────────────────
+
+    /// 결정적 의사난수(xorshift64) — 외부 crate 없이 재현 가능한 합성 그래프를 만든다
+    /// (bugfix.md 재현 4의 파이썬 생성기와 같은 모양, seed로 고정).
+    struct Xorshift64(u64);
+
+    impl Xorshift64 {
+        fn new(seed: u64) -> Self {
+            // 0이면 xorshift가 0에 갇히므로 홀수로 섞는다.
+            Xorshift64((seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1)
+        }
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next_u64() % n as u64) as usize
+        }
+    }
+
+    /// bugfix.md 재현 4의 생성기와 같은 모양: subgraph 8개(그룹당 6~7노드 사슬) + 두 그룹
+    /// 사이를 잇는 무작위 간선 `cross_edges`개. `chain_groups`면 그룹 0→1→…→7을 먼저 이어(실사용
+    /// 펜스처럼 그룹이 사슬이 되는 구조) 어느 시도로도 폭에 안 들어가는 그래프를 만든다.
+    fn cross_group_flowchart(seed: u64, cross_edges: usize, chain_groups: bool, hub: bool, wide_labels: bool) -> Graph {
+        let mut g = Graph::default();
+        let mut rng = Xorshift64::new(seed);
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        for gi in 0..8 {
+            let size = if gi < 4 { 6 } else { 7 };
+            let group = g.add_group(&format!("G{gi}"), None);
+            let mut members = Vec::new();
+            for j in 0..size {
+                let id = format!("S{gi}_{j}");
+                // 불균등 라벨형(bugfix.md 재현 4): 노드 30%에 긴 라벨을 줘 상자 폭을 들쭉날쭉하게 한다.
+                let label = if wide_labels && rng.below(10) < 3 {
+                    format!("{id} very long label text very long label text")
+                } else {
+                    id.clone()
+                };
+                members.push(g.intern(&id, &label, Shape::Rect, Some(group)));
+            }
+            for pair in members.windows(2) {
+                g.add_edge(Edge { from: pair[0], to: pair[1], head: Marker::Arrow, ..Edge::default() });
+            }
+            groups.push(members);
+        }
+        if chain_groups {
+            for gi in 0..7 {
+                let from = *groups[gi].last().unwrap();
+                let to = groups[gi + 1][0];
+                g.add_edge(Edge { from, to, head: Marker::Arrow, ..Edge::default() });
+            }
+        }
+        for _ in 0..cross_edges {
+            let (g1, g2) = if hub {
+                // 허브형(bugfix.md 재현 4): 교차 간선이 모두 그룹 0을 거친다 — 그룹 0이
+                // 매 층마다 여러 그룹과 동시에 얽혀 접어도 좀처럼 풀리지 않는다.
+                let other = 1 + rng.below(7);
+                if rng.below(2) == 0 { (0, other) } else { (other, 0) }
+            } else {
+                let a = rng.below(8);
+                let mut b = rng.below(8);
+                while b == a {
+                    b = rng.below(8);
+                }
+                (a, b)
+            };
+            let a = groups[g1][rng.below(groups[g1].len())];
+            let b = groups[g2][rng.below(groups[g2].len())];
+            g.add_edge(Edge { from: a, to: b, head: Marker::Arrow, ..Edge::default() });
+        }
+        g
+    }
+
+    /// 1.1: 교차 그룹 간선이 늘면 위→아래 층 접기 재시도가 쳇바퀴에 빠져(폭이 안 줄면서 층·
+    /// 가상 노드·구간 수만 누적) 배치 한 번의 비용이 폭발한다(1.2, 1.3). 수정 전에는 이 상한을
+    /// 훌쩍 넘겨 실패해야 하고, 수정 후(2.2, 2.3)에는 2초 안에 끝나야 한다(그림이든 폴백이든).
+    /// 디버그 빌드는 release보다 여러 배 느리므로(`large_graph_renders_within_a_bounded_time`과
+    /// 같은 이유) 상한은 release 실측(design.md)보다 넉넉하다.
+    #[test]
+    fn crossgroup_fold_retry_finishes_within_two_seconds() {
+        let g = cross_group_flowchart(2, 20, false, false, false);
+        let start = std::time::Instant::now();
+        let _ = render(&g, &Theme::none(), 118);
+        let elapsed = start.elapsed();
+        assert!(elapsed < std::time::Duration::from_secs(2), "교차 그룹 간선 접기 재시도가 {elapsed:?}나 걸림(2초 상한)");
+    }
+
+    /// 1.2: 실사용 펜스처럼 그룹이 교차 간선으로 사슬이 되어 방향·라벨 폭 어느 시도로도 폭에
+    /// 안 들어가는 그래프는 폴백(`None`) 판정까지 오래 걸리지 않아야 한다(1.1, 2.1). 수정 전엔
+    /// 접기 쳇바퀴 때문에 상한을 넘겨 실패해야 한다.
+    #[test]
+    fn crossgroup_chain_gives_up_quickly() {
+        let g = cross_group_flowchart(1, 60, true, true, false);
+        let start = std::time::Instant::now();
+        let out = render(&g, &Theme::none(), 118);
+        let elapsed = start.elapsed();
+        assert!(out.is_none(), "이 그래프는 폭 118 어디에도 들어가지 않아야 한다");
+        // 수정 전(release 프로파일 없는 이 디버그 빌드) 14.68초 — 3초는 그래도 8배 가까운 여유를
+        // 남긴다. release 실측(0.5초 상한, design.md 2.1)은 task 4.1에서 release 바이너리로 잰다.
+        assert!(elapsed < std::time::Duration::from_secs(3), "폴백 판정이 {elapsed:?}나 걸림(3초 상한, 디버그 빌드 여유 포함)");
+    }
+
+    /// 안정적인 해시(FNV-1a, 외부 crate 없이) — 큰 렌더링 결과를 바이트 그대로 담는 대신 쓴다.
+    fn fnv1a(text: &str) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in text.bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+        }
+        hash
+    }
+
+    /// 2.1: 합성 가족(변형 4종 × seed 4개, 간선 적은 단계)의 결과 고정. `EXPECTED`는 수정 전
+    /// 코드로 기록한 (줄 수, FNV-1a 해시) — 표 아래 diagnostic 테스트로 만들었다. 수정 후에도
+    /// 그림으로 끝난 건은 바이트가 같아야 하고(3.1), 전 건이 1초 안에 끝나야 한다(2.2).
+    // (설명, seed, cross_edges, chain, hub, wide_labels, 기대(줄 수, 해시) — None이면 미기록)
+    type CrossgroupCase = (&'static str, u64, usize, bool, bool, bool, Option<(usize, u64)>);
+
+    #[test]
+    fn crossgroup_family_matches_recorded_results_and_stays_fast() {
+        let cases: Vec<CrossgroupCase> = vec![
+            ("base_s0_c5", 0, 5, false, false, false, Some((147, 0x1de81e2201b93dcf))),
+            ("base_s0_c10", 0, 10, false, false, false, Some((154, 0x535c1bb5b35fe37f))),
+            ("base_s1_c5", 1, 5, false, false, false, Some((88, 0xc493b82bebc5aa5b))),
+            ("base_s1_c10", 1, 10, false, false, false, Some((115, 0x02c24620c2d32dc4))),
+            ("base_s2_c5", 2, 5, false, false, false, Some((120, 0xb732327876e8d537))),
+            ("base_s2_c10", 2, 10, false, false, false, Some((130, 0xdf8729fba82a2f20))),
+            ("base_s3_c5", 3, 5, false, false, false, Some((125, 0xdadd30ce6fa5f092))),
+            ("base_s3_c10", 3, 10, false, false, false, Some((147, 0x89300a615a3299b4))),
+            ("chain_s0_c5", 0, 5, true, false, false, Some((353, 0x188bf37f4fe84187))),
+            ("chain_s1_c5", 1, 5, true, false, false, Some((353, 0x4af265a59cda7f44))),
+            ("chain_s2_c5", 2, 5, true, false, false, Some((355, 0x32b2b8672a5dc90d))),
+            ("chain_s3_c5", 3, 5, true, false, false, Some((351, 0xd0c3b599224af277))),
+            ("hub_s0_c5", 0, 5, false, true, false, Some((116, 0x4872a5c43bbbd101))),
+            ("hub_s1_c5", 1, 5, false, true, false, Some((139, 0x319bdd4b77892b02))),
+            ("hub_s2_c5", 2, 5, false, true, false, Some((142, 0x880afd64d24d5963))),
+            ("hub_s3_c5", 3, 5, false, true, false, Some((77, 0x2264597b92e91ad7))),
+            ("labels_s0_c5", 0, 5, false, false, true, Some((163, 0x1c07e64ffdaa22c0))),
+            ("labels_s1_c5", 1, 5, false, false, true, Some((441, 0x1cb172b7e68ad19c))),
+            ("labels_s2_c5", 2, 5, false, false, true, Some((319, 0xf9316dfcb158e337))),
+            ("labels_s3_c5", 3, 5, false, false, true, Some((315, 0xcfcb625efc54043e))),
+        ];
+        let mut mismatches = Vec::new();
+        let mut slow = Vec::new();
+        for (name, seed, n, chain, hub, wide, expected) in cases {
+            let g = cross_group_flowchart(seed, n, chain, hub, wide);
+            let start = std::time::Instant::now();
+            let out = render(&g, &Theme::none(), 118);
+            let elapsed = start.elapsed();
+            if elapsed >= std::time::Duration::from_secs(1) {
+                slow.push(format!("{name}: {elapsed:?}"));
+            }
+            if let Some(lines) = out {
+                let text = rows(lines).join("\n");
+                let actual = (text.lines().count(), fnv1a(&text));
+                eprintln!("CASE {name} lines={} hash={:#018x}", actual.0, actual.1);
+                if let Some(exp) = expected
+                    && actual != exp
+                {
+                    mismatches.push(format!("{name}: expected {exp:?}, got {actual:?}"));
+                }
+            } else {
+                eprintln!("CASE {name} fallback(None)");
+            }
+        }
+        assert!(mismatches.is_empty(), "결과가 바뀐 건: {mismatches:#?}");
+        assert!(slow.is_empty(), "1초를 넘긴 건(디버그 빌드 여유 포함): {slow:#?}");
     }
 }
