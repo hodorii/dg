@@ -99,7 +99,9 @@ pub fn draw(canvas: &mut Canvas, x: usize, y: usize, shape: Shape, sections: &[V
             // 옆면 글자로 판단(마름모)과 예비 단계(육각형)를 구분한다 — 파서는 `{`(Diamond)와
             // `{{`(Hexagon)를 이미 구분해 넘기는데, 이 두 글자만 같으면 그려질 땐 똑같아 보였다.
             // 육각형은 모서리를 깎은 직사각형처럼 곧은 세로선을, 마름모는 좀 더 각진 꺾쇠를 쓴다.
-            let (left, right) = if shape == Shape::Hexagon { ('│', '│') } else { ('⟨', '⟩') };
+            // 마름모 쪽은 `‹›`(U+2039/203A) — 기본 Noto Sans Mono CJK 커버리지 안, EAW N, 1칸
+            // (research.md 실측); `⟨⟩`(U+27E8/27E9)는 그 커버리지 밖이라 폰트 폴백 위험이 있었다.
+            let (left, right) = if shape == Shape::Hexagon { ('│', '│') } else { ('‹', '›') };
             for row in y + 1..y + h - 1 {
                 canvas.put(x, row, left, border);
                 canvas.put(x + w - 1, row, right, border);
@@ -221,9 +223,57 @@ mod tests {
     fn diamond_and_hexagon_render_differently() {
         let diamond = draw_rows(Shape::Diamond, vec![vec!["x".into()]]);
         let hexagon = draw_rows(Shape::Hexagon, vec![vec!["x".into()]]);
-        assert_eq!(diamond, vec![" ╱───╲", "⟨  x  ⟩", " ╲───╱"]);
+        assert_eq!(diamond, vec![" ╱───╲", "‹  x  ›", " ╲───╱"]);
         assert_eq!(hexagon, vec![" ╱───╲", "│  x  │", " ╲───╱"]);
         assert_ne!(diamond, hexagon, "판단(Diamond)과 예비 단계(Hexagon)가 같은 모양으로 그려지면 안 된다");
+    }
+
+    /// (diagram-diamond-side-glyph-coverage) 마름모 크기·모서리·본문 가운데 정렬은 옆면
+    /// 글자 선택과 무관하게 고정돼야 한다(design 검증 속성 (c), tasks 2.1) — 옆면 두 칸을
+    /// 뺀 나머지 칸으로 확인한다.
+    #[test]
+    fn diamond_corners_and_size_are_independent_of_side_glyphs() {
+        let (w, h) = measure(Shape::Diamond, &[vec!["x".into()]]);
+        assert_eq!((w, h), (1 + 6, 1 + 2), "크기 공식은 (tw+6, th+2)여야 한다");
+        let rows = draw_rows(Shape::Diamond, vec![vec!["x".into()]]);
+        assert_eq!(rows[0], " ╱───╲", "위 모서리는 옆면 글자와 무관해야 한다");
+        assert_eq!(rows[2], " ╲───╱", "아래 모서리는 옆면 글자와 무관해야 한다");
+        let body_chars: Vec<char> = rows[1].chars().collect();
+        let body_without_sides: String = body_chars[1..body_chars.len() - 1].iter().collect();
+        assert_eq!(body_without_sides, "  x  ", "옆면 두 칸을 뺀 본문은 가운데 정렬로 그대로여야 한다");
+    }
+
+    /// (diagram-diamond-side-glyph-coverage) bugfix 1.1, 2.1 — 마름모 옆면 두 칸은 기본
+    /// Noto Sans Mono CJK 커버리지 안 글자(`‹`/`›`)라야 하고, 렌더 결과 어디에도 커버리지
+    /// 밖 글자(`⟨`/`⟩`, U+27E8/27E9)가 남아 있으면 안 된다. 수정 전 코드에서는 옆면이
+    /// `⟨`/`⟩`라 이 테스트가 실패한다.
+    #[test]
+    fn diamond_side_glyphs_are_covered_by_default_cjk_mono_font() {
+        let rows = draw_rows(Shape::Diamond, vec![vec!["ok?".into()]]);
+        let body = rows.iter().find(|row| row.contains("ok?")).expect("본문 줄이 있어야 한다");
+        let body_chars: Vec<char> = body.chars().collect();
+        assert_eq!(body_chars.first(), Some(&'‹'), "왼쪽 옆면 글자가 커버리지 안 글자여야 한다: {body:?}");
+        assert_eq!(body_chars.last(), Some(&'›'), "오른쪽 옆면 글자가 커버리지 안 글자여야 한다: {body:?}");
+        for row in &rows {
+            assert!(!row.contains('⟨') && !row.contains('⟩'), "커버리지 밖 글자(U+27E8/27E9)가 남아 있으면 안 된다: {row:?}");
+        }
+    }
+
+    /// (diagram-diamond-side-glyph-coverage) 요구사항 2.1, 2.2 — 마름모 옆면 글자 허용
+    /// 목록(`‹›`)·제외 목록(`⟨⟩`)을 게이트웨이 커버리지 허용 목록 테스트와 같은 형식으로
+    /// 고정해 재발을 막는다(design 검증 속성 (b)).
+    #[test]
+    fn diamond_side_glyph_codepoints_are_within_cjk_mono_coverage() {
+        const COVERED: [char; 2] = ['‹', '›'];
+        let rows = draw_rows(Shape::Diamond, vec![vec!["ok?".into()]]);
+        let body = rows.iter().find(|row| row.contains("ok?")).expect("본문 줄이 있어야 한다");
+        let body_chars: Vec<char> = body.chars().collect();
+        for ch in [*body_chars.first().unwrap(), *body_chars.last().unwrap()] {
+            assert!(COVERED.contains(&ch), "{ch:?}(U+{:04X})가 커버리지 허용 목록 안에 있어야 한다", ch as u32);
+        }
+        for excluded in ['⟨', '⟩'] {
+            assert!(!COVERED.contains(&excluded), "{excluded:?}는 커버리지 밖이라 교체됐다");
+        }
     }
 
     /// (plantuml-wbs) `Shape::Plain`은 테두리 없이 글자만 그려야 한다(PlantUML WBS의
