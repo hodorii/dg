@@ -1,0 +1,22 @@
+{
+  "feature_name": "diagram-diamond-side-glyph-coverage",
+  "created_at": "2026-09-29T09:45:00Z",
+  "updated_at": "2026-09-29T10:30:00Z",
+  "language": "ko",
+  "phase": "tasks-approved",
+  "approvals": {
+    "bugfix": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": true
+}
