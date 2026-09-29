@@ -44,7 +44,7 @@ bpmn.io 스타일(크기 고정, 텍스트 배치, 기호 구분)을 참고해 B
   같은 예외 추론이 게이트웨이에도 똑같이 성립하는지 재검증 필요)
 
 ## Specs (dependency order)
-- [ ] diagram-diamond-side-glyph-coverage -- `Shape::Diamond`(`⟨⟩`, U+27E8/27E9)를
+- [x] diagram-diamond-side-glyph-coverage -- `Shape::Diamond`(`⟨⟩`, U+27E8/27E9)를
   CJK 모노 폰트 커버리지 안의 글자로 교체하는 버그픽스. `Shape::Hexagon`과 계속
   구분돼야 함(`c7785c8` 회귀 금지). `bpmn-shapes/research.md`의 실측·기각 대안이 이미
   있어 `$kiro-bugfix`로 바로 시작 가능.
