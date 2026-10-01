@@ -27,6 +27,7 @@
         <flowNodeRef>timeout</flowNodeRef>
         <flowNodeRef>notify</flowNodeRef>
         <flowNodeRef>cancel</flowNodeRef>
+        <flowNodeRef>notified</flowNodeRef>
       </lane>
       <lane id="warehouse" name="창고">
         <flowNodeRef>check_stock</flowNodeRef>
