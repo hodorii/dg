@@ -392,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn boundary_event_sits_right_of_host_in_the_same_lane_with_dashed_link_then_solid_sequence() {
+    fn boundary_event_sits_right_of_host_in_the_same_lane_with_solid_link_and_solid_sequence() {
         let model = Model {
             participants: vec![Participant { id: "p1".into(), name: "P1".into(), lanes: Vec::new() }],
             elements: vec![
@@ -408,7 +408,7 @@ mod tests {
         };
         let (_, lines) = render_model(&model, &Theme::none(), 100, DiagramOptions::default()).expect("렌더링돼야 한다");
         let rendered = lines.iter().map(Line::text).collect::<Vec<_>>().join("\n");
-        assert!(rendered.contains('╌'));
+        assert!(!rendered.contains('╌'), "경계 연결선과 나가는 흐름은 모두 실선이어야 한다:\n{rendered}");
         assert!(rendered.contains("«error»"));
 
         // LR: 경계 이벤트가 호스트 오른쪽 다음 층·같은 레인 안(비슷한 줄 대역)에 있고, 그 뒤
@@ -449,6 +449,178 @@ mod tests {
         let options = DiagramOptions { direction: Some((Direction::TopDown, false)), ..DiagramOptions::default() };
         // 방향 옵션이 lower()가 만든 LeftRight를 덮어써도 패닉 없이 렌더링된다.
         assert!(render_model(&model, &Theme::none(), 100, options).is_some());
+    }
+
+    /// 레인 둘(`영업`·`창고`)이 있는 풀 `판매사`, 내용 없는 블랙박스 풀 `고객`.
+    fn laned_pool_and_blackbox_pool() -> Model {
+        Model {
+            participants: vec![
+                Participant {
+                    id: "vendor".into(),
+                    name: "판매사".into(),
+                    lanes: vec![Lane { id: "sales".into(), name: "영업".into(), sub_lanes: Vec::new() }, Lane { id: "wh".into(), name: "창고".into(), sub_lanes: Vec::new() }],
+                },
+                Participant { id: "customer".into(), name: "고객".into(), lanes: Vec::new() },
+            ],
+            elements: vec![task("a", "접수", Some("sales")), task("b", "출고", Some("wh"))],
+            flows: vec![Flow { id: "ab".into(), source: "a".into(), target: "b".into(), label: String::new(), kind: FlowKind::Sequence { is_default: false } }],
+            ..Model::default()
+        }
+    }
+
+    fn render_rows(model: &Model, orientation: model::Orientation) -> Vec<String> {
+        let mut model = model.clone();
+        model.orientation = orientation;
+        let (_, lines) = render_model(&model, &Theme::none(), 120, DiagramOptions::default()).expect("렌더링돼야 한다");
+        lines.iter().map(Line::plain).collect()
+    }
+
+    fn display_col(row: &str, needle: &str) -> usize {
+        crate::text::width_of(&row[..row.find(needle).expect("글자가 있어야 한다")])
+    }
+
+    fn char_at_display_col(row: &str, col: usize) -> Option<char> {
+        let mut x = 0;
+        for c in row.chars() {
+            if x == col {
+                return Some(c);
+            }
+            x += crate::text::char_width(c);
+        }
+        None
+    }
+
+    #[test]
+    fn blackbox_pool_title_column_is_unbroken_and_as_narrow_as_its_own_depth() {
+        for orientation in [model::Orientation::Horizontal, model::Orientation::Vertical] {
+            let rows = render_rows(&laned_pool_and_blackbox_pool(), orientation);
+            let title_row = row_of_text(&rows, "고객");
+            let title_col = display_col(&rows[title_row], "고객");
+            match orientation {
+                model::Orientation::Horizontal => {
+                    // 제목 칸 오른쪽 경계(풀 제목 칸 폭 = 판매사 풀의 레인 칸 시작)가 위아래로 끊김 없이 이어진다.
+                    let divider_col = display_col(&rows[row_of_text(&rows, "영업")], "영업") - 1;
+                    let bottom = (title_row..rows.len()).find(|&r| rows[r].contains('┘')).unwrap();
+                    for row in &rows[title_row..bottom] {
+                        assert_eq!(char_at_display_col(row, divider_col), Some('│'), "{}", rows.join("\n"));
+                    }
+                }
+                model::Orientation::Vertical => {
+                    // 제목 줄 바로 아래가 구분선이며 구멍이 없다.
+                    let divider = &rows[title_row + 1];
+                    let width = crate::text::width_of("고객") + 1;
+                    for col in title_col..title_col + width {
+                        assert_eq!(char_at_display_col(divider, col), Some('─'), "{}", rows.join("\n"));
+                    }
+                }
+            }
+        }
+    }
+
+    fn row_of_text(rows: &[String], needle: &str) -> usize {
+        rows.iter().position(|r| r.contains(needle)).expect("글자가 있어야 한다")
+    }
+
+    /// `examples/bpmn.md`의 주문 처리 협업: 블랙박스 풀 `고객` -> 메시지 시작 이벤트, 경계 타이머, 레인 두 개.
+    const ORDER_COLLABORATION_XML: &str = r#"<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL">
+  <collaboration id="c1" name="주문 처리 협업">
+    <participant id="customer" name="고객"/>
+    <participant id="seller" name="판매사" processRef="seller-process"/>
+    <messageFlow id="mf1" name="주문" sourceRef="customer" targetRef="received"/>
+  </collaboration>
+  <process id="seller-process">
+    <laneSet>
+      <lane id="sales" name="영업">
+        <flowNodeRef>received</flowNodeRef><flowNodeRef>review</flowNodeRef><flowNodeRef>timeout</flowNodeRef>
+        <flowNodeRef>notify</flowNodeRef><flowNodeRef>cancel</flowNodeRef><flowNodeRef>notified</flowNodeRef>
+      </lane>
+      <lane id="warehouse" name="창고">
+        <flowNodeRef>check_stock</flowNodeRef><flowNodeRef>prepare</flowNodeRef><flowNodeRef>shipped</flowNodeRef>
+      </lane>
+    </laneSet>
+    <startEvent id="received"><messageEventDefinition/></startEvent>
+    <userTask id="review" name="주문 검토"/>
+    <boundaryEvent id="timeout" name="시한 초과" attachedToRef="review"><timerEventDefinition/></boundaryEvent>
+    <endEvent id="cancel" name="주문 취소"/>
+    <exclusiveGateway id="check_stock" name="재고 있음?"/>
+    <userTask id="prepare" name="출고 준비"/>
+    <serviceTask id="notify" name="품절 안내 발송"/>
+    <endEvent id="shipped" name="출고 완료"/>
+    <endEvent id="notified" name="안내 완료"/>
+    <sequenceFlow id="f1" sourceRef="received" targetRef="review"/>
+    <sequenceFlow id="f2" sourceRef="review" targetRef="check_stock"/>
+    <sequenceFlow id="f3" sourceRef="timeout" targetRef="cancel"/>
+    <sequenceFlow id="f4" name="예" sourceRef="check_stock" targetRef="prepare"/>
+    <sequenceFlow id="f5" name="아니오" sourceRef="check_stock" targetRef="notify"/>
+    <sequenceFlow id="f6" sourceRef="prepare" targetRef="shipped"/>
+    <sequenceFlow id="f7" sourceRef="notify" targetRef="notified"/>
+  </process>
+</definitions>"#;
+
+    fn order_collaboration_rows(direction: Direction) -> Vec<String> {
+        let options = DiagramOptions { direction: Some((direction, false)), ..DiagramOptions::default() };
+        let (_, lines) = render(ORDER_COLLABORATION_XML, &Theme::none(), 160, options).expect("렌더링돼야 한다");
+        lines.iter().map(Line::plain).collect()
+    }
+
+    fn is_line_glyph(c: char) -> bool {
+        "│─┌┐└┘├┤┬┴┼╎╌╭╮╰╯".contains(c)
+    }
+
+    #[test]
+    fn message_flow_meets_the_blackbox_pool_face_at_its_center() {
+        let lr = order_collaboration_rows(Direction::LeftRight);
+        let top_border = &lr[row_of_text(&lr, "고객") - 1];
+        let last_col = crate::text::width_of(top_border) - 1;
+        let start_col = display_col(top_border, "○");
+        assert!(start_col.abs_diff(last_col / 2) <= 1, "가로: 고객 풀 윗면 가운데에서 나가야 한다:\n{}", lr.join("\n"));
+
+        let tb = order_collaboration_rows(Direction::TopDown);
+        let title_row = row_of_text(&tb, "고객");
+        let face_col = display_col(&tb[title_row], "고객") - 1;
+        let pool_rows: Vec<usize> = (title_row - 1..tb.len()).take_while(|&r| char_at_display_col(&tb[r], face_col).is_some_and(|c| c != ' ')).collect();
+        let (top, bottom) = (pool_rows[0], *pool_rows.last().unwrap());
+        let start_row = pool_rows.iter().copied().find(|&r| char_at_display_col(&tb[r], face_col) == Some('○')).unwrap_or_else(|| panic!("세로: 고객 풀 왼쪽 면에 ○가 있어야 한다:\n{}", tb.join("\n")));
+        assert!(start_row.abs_diff((top + bottom) / 2) <= 1, "세로: 고객 풀 왼쪽 면 가운데에서 나가야 한다:\n{}", tb.join("\n"));
+    }
+
+    #[test]
+    fn nodes_stay_off_lane_dividers_and_outer_borders() {
+        let tb = order_collaboration_rows(Direction::TopDown);
+        for row in tb.iter().filter(|r| r.starts_with('├') || r.starts_with('└')) {
+            assert!(row.chars().all(|c| c == ' ' || is_line_glyph(c)), "세로: 레인 구분선·아랫변 줄에 노드가 겹치면 안 된다: {row}\n{}", tb.join("\n"));
+        }
+        let lr = order_collaboration_rows(Direction::LeftRight);
+        let title_row = row_of_text(&lr, "영업");
+        let divider_col = display_col(&lr[title_row], "영업") + crate::text::width_of("영업") + 2;
+        let right_col = crate::text::width_of(&lr[title_row]) - 1;
+        let bottom = (title_row..lr.len()).find(|&r| lr[r].starts_with('└')).unwrap();
+        for row in &lr[title_row..=bottom] {
+            for col in [divider_col, right_col] {
+                assert!(char_at_display_col(row, col).is_some_and(is_line_glyph), "가로: 레인 구분선·오른쪽 테두리({col}칸)에 노드가 겹치면 안 된다: {row}\n{}", lr.join("\n"));
+            }
+        }
+    }
+
+    #[test]
+    fn single_source_end_events_line_up_straight_below_their_task_top_down() {
+        let tb = order_collaboration_rows(Direction::TopDown);
+        for (task_second_line, end_event) in [("«service»", "◉ 안내 완료"), ("«user»   │     ", "◉ 출고 완료")] {
+            let glyph_row = row_of_text(&tb, end_event);
+            let glyph_col = display_col(&tb[glyph_row], end_event);
+            let task_bottom = (0..glyph_row).rev().find(|&r| tb[r].contains(task_second_line)).unwrap() + 1;
+            for row in &tb[task_bottom + 1..glyph_row] {
+                assert!(matches!(char_at_display_col(row, glyph_col), Some('│' | '▼')), "{end_event}로 가는 선이 꺾이면 안 된다: {row}\n{}", tb.join("\n"));
+            }
+        }
+    }
+
+    #[test]
+    fn two_line_event_outgoing_line_starts_right_below_its_glyph_top_down() {
+        let tb = order_collaboration_rows(Direction::TopDown);
+        let glyph_row = row_of_text(&tb, "◎ 시한 초과");
+        let glyph_col = display_col(&tb[glyph_row], "◎");
+        assert_eq!(char_at_display_col(&tb[glyph_row + 1], glyph_col), Some('│'), "«timer» 줄 옆으로 선이 바로 이어져야 한다:\n{}", tb.join("\n"));
     }
 
     #[test]
@@ -712,7 +884,7 @@ mod tests {
         for glyph in ["○", "◉", "◎", "«user»", "«service»", "«message»", "«error»", "× 재고 있음?", "╱", "╌"] {
             assert!(rendered.contains(glyph), "렌더링 결과에 {glyph:?}가 있어야 한다:\n{rendered}");
         }
-        // `{text}` 육안 확인용(cargo test -- --nocapture): 풀 두 띠·레인 두 띠·경계 점선이 보이는지.
+        // `{text}` 육안 확인용(cargo test -- --nocapture): 풀 두 띠·레인 두 띠·경계 실선이 보이는지.
         eprintln!("{rendered}");
     }
 
