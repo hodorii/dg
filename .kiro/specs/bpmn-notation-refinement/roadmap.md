@@ -1,5 +1,12 @@
 # Roadmap
 
+## 상태: 폐기(2026-10-01, 사용자 결정)
+`diagram-diamond-side-glyph-coverage`(아래 1번, 폰트 커버리지 버그픽스)는 이미 구현·커밋
+완료된 상태로 **그대로 유지**한다 — 이건 "노테이션 재검토"가 아니라 독립된 버그픽스였다.
+나머지 다섯 항목(`bpmn-gateway-fixed-size` 이하)은 사용자 지시로 전부 폐기한다. 구현은
+진행하지 않는다. `bpmn-gateway-fixed-size`가 만든 실물 비교 자료(`render-comparison*.md`·
+`decision-log.md` — bpmn.io 실측 포함)는 향후 재론의될 경우를 위해 기록으로만 남긴다.
+
 ## Overview
 bpmn.io 스타일(크기 고정, 텍스트 배치, 기호 구분)을 참고해 BPMN 표기를 다듬는다. 여섯 중
 하나(다이아몬드 옆면 글자 폰트 커버리지)는 원인·제약이 이미 `bpmn-shapes/research.md`에
@@ -49,24 +56,24 @@ bpmn.io 스타일(크기 고정, 텍스트 배치, 기호 구분)을 참고해 B
   구분돼야 함(`c7785c8` 회귀 금지). `bpmn-shapes/research.md`의 실측·기각 대안이 이미
   있어 `$kiro-bugfix`로 바로 시작 가능.
   Dependencies: none
-- [ ] bpmn-gateway-fixed-size -- 게이트웨이 마름모를 라벨 길이에 안 맞춰 자라는 고정
+- [폐기] bpmn-gateway-fixed-size -- 게이트웨이 마름모를 라벨 길이에 안 맞춰 자라는 고정
   크기로, 이름을 도형 밖(이벤트처럼 오른쪽 또는 아래)에 두도록 재검토. `Shape::
   is_point_anchored`를 게이트웨이까지 넓힐지가 핵심 설계 질문. requirements 단계에서
   현재 방식과 후보 방식을 나란히 렌더링해 비교.
   Dependencies: diagram-diamond-side-glyph-coverage(같은 도형을 다루므로 글자 교체가
   먼저 끝나야 크기 정책 변경의 전후 비교가 깨끗함)
-- [ ] bpmn-event-trigger-icons -- 이벤트 트리거(message·timer·error 등 13종)를 `«이름»`
+- [폐기] bpmn-event-trigger-icons -- 이벤트 트리거(message·timer·error 등 13종)를 `«이름»`
   텍스트에서 커버리지 통과 글자(`▲`·`⊗` 등)로 일부라도 아이콘화할지 결정. 13종 중
   커버리지를 통과하는 게 소수라 "부분 아이콘화(불일치한 시각 언어)" vs "전부 텍스트
   유지"를 사용자가 실물로 보고 골라야 함. requirements 단계에서 두 안 다 렌더링.
   Dependencies: none
-- [ ] bpmn-activity-icon-review -- 태스크/액티비티 종류(user·service·script 등)를
+- [폐기] bpmn-activity-icon-review -- 태스크/액티비티 종류(user·service·script 등)를
   상자 왼쪽 위 아이콘으로 옮길지 검토. 문자 격자에서 작은 아이콘과 테두리·본문이
   안 겹치는 배치가 마땅치 않아 "현행(둘째 줄 스테레오타입) 유지"로 결론 날 가능성이
   높음 — requirements 단계에서 후보 배치 1~2개를 실제로 그려보고 판단, 후보가 전부
   안 되면 이 스펙은 "현행 유지" 결론과 근거만 남기고 종료(코드 변경 없음).
   Dependencies: none
-- [ ] bpmn-boundary-event-attachment -- 경계 이벤트를 호스트와 같은 그룹의 별도 노드
+- [폐기] bpmn-boundary-event-attachment -- 경계 이벤트를 호스트와 같은 그룹의 별도 노드
   +무표식 점선(v1 근사)이 아니라, 호스트 도형의 테두리 위 실제 좌표에 이벤트 글자를
   겹쳐 그리는 방식으로 바꿀지 검토. `bpmn-support` 원 리서치가 "배치기에 노드-노드
   부착 개념이 없어 후순위"로 이미 미뤄둔 항목 — 지금 배치기가 자란 뒤에도(점 고정
@@ -75,7 +82,7 @@ bpmn.io 스타일(크기 고정, 텍스트 배치, 기호 구분)을 참고해 B
   확인(2026-09-29): "boundary event ... 개념은?"으로 제기.
   Dependencies: none(다만 `bpmn-gateway-fixed-size`가 점 고정 개념을 더 다듬으면 같은
   좌표 계산을 재사용할 여지가 있어 그 스펙 뒤가 자연스러움)
-- [ ] bpmn-task-min-width -- `Shape::Round`(태스크/액티비티가 쓰는 도형)가 라벨 길이에만
+- [폐기] bpmn-task-min-width -- `Shape::Round`(태스크/액티비티가 쓰는 도형)가 라벨 길이에만
   맞춰 자라 "OK" 같은 짧은 라벨은 6×3, 긴 라벨은 28×4로 극단적으로 다른 비율이 되는
   문제를 검토(직접 렌더링해 확인함). bpmn.io는 태스크 상자 크기가 훨씬 균일하다. 단
   `Shape::Round`는 BPMN 전용이 아니라 모든 mermaid/PlantUML 흐름도가 공유하므로, 최소
