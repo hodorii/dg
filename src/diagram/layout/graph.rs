@@ -263,6 +263,7 @@ impl<'a> Layout<'a> {
         }
         self.assign_ports();
         self.straighten();
+        self.widen_for_straight_lines();
         self.route();
         if self.reserve_label_room() {
             self.place();
@@ -569,7 +570,7 @@ impl<'a> Layout<'a> {
         let n = self.graph.nodes.len();
         let mut outgoing: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n];
         for (i, edge) in self.graph.edges.iter().enumerate() {
-            if edge.from != edge.to {
+            if edge.from != edge.to && !self.is_pool_edge(i) {
                 outgoing[edge.from].push((edge.to, i));
             }
         }
@@ -586,7 +587,7 @@ impl<'a> Layout<'a> {
             incoming_count[to] += 1;
         };
         for (i, edge) in self.graph.edges.iter().enumerate() {
-            if edge.from == edge.to {
+            if edge.from == edge.to || self.is_pool_edge(i) {
                 continue;
             }
             let (from, to) = if self.effective_reversed(i) { (edge.to, edge.from) } else { (edge.from, edge.to) };
@@ -634,7 +635,7 @@ impl<'a> Layout<'a> {
             let members = self.group_members(anchor);
             let has_outgoing = self.graph.edges.iter().enumerate().any(|(i, e)| {
                 let (from, to) = if self.effective_reversed(i) { (e.to, e.from) } else { (e.from, e.to) };
-                from == anchor && to != anchor
+                from == anchor && to != anchor && !self.is_pool_edge(i)
             });
             let layers = members.iter().map(|&m| self.lnodes[m].layer);
             let target = if has_outgoing { layers.max() } else { layers.min() };
@@ -688,7 +689,7 @@ impl<'a> Layout<'a> {
     fn make_segments(&mut self) {
         let group_ranges = self.effective_group_ranges();
         for (i, edge) in self.graph.edges.iter().enumerate() {
-            if edge.from == edge.to {
+            if edge.from == edge.to || self.is_pool_edge(i) {
                 continue;
             }
             let (from, to) = if self.effective_reversed(i) { (edge.to, edge.from) } else { (edge.from, edge.to) };
@@ -785,6 +786,18 @@ impl<'a> Layout<'a> {
     /// 블록 0(루트)은 false.
     fn is_lane(&self, block: usize) -> bool {
         block != 0 && self.graph.groups[block - 1].kind == GroupKind::Lane
+    }
+
+    /// 레인(풀) 그룹의 닻 노드인지 — 블랙박스 풀 등 참여자 자체를 가리키는 메시지 흐름의 끝.
+    fn is_pool_anchor(&self, node: usize) -> bool {
+        let node = &self.graph.nodes[node];
+        node.shape == Shape::Anchor && node.group.is_some_and(|g| self.graph.groups[g].kind == GroupKind::Lane)
+    }
+
+    /// 풀 닻에 닿는 간선 — 층 배치·구간 배선에서 빠지고 `draw_pool_edges()`가 풀 면 중앙으로 따로 긋는다.
+    fn is_pool_edge(&self, edge: usize) -> bool {
+        let edge = &self.graph.edges[edge];
+        edge.from != edge.to && (self.is_pool_anchor(edge.from) || self.is_pool_anchor(edge.to))
     }
 
     /// 레인 블록은 테두리가 부모와 한 줄이라 `group_top()` 랭크·`inner_rank()`·`route()`의
@@ -1253,42 +1266,9 @@ impl<'a> Layout<'a> {
                 continue;
             }
             targets.sort_unstable();
-            let footprint = self.lnodes[i].footprint();
             let desired = targets[targets.len() / 2].max(0) as usize;
             let container = self.lnode_block[i];
-            let pad = self.block_pad(container);
-            let mut low = self.blocks[container].start + pad;
-            let mut high = (self.blocks[container].start + self.blocks[container].width).saturating_sub(pad + footprint);
-            if k > 0
-                && let Some((_, end)) = self.bound_of(container, members[k - 1])
-            {
-                let gap = self.gap_between(Child::Node(members[k - 1]), Child::Node(i));
-                low = low.max(end + gap);
-            }
-            if k + 1 < members.len()
-                && let Some((start, _)) = self.bound_of(container, members[k + 1])
-            {
-                let gap = self.gap_between(Child::Node(i), Child::Node(members[k + 1]));
-                high = high.min(start.saturating_sub(gap + footprint));
-            }
-            // 레인 형제 블록은 실제 구성원이 없는 층에도 (다이어그램 전체를 관통하므로) 자리를
-            // 차지한다 — 그 층에 같은 층 이웃이 없어 위 두 검사로 못 잡는다. 레인 상자 밖에
-            // 그려져야 하는 노드(요구사항 3.3)가 침범하지 않게 별도로 막는다.
-            // (d) 블록별 등록된 레인 자식 목록: `is_lane(b)`·`registered`는 이미 걸러져 있으므로
-            // 층 범위만 확인한다(이건 `layer`마다 달라 미리 걸러 둘 수 없다).
-            for &b in self.lane_children.get(container).map(Vec::as_slice).unwrap_or_default() {
-                if !(self.blocks[b].layer_min <= layer && layer <= self.blocks[b].layer_max) {
-                    continue;
-                }
-                let (bstart, bend) = (self.blocks[b].start, self.blocks[b].start + self.blocks[b].width);
-                let node_center = self.lnodes[i].across as f64 + footprint as f64 / 2.0;
-                let lane_center = bstart as f64 + (bend - bstart) as f64 / 2.0;
-                if node_center < lane_center {
-                    high = high.min(bstart.saturating_sub(self.gap_across()));
-                } else {
-                    low = low.max(bend + self.gap_across());
-                }
-            }
+            let (mut low, mut high) = self.across_bounds(&members, k, layer);
             // 가상 노드는 선을 곧게 펴는 것이 우선이므로, 막고 있는 같은 블록의 이웃을 밀어내 자리를 만든다.
             if self.lnodes[i].node.is_none() {
                 if desired > high {
@@ -1302,6 +1282,48 @@ impl<'a> Layout<'a> {
             }
             self.lnodes[i].across = desired.clamp(low, high);
         }
+    }
+
+    /// `members`(층 `layer`, 교차축 오름차순)의 `k`번째 노드가 놓일 수 있는 교차축 시작 위치 범위:
+    /// 블록 안쪽 여백, 같은 층 이웃과의 간격, 그 층을 관통하는 형제 레인 상자를 모두 피한다.
+    fn across_bounds(&self, members: &[usize], k: usize, layer: usize) -> (usize, usize) {
+        let i = members[k];
+        let footprint = self.lnodes[i].footprint();
+        let container = self.lnode_block[i];
+        let pad = self.block_pad(container);
+        let mut low = self.blocks[container].start + pad;
+        let mut high = (self.blocks[container].start + self.blocks[container].width).saturating_sub(pad + footprint);
+        if k > 0
+            && let Some((_, end)) = self.bound_of(container, members[k - 1])
+        {
+            let gap = self.gap_between(Child::Node(members[k - 1]), Child::Node(i));
+            low = low.max(end + gap);
+        }
+        if k + 1 < members.len()
+            && let Some((start, _)) = self.bound_of(container, members[k + 1])
+        {
+            let gap = self.gap_between(Child::Node(i), Child::Node(members[k + 1]));
+            high = high.min(start.saturating_sub(gap + footprint));
+        }
+        // 레인 형제 블록은 실제 구성원이 없는 층에도 (다이어그램 전체를 관통하므로) 자리를
+        // 차지한다 — 그 층에 같은 층 이웃이 없어 위 두 검사로 못 잡는다. 레인 상자 밖에
+        // 그려져야 하는 노드(요구사항 3.3)가 침범하지 않게 별도로 막는다.
+        // (d) 블록별 등록된 레인 자식 목록: `is_lane(b)`·`registered`는 이미 걸러져 있으므로
+        // 층 범위만 확인한다(이건 `layer`마다 달라 미리 걸러 둘 수 없다).
+        for &b in self.lane_children.get(container).map(Vec::as_slice).unwrap_or_default() {
+            if !(self.blocks[b].layer_min <= layer && layer <= self.blocks[b].layer_max) {
+                continue;
+            }
+            let (bstart, bend) = (self.blocks[b].start, self.blocks[b].start + self.blocks[b].width);
+            let node_center = self.lnodes[i].across as f64 + footprint as f64 / 2.0;
+            let lane_center = bstart as f64 + (bend - bstart) as f64 / 2.0;
+            if node_center < lane_center {
+                high = high.min(bstart.saturating_sub(self.gap_across()));
+            } else {
+                low = low.max(bend + self.gap_across());
+            }
+        }
+        (low, high)
     }
 
     /// `members[from..]`(오른쪽으로) 또는 `members[..from]`(왼쪽으로)를 `delta`만큼 밀어 본다.
@@ -1535,9 +1557,9 @@ impl<'a> Layout<'a> {
 
         self.layer_start = vec![0; self.layer_count];
         if self.layer_count > 0 {
-            // 깊이별 배너 크기 합을 첫 층 시작 앞에 둔다 — 레인이 없으면 0이라 기존 출력과
-            // 바이트 단위로 같다(요구사항 6.1).
-            self.layer_start[0] = self.banner_along().iter().sum();
+            // 깊이별 배너 크기 합과 그 뒤 구분선 칸을 첫 층 시작 앞에 둔다 — 레인이 없으면 0이라
+            // 기존 출력과 바이트 단위로 같다(요구사항 6.1).
+            self.layer_start[0] = self.banner_along().iter().sum::<usize>() + self.lane_border_margin();
         }
         for layer in 1..self.layer_count {
             self.layer_start[layer] = self.layer_start[layer - 1] + self.layer_total(layer - 1) + self.gap[layer - 1];
@@ -1810,6 +1832,69 @@ impl<'a> Layout<'a> {
         changed
     }
 
+    /// 구간 하나로만 이어진 레인 안 노드(도착 쪽은 들어오는 구간이, 출발 쪽은 나가는 구간이 하나뿐)가
+    /// 레인 오른쪽 끝에 막혀 상대와 일직선이 못 되면, 레인 안쪽 오른쪽 여백 앞에 모자란 칸 수만큼 열을
+    /// 끼워 넣고 노드를 일직선 자리로 옮긴다 — 노드는 레인 안에 온전히 남고, 나머지 배치는 그대로 둔
+    /// 채 그 열 뒤쪽만 민다.
+    fn widen_for_straight_lines(&mut self) {
+        for s in 0..self.segments.len() {
+            let segment = &self.segments[s];
+            let (from, to) = (segment.from, segment.to);
+            if self.lnodes[from].node.is_none() || self.lnodes[to].node.is_none() {
+                continue;
+            }
+            let (exit_offset, entry_offset) = (segment.exit_offset, segment.entry_offset);
+            if self.incoming_of[to].len() == 1
+                && let Some(desired) = (self.lnodes[from].across + exit_offset).checked_sub(entry_offset)
+            {
+                self.widen_lane_to_place(to, desired);
+            }
+            if self.outgoing_of[from].len() == 1
+                && let Some(desired) = (self.lnodes[to].across + entry_offset).checked_sub(exit_offset)
+            {
+                self.widen_lane_to_place(from, desired);
+            }
+        }
+        self.refresh_ports();
+    }
+
+    /// 레인 안 노드 `node`를 교차축 `desired`(지금보다 오른쪽)로 옮기되 레인 끝을 넘으면 그만큼 레인을 넓힌다.
+    fn widen_lane_to_place(&mut self, node: usize, desired: usize) {
+        let block = self.lnode_block[node];
+        if desired <= self.lnodes[node].across || !self.is_lane(block) {
+            return;
+        }
+        let insert_at = self.blocks[block].start + self.blocks[block].width - self.block_pad(block);
+        let end = desired + self.lnodes[node].footprint();
+        if end <= insert_at || self.overlaps_layer_neighbor(node, desired, end) {
+            return;
+        }
+        self.insert_across(insert_at, end - insert_at);
+        self.lnodes[node].across = desired;
+    }
+
+    /// 노드 `node`를 교차축 `[start, end)`로 옮기면 같은 층의 다른 노드와 겹치는지.
+    fn overlaps_layer_neighbor(&self, node: usize, start: usize, end: usize) -> bool {
+        let layer = self.lnodes[node].layer;
+        self.layer_members[layer].iter().any(|&other| other != node && self.lnodes[other].across < end && start < self.lnodes[other].across + self.lnodes[other].footprint())
+    }
+
+    /// 교차축 `at` 위치에 `count`칸을 끼워 넣는다: 그 뒤의 노드·블록은 밀고, `at`을 품은 블록은 넓힌다.
+    fn insert_across(&mut self, at: usize, count: usize) {
+        for node in &mut self.lnodes {
+            if node.across >= at {
+                node.across += count;
+            }
+        }
+        for block in &mut self.blocks {
+            if block.start >= at {
+                block.start += count;
+            } else if at < block.start + block.width {
+                block.width += count;
+            }
+        }
+    }
+
     /// 두 노드를 모두 품는 가장 안쪽 블록.
     fn routing_block(&self, a: usize, b: usize) -> usize {
         let mut chain_a = Vec::new();
@@ -1837,7 +1922,19 @@ impl<'a> Layout<'a> {
             return 0;
         }
         let last = self.layer_count - 1;
-        self.layer_start[last] + self.layer_total(last)
+        self.layer_start[last] + self.layer_total(last) + self.lane_border_margin()
+    }
+
+    /// 레인이 있을 때 흐름축 양 끝에서 내용과 레인 선(구분선·끝 테두리) 사이에 두는 칸 수 — 노드가
+    /// 선 위에 겹치거나 맞붙지 않게 한다(가로 흐름은 칸이 좁아 한 칸 더). 레인이 없으면 0.
+    fn lane_border_margin(&self) -> usize {
+        if self.banner_along().is_empty() {
+            return 0;
+        }
+        match self.direction {
+            Direction::TopDown => 1,
+            Direction::LeftRight => 2,
+        }
     }
 
     fn node_along(&self, lnode: usize) -> usize {
@@ -1931,8 +2028,88 @@ impl<'a> Layout<'a> {
             self.draw_segment_decorations(canvas, s);
         }
         self.draw_self_loops(canvas);
+        self.draw_pool_edges(canvas);
         canvas.set_edge_mode(false);
         self.draw_group_titles(canvas);
+    }
+
+    /// 풀 간선의 한쪽 끝(흐름축 위치, 교차축 위치, 상대 끝 쪽으로 향하는 교차축 부호). 노드는 상대를
+    /// 향한 면 바로 바깥 칸에서, 풀은 상대를 향한 테두리 칸(면)의 흐름축 중앙에서 끝난다.
+    fn pool_edge_end(&self, end: usize, other: usize) -> (usize, usize, bool) {
+        let across_range = |n: usize| {
+            if self.is_pool_anchor(n) {
+                let block = &self.blocks[self.lnode_block[n]];
+                (block.start, block.start + block.width - 1)
+            } else {
+                (self.lnodes[n].across, self.lnodes[n].across + self.lnodes[n].across_size - 1)
+            }
+        };
+        let (lo, hi) = across_range(end);
+        let (other_lo, other_hi) = across_range(other);
+        let toward_higher = other_lo + other_hi > lo + hi;
+        if self.is_pool_anchor(end) {
+            let block = self.lnode_block[end];
+            let along = (self.banner_start(self.lane_depth(block)) + self.lane_along_end(block)) / 2;
+            (along, if toward_higher { hi } else { lo }, toward_higher)
+        } else {
+            // 점 표기(이벤트)는 글자 칸, 상자는 흐름축 가운데에서 나간다.
+            let along = self.node_along(end) + if self.lnodes[end].point_anchored { 0 } else { self.lnodes[end].along_size / 2 };
+            (along, if toward_higher { hi + 1 } else { lo.saturating_sub(1) }, toward_higher)
+        }
+    }
+
+    /// 풀 닻에 닿는 메시지 흐름: 끝에서 교차축으로 나가 풀 바로 바깥 통로까지, 통로를 따라 흐름축으로,
+    /// 다시 교차축으로 상대 끝까지 — 풀 쪽은 면의 중앙에 수직으로 닿는다.
+    fn draw_pool_edges(&self, canvas: &mut Canvas) {
+        let cross_direction = match self.direction {
+            Direction::TopDown => Direction::LeftRight,
+            Direction::LeftRight => Direction::TopDown,
+        };
+        let style = self.theme.diagram_line;
+        for (i, edge) in self.graph.edges.iter().enumerate() {
+            if !self.is_pool_edge(i) {
+                continue;
+            }
+            let (from_along, from_across, from_toward_higher) = self.pool_edge_end(edge.from, edge.to);
+            let (to_along, to_across, to_toward_higher) = self.pool_edge_end(edge.to, edge.from);
+            let (pool_across, pool_toward_higher) = if self.is_pool_anchor(edge.from) { (from_across, from_toward_higher) } else { (to_across, !to_toward_higher) };
+            let channel = if pool_toward_higher { pool_across + 1 } else { pool_across.saturating_sub(1) };
+            self.line_across(canvas, from_across, channel, from_along, edge.kind, style);
+            self.line_along(canvas, from_along, to_along, channel, edge.kind, style);
+            self.line_across(canvas, channel, to_across, to_along, edge.kind, style);
+            if from_along != to_along {
+                for along in [from_along, to_along] {
+                    let (x, y) = self.to_canvas(along, channel);
+                    canvas.join(x, y, 0, edge.kind, style, true);
+                }
+            }
+            for (marker, along, across, toward_higher) in [(edge.tail, from_along, from_across, from_toward_higher), (edge.head, to_along, to_across, to_toward_higher)] {
+                let glyphs = marker_glyphs(marker, cross_direction, toward_higher);
+                let count = glyphs.len();
+                for (k, glyph) in glyphs.into_iter().enumerate() {
+                    let offset = count - 1 - k;
+                    let across = if toward_higher { across + offset } else { across.saturating_sub(offset) };
+                    let (x, y) = self.to_canvas(along, across);
+                    canvas.put(x, y, glyph, style);
+                }
+            }
+            if !edge.label.is_empty() {
+                self.draw_pool_edge_label(canvas, &edge.label.replace('\n', " "), (from_along, from_across), (to_along, to_across), channel);
+            }
+        }
+    }
+
+    /// 경로의 가로 조각 가운데 가장 긴 것에 라벨을 가운데 맞춰 얹는다(들어갈 때만).
+    fn draw_pool_edge_label(&self, canvas: &mut Canvas, label: &str, from: (usize, usize), to: (usize, usize), channel: usize) {
+        let points = [self.to_canvas(from.0, from.1), self.to_canvas(from.0, channel), self.to_canvas(to.0, channel), self.to_canvas(to.0, to.1)];
+        let longest = points.windows(2).filter(|p| p[0].1 == p[1].1).max_by_key(|p| p[0].0.abs_diff(p[1].0));
+        let width = width_of(label);
+        if let Some(p) = longest
+            && p[0].0.abs_diff(p[1].0) >= width + 3
+        {
+            let (x0, x1) = (p[0].0.min(p[1].0), p[0].0.max(p[1].0));
+            canvas.text(x0 + (x1 - x0 + 1 - width) / 2, p[0].1, label, self.theme.diagram_label);
+        }
     }
 
     fn dummy_kind(&self, lnode: usize) -> LineKind {
@@ -1954,10 +2131,10 @@ impl<'a> Layout<'a> {
             // 레인은 항상 실선 — 파선은 Box 그룹(BPMN L3 등)에만 의미가 있다.
             let line = if self.is_lane(b) { LineKind::Solid } else { self.graph.groups[block.group.unwrap()].line };
             canvas.rect(x0, y0, w, h, line, self.theme.diagram_group, false);
-            if self.is_lane(b) {
-                // 구분선: 배너 전체와 내용 상자를 가르는 교차선. `group_top(b)`가 이미
-                // `layer_start[0] + 2*rank`(레인은 rank 0이라 사슬 전체가 같은 줄)를 준다.
-                let divider = self.group_top(b);
+            // 구분선: 하위 레인이 없는 레인만 자기 깊이 배너 바로 뒤에 긋는다 — 제목 칸이 자기 깊이만큼만
+            // 차지하고 나머지는 내용 영역이다. 하위 레인이 있으면 그 사각형들이 경계를 대신한다.
+            if self.is_lane(b) && self.lane_children[b].is_empty() {
+                let divider = self.banner_start(self.lane_depth(b) + 1);
                 self.line_across(canvas, block.start, block.start + block.width - 1, divider, LineKind::Solid, self.theme.diagram_group);
             }
         }
@@ -2047,6 +2224,8 @@ impl<'a> Layout<'a> {
         // 표식도 그 칸에 놓인다.
         let top = match self.lnodes[segment.from].node {
             Some(n) if self.graph.nodes[n].shape == Shape::Anchor => self.group_bottom(self.lnode_block[segment.from]) + 1,
+            // 위→아래의 점 표기 노드(이벤트)는 둘째 줄이 글자 칸보다 들여 쓰여 있어 글자 바로 아래에서 나간다.
+            Some(_) if self.direction == Direction::TopDown && self.lnodes[segment.from].point_anchored => self.node_along(segment.from) + 1,
             Some(_) => self.node_along(segment.from) + self.lnodes[segment.from].along_size,
             None => gap_start,
         };
@@ -2633,7 +2812,7 @@ mod tests {
     }
 
     /// 요구사항 1.3, 2.3: 풀 > 레인 > 하위 레인 3단 중첩의 아랫변이 모두 같은 줄에 있고,
-    /// 배너 다음 구분선이 한 줄만 있다(중첩 단계마다 가로선이 늘어나는 이중 구분선 없음).
+    /// 배너 다음 구분선이 한 줄만 있으며, 노드는 구분선·아랫변에 겹치지 않고 바로 안쪽에 놓인다.
     #[test]
     fn three_level_lane_nesting_has_no_doubled_divider() {
         let mut g = Graph::default();
@@ -2643,13 +2822,13 @@ mod tests {
         g.intern("s1", "s1", Shape::Rect, Some(sub));
         let out = rows(render(&g, &Theme::none(), 80).unwrap());
         let text = out.join("\n");
-        let bottom_lines = out.iter().filter(|l| l.contains('└')).count();
-        assert_eq!(bottom_lines, 1, "3단 중첩의 아랫변이 모두 같은 줄에 있어야 한다: {text}");
+        let lane_bottom_lines = out.iter().filter(|l| l.starts_with('└')).count();
+        assert_eq!(lane_bottom_lines, 1, "3단 중첩의 아랫변이 모두 같은 줄에 있어야 한다: {text}");
         let sub_title_row = out.iter().position(|l| l.contains("SubLane")).unwrap_or_else(|| panic!("SubLane not found: {text}"));
-        assert!(
-            out[sub_title_row + 1].contains('┌'),
-            "SubLane 제목 줄 바로 다음이 구분선 겸 s1 상자 윗변이어야 한다(이중 구분선 없음): {text}"
-        );
+        assert!(out[sub_title_row + 1].starts_with('├'), "SubLane 제목 줄 바로 다음이 구분선이어야 한다: {text}");
+        assert!(out[sub_title_row + 2].contains('┌'), "구분선 바로 다음 줄이 s1 상자 윗변이어야 한다(이중 구분선 없음): {text}");
+        let box_bottom_row = out.iter().position(|l| l.contains("└────┘")).unwrap_or_else(|| panic!("s1 bottom not found: {text}"));
+        assert!(out[box_bottom_row + 1].starts_with('└'), "s1 상자 아랫변 바로 다음 줄이 레인 아랫변이어야 한다: {text}");
     }
 
     // ── 그룹 테두리 선 종류(bizprocess-bpmn 1.2) ─────────────────────────
