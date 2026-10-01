@@ -46,10 +46,14 @@ pub fn draw(canvas: &mut Canvas, x: usize, y: usize, shape: Shape, sections: &[V
     let w = if matches!(shape, Shape::Start | Shape::End | Shape::Anchor) { measured_width } else { measured_width.max(min_width) };
     let h = measured.max(min_height);
     let extra_top = (h - measured) / 2;
+    // 닻은 아무것도 그리지 않으므로 자리도 지우지 않는다 — 지우면 그 칸을 지나던 그룹 구분선에 구멍이 난다.
+    if shape == Shape::Anchor {
+        return;
+    }
     canvas.clear_rect(x, y, w, h);
     let border = theme.diagram_box;
     match shape {
-        Shape::Anchor => {}
+        Shape::Anchor => unreachable!(),
         Shape::Start => canvas.put(x, y, '●', theme.diagram_accent),
         Shape::End => canvas.put(x, y, '◉', theme.diagram_accent),
         Shape::Rect | Shape::Round | Shape::Circle | Shape::Note => {

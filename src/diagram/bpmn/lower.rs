@@ -323,7 +323,7 @@ fn add_placeholders_for_empty_groups(graph: &mut Graph) {
     }
 }
 
-/// 경계 이벤트마다 호스트 → 이벤트로 표식·라벨 없는 점선 간선 하나. 호스트가 펼친 상자면 그
+/// 경계 이벤트마다 호스트 → 이벤트로 표식·라벨 없는 실선 간선 하나(시퀀스 흐름과 같은 선). 호스트가 펼친 상자면 그
 /// 상자의 닻에서(`Graph::group_anchor`), 접혀 있으면(또는 상자가 아니면, 기존 규약) 호스트
 /// 노드에서 바로 잇는다.
 fn add_boundary_edges(graph: &mut Graph, model: &Model, box_of: &HashMap<String, usize>) {
@@ -337,7 +337,7 @@ fn add_boundary_edges(graph: &mut Graph, model: &Model, box_of: &HashMap<String,
                 None => continue,
             },
         };
-        graph.add_edge(Edge { from, to, kind: LineKind::Dashed, ..Edge::default() });
+        graph.add_edge(Edge { from, to, kind: LineKind::Solid, ..Edge::default() });
     }
 }
 
@@ -507,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn boundary_event_gets_an_extra_unmarked_dashed_edge_from_host_and_shares_its_group() {
+    fn boundary_event_gets_an_extra_unmarked_solid_edge_from_host_and_shares_its_group() {
         let model = Model {
             participants: vec![Participant { id: "p1".into(), name: "P1".into(), lanes: Vec::new() }],
             elements: vec![
@@ -522,7 +522,7 @@ mod tests {
         assert_eq!(host_group, boundary_group);
         let extra_edges: Vec<_> = graph.edges.iter().filter(|e| e.from == graph.find("host").unwrap() && e.to == graph.find("boundary").unwrap()).collect();
         assert_eq!(extra_edges.len(), 1);
-        assert_eq!(extra_edges[0].kind, LineKind::Dashed);
+        assert_eq!(extra_edges[0].kind, LineKind::Solid);
         assert_eq!(extra_edges[0].tail, Marker::None);
         assert_eq!(extra_edges[0].head, Marker::None);
         assert!(extra_edges[0].label.is_empty());
@@ -692,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn boundary_event_on_an_expanded_subprocess_host_is_dashed_from_the_box_anchor() {
+    fn boundary_event_on_an_expanded_subprocess_host_is_solid_from_the_box_anchor() {
         let mut model = three_level_model();
         model.elements.push(Element {
             id: "a1#error1".into(),
@@ -705,10 +705,10 @@ mod tests {
         let graph = &lower_with(&model, ExpandPolicy::Depth(1))[0].graph;
         let event_index = graph.find("a1#error1").expect("경계 이벤트는 노드로 인턴돼야 한다");
         let box_index = graph.groups.iter().position(|g| g.title == "a1").expect("a1은 펼친 상자여야 한다");
-        let dashed_edge = graph.edges.iter().find(|e| e.to == event_index).expect("경계 이벤트로 가는 간선이 있어야 한다");
-        assert_eq!(dashed_edge.kind, LineKind::Dashed);
-        assert_eq!(graph.nodes[dashed_edge.from].shape, Shape::Anchor);
-        assert_eq!(graph.nodes[dashed_edge.from].group, Some(box_index));
+        let boundary_edge = graph.edges.iter().find(|e| e.to == event_index).expect("경계 이벤트로 가는 간선이 있어야 한다");
+        assert_eq!(boundary_edge.kind, LineKind::Solid);
+        assert_eq!(graph.nodes[boundary_edge.from].shape, Shape::Anchor);
+        assert_eq!(graph.nodes[boundary_edge.from].group, Some(box_index));
     }
 
     /// 3.5절(task 4.2) — L2 3개(하나는 빈 L2) → Process + 자식 있는 L2마다 Activity(2장).
