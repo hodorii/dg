@@ -1,0 +1,3 @@
+[submodule "methodology"]
+	path = methodology
+	url = https://github.com/hodorii/agentic-psdd.git
