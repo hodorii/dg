@@ -439,3 +439,99 @@ mod robustness {
         assert_eq!(language_of_source(None, bpmn::fixtures::ORDER_PROCESSING_YAML), Some(Language::Bpmn));
     }
 }
+
+/// 최상위 렌더러로 그린 그림을 칸 단위로 읽어 노드에 드나드는 선을 확인한다.
+#[cfg(test)]
+pub(crate) mod rendered_picture {
+    use super::*;
+    use crate::diagram::ir::Direction;
+
+    /// 넓은 글자가 두 칸을 차지하도록 펼친 표시 칸 격자. 칸 좌표가 터미널 열과 맞는다.
+    pub(crate) fn display_grid(rows: &[String]) -> Vec<Vec<char>> {
+        rows.iter().map(|row| row.chars().flat_map(|c| if crate::text::char_width(c) == 2 { vec![c, '\0'] } else { vec![c] }).collect()).collect()
+    }
+
+    /// 캡션 줄을 뺀 그림 줄들.
+    fn rendered_rows(language: Language, source: &str, direction: Direction) -> Vec<String> {
+        let options = DiagramOptions { direction: Some((direction, false)), ..DiagramOptions::default() };
+        let lines = render(language, source, &Theme::none(), 120, options).expect("렌더링돼야 한다");
+        lines.iter().skip(1).map(Line::plain).collect()
+    }
+
+    /// 안쪽 칸이 모두 빈 테두리 상자(글자 없는 상자 노드) 하나의 (윗줄, 왼칸, 아랫줄, 오른칸).
+    fn glyphless_box(grid: &[Vec<char>]) -> (usize, usize, usize, usize) {
+        let is_side = |row: usize, col: usize| grid[row].get(col).is_some_and(|c| "│╎".contains(*c));
+        let mut found = Vec::new();
+        for (top, row) in grid.iter().enumerate() {
+            for left in (0..row.len()).filter(|&col| "┌╭".contains(row[col])) {
+                let Some(right) = (left + 1..row.len()).find(|&col| !"─╌".contains(row[col])) else { continue };
+                if !"┐╮".contains(row[right]) {
+                    continue;
+                }
+                let Some(bottom) = (top + 1..grid.len()).find(|&y| !is_side(y, left)) else { continue };
+                if !grid[bottom].get(left).is_some_and(|c| "└╰".contains(*c)) {
+                    continue;
+                }
+                if (top + 1..bottom).all(|y| (left + 1..right).all(|x| grid[y].get(x) == Some(&' '))) {
+                    found.push((top, left, bottom, right));
+                }
+            }
+        }
+        assert_eq!(found.len(), 1, "글자 없는 상자가 하나여야 한다: {found:?}");
+        found[0]
+    }
+
+    /// 선이 한 점으로 모이지 않고, 글자 없는 상자의 왼쪽 면에 `entering`줄, 오른쪽 면에 `leaving`줄이
+    /// 서로 다른 줄로 닿는지 본다.
+    fn assert_each_flow_has_its_own_row(rows: &[String], entering: usize, leaving: usize) {
+        let picture = rows.join("\n");
+        assert!(!picture.contains(['┬', '┴', '┼']), "흐름이 한 점에 모였다:\n{picture}");
+        let grid = display_grid(rows);
+        let (top, left, bottom, right) = glyphless_box(&grid);
+        let rows_touching = |col: Option<usize>| col.map_or(0, |col| (top + 1..bottom).filter(|&y| grid[y].get(col).is_some_and(|&c| c != ' ')).count());
+        assert_eq!(rows_touching(left.checked_sub(1)), entering, "왼쪽 면으로 드나드는 흐름이 서로 다른 줄이 아니다:\n{picture}");
+        assert_eq!(rows_touching(Some(right + 1)), leaving, "오른쪽 면으로 드나드는 흐름이 서로 다른 줄이 아니다:\n{picture}");
+    }
+
+    #[test]
+    fn mermaid_blank_label_box_left_right_gives_each_flow_its_own_row() {
+        let source = "flowchart LR\n  I1 --> A[\" \"]\n  I2 --> A\n  A --> O1\n  A --> O2\n  A --> O3\n";
+        assert_each_flow_has_its_own_row(&rendered_rows(Language::Mermaid, source, Direction::LeftRight), 2, 3);
+    }
+
+    #[test]
+    fn unnamed_bpmn_task_left_right_gives_each_flow_its_own_row() {
+        let source = "nodes:\n  - a: task 가\n  - b: task 나\n  - x: task\n  - c: task 다\n  - d: task 라\nflows:\n  - a --> x\n  - b --> x\n  - x --> c\n  - x --> d\n";
+        assert_each_flow_has_its_own_row(&rendered_rows(Language::Bpmn, source, Direction::LeftRight), 2, 2);
+    }
+
+    #[test]
+    fn unnamed_text_annotation_left_right_gives_each_association_its_own_row() {
+        let source = "nodes:\n  - a: task 가\n  - b: task 나\n  - n: textAnnotation\nflows:\n  - n --> a\n  - n --> b\n";
+        assert_each_flow_has_its_own_row(&rendered_rows(Language::Bpmn, source, Direction::LeftRight), 0, 2);
+    }
+
+    #[test]
+    fn state_start_point_left_right_still_converges_its_flows() {
+        let source = "stateDiagram-v2\n  direction LR\n  [*] --> A\n  [*] --> B\n";
+        assert_eq!(rendered_rows(Language::Mermaid, source, Direction::LeftRight), ["    ╭───╮", "  ╭▶│ A │", "  │ ╰───╯", "  │", "  │ ╭───╮", "●─┴▶│ B │", "    ╰───╯"]);
+    }
+
+    #[test]
+    fn named_bpmn_task_left_right_keeps_its_previous_picture() {
+        let source = "nodes:\n  - a: task 가\n  - x:\n      kind: task\n      name: 검토\n  - c: task 다\n  - d: task 라\nflows:\n  - a --> x\n  - x --> c\n  - x --> d\n";
+        assert_eq!(
+            rendered_rows(Language::Bpmn, source, Direction::LeftRight),
+            ["         ╭──────╮   ╭────╮", "╭────╮   │      │──▶│ 다 │", "│ 가 │──▶│ 검토 │   ╰────╯", "╰────╯   │      │─╮", "         ╰──────╯ │ ╭────╮", "                  ╰▶│ 라 │", "                    ╰────╯"]
+        );
+    }
+
+    #[test]
+    fn unnamed_bpmn_task_top_down_keeps_its_two_row_box() {
+        let source = "nodes:\n  - a: task 가\n  - b: task 나\n  - x: task\n  - c: task 다\n  - d: task 라\nflows:\n  - a --> x\n  - b --> x\n  - x --> c\n  - x --> d\n";
+        assert_eq!(
+            rendered_rows(Language::Bpmn, source, Direction::TopDown),
+            ["╭────╮   ╭────╮", "│ 가 │   │ 나 │", "╰────╯   ╰────╯", "   │        │", "   ╰──────╮ │", "          ▼ ▼", "         ╭───╮", "         ╰───╯", "          │ │", "   ╭──────╯ │", "   ▼        ▼", "╭────╮   ╭────╮", "│ 다 │   │ 라 │", "╰────╯   ╰────╯"]
+        );
+    }
+}
