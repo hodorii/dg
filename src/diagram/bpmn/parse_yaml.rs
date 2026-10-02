@@ -159,19 +159,21 @@ fn build_model(root: &YamlValue) -> Result<Model, ParseError> {
     let mut elements: Vec<Element> = raw_nodes.iter().map(|raw| build_element(raw, &mut default_pairs)).collect::<Result<_, _>>()?;
     apply_boundary_containers(&mut elements);
 
-    let mut flows: Vec<Flow> = Vec::new();
+    // 흐름 종류는 양 끝의 소속·종류로 정하므로 흐름보다 참여자·요소가 먼저 모델에 있어야 한다.
+    let mut model = Model { title, orientation, participants, elements, flows: Vec::new(), groups: Vec::new() };
     if let Some(flows_value) = root.get("flows") {
         let items = flows_value.as_seq().ok_or_else(|| ParseError::UnexpectedShape { path: "flows".into(), expected: "시퀀스" })?;
         for (i, item) in items.iter().enumerate() {
             let item_path = format!("flows[{i}]");
             let text = item.as_scalar().ok_or_else(|| ParseError::UnexpectedShape { path: item_path.clone(), expected: "문자열 항목" })?;
             let id = format!("@bpmn-yaml:{i}");
-            flows.push(parse_flow_line(text, id, &elements)?);
+            let flow = parse_flow_line(text, id, &model)?;
+            model.flows.push(flow);
         }
     }
-    apply_default_flows(&mut flows, default_pairs)?;
+    apply_default_flows(&mut model.flows, default_pairs)?;
 
-    Ok(Model { title, orientation, participants, elements, flows, groups: Vec::new() })
+    Ok(model)
 }
 
 fn check_allowed_keys(entries: &[(String, YamlValue)], path: &str, allowed: &[&str]) -> Result<(), ParseError> {
@@ -306,7 +308,7 @@ fn apply_boundary_containers(elements: &mut [Element]) {
 
 // --- 흐름: 한 줄 표기 → FlowKind ---
 
-fn parse_flow_line(text: &str, id: String, elements: &[Element]) -> Result<Flow, ParseError> {
+fn parse_flow_line(text: &str, id: String, model: &Model) -> Result<Flow, ParseError> {
     let chars: Vec<char> = text.chars().collect();
     let mut cursor = 0usize;
 
@@ -347,7 +349,10 @@ fn parse_flow_line(text: &str, id: String, elements: &[Element]) -> Result<Flow,
         return Err(ParseError::MalformedFlow(text.to_string()));
     }
 
-    let kind = flow_kind_of(&link, &source, &target, elements, text)?;
+    if !is_flow_link(&link) {
+        return Err(ParseError::UnsupportedFlow(text.to_string()));
+    }
+    let kind = classify_flow(model, &source, &target);
     Ok(Flow { id, source, target, label: link.label, kind })
 }
 
@@ -357,16 +362,26 @@ fn skip_spaces(chars: &[char], cursor: &mut usize) {
     }
 }
 
-/// design §Key Decisions의 `Link` → `FlowKind` 표.
-fn flow_kind_of(link: &Link, source: &str, target: &str, elements: &[Element], raw_text: &str) -> Result<FlowKind, ParseError> {
-    let is_data_end = |id: &str| elements.iter().any(|e| e.id == id && matches!(e.kind, ElementKind::DataObject | ElementKind::DataStore));
-    match (link.kind, link.head, link.tail) {
-        (LineKind::Solid, Marker::Arrow, Marker::None) => Ok(FlowKind::Sequence { is_default: false }),
-        (LineKind::Dashed, Marker::Arrow, Marker::None) => {
-            if is_data_end(source) || is_data_end(target) { Ok(FlowKind::DataAssociation) } else { Ok(FlowKind::Message) }
-        }
-        (LineKind::Dashed, Marker::None, Marker::None) => Ok(FlowKind::Association),
-        _ => Err(ParseError::UnsupportedFlow(raw_text.to_string())),
+/// 받는 화살은 `-->`·`-.->`·`-.-`(글을 단 꼴 포함)뿐이다. 셋 중 무엇을 써도 종류는 바뀌지 않는다.
+fn is_flow_link(link: &Link) -> bool {
+    matches!(
+        (link.kind, link.head, link.tail),
+        (LineKind::Solid, Marker::Arrow, Marker::None) | (LineKind::Dashed, Marker::Arrow, Marker::None) | (LineKind::Dashed, Marker::None, Marker::None)
+    )
+}
+
+/// 양 끝 대상으로 흐름 종류를 정한다. 위 줄부터 처음 맞는 규칙: 주석 → 연결, 데이터 → 데이터 연결,
+/// 풀이 다름(참여자 id 끝 포함) → 메시지, 그 밖 → 시퀀스.
+fn classify_flow(model: &Model, source: &str, target: &str) -> FlowKind {
+    let has_end_of = |is_kind: fn(&ElementKind) -> bool| [source, target].iter().any(|id| model.element(id).is_some_and(|e| is_kind(&e.kind)));
+    if has_end_of(|kind| matches!(kind, ElementKind::TextAnnotation)) {
+        FlowKind::Association
+    } else if has_end_of(|kind| matches!(kind, ElementKind::DataObject | ElementKind::DataStore)) {
+        FlowKind::DataAssociation
+    } else if model.participant_index(source).is_some() || model.participant_index(target).is_some() || model.participant_of_endpoint(source) != model.participant_of_endpoint(target) {
+        FlowKind::Message
+    } else {
+        FlowKind::Sequence { is_default: false }
     }
 }
 
@@ -551,9 +566,9 @@ mod tests {
     }
 
     #[test]
-    fn dashed_arrow_between_flow_nodes_is_a_message_flow() {
+    fn dashed_arrow_between_flow_nodes_outside_pools_is_a_sequence_flow() {
         let model = parse(&two_task_model_source("a -.-> b")).unwrap();
-        assert_eq!(model.flows[0].kind, FlowKind::Message);
+        assert_eq!(model.flows[0].kind, FlowKind::Sequence { is_default: false });
     }
 
     #[test]
@@ -565,9 +580,9 @@ mod tests {
     }
 
     #[test]
-    fn dashed_line_without_a_head_is_an_association() {
+    fn dashed_line_without_a_head_between_flow_nodes_is_a_sequence_flow() {
         let model = parse(&two_task_model_source("a -.- b")).unwrap();
-        assert_eq!(model.flows[0].kind, FlowKind::Association);
+        assert_eq!(model.flows[0].kind, FlowKind::Sequence { is_default: false });
     }
 
     #[test]
@@ -616,6 +631,69 @@ mod tests {
         assert!(is_default("b"));
 
         assert!(matches!(parse("nodes:\n  - gw:\n      kind: exclusiveGateway\n      default: ghost\n"), Err(ParseError::DefaultFlowMissing { .. })));
+    }
+
+    // --- 흐름 종류는 양 끝 대상이 정한다 ---
+
+    /// 풀 `p1`(레인 `l1`·`l2`)·`p2`, 풀 밖 노드, 데이터·주석 노드를 고루 둔 모델.
+    fn classification_model() -> Model {
+        let source = "participants:\n  - p1:\n      lanes:\n        - l1:\n            nodes:\n              - t1: task\n              - t1b: task\n        - l2:\n            nodes:\n              - t2: task\n  - p2:\n      nodes:\n        - u1: task\n        - d2: dataStoreReference\nnodes:\n  - loose: task\n  - d: dataObjectReference\n  - note: textAnnotation\n";
+        parse(source).unwrap()
+    }
+
+    #[test]
+    fn classify_flow_follows_the_endpoint_table_in_row_order() {
+        let model = classification_model();
+        let cases = [
+            ("note", "d", FlowKind::Association),
+            ("t1", "note", FlowKind::Association),
+            ("note", "u1", FlowKind::Association),
+            ("t1", "d", FlowKind::DataAssociation),
+            ("d", "t1", FlowKind::DataAssociation),
+            ("t1", "d2", FlowKind::DataAssociation),
+            ("t1", "u1", FlowKind::Message),
+            ("p2", "t1", FlowKind::Message),
+            ("t1", "p1", FlowKind::Message),
+            ("t1", "loose", FlowKind::Message),
+            ("t1", "t1b", FlowKind::Sequence { is_default: false }),
+            ("t1", "t2", FlowKind::Sequence { is_default: false }),
+            ("loose", "ghost", FlowKind::Sequence { is_default: false }),
+        ];
+        for (source, target, expected) in cases {
+            assert_eq!(classify_flow(&model, source, target), expected, "{source} → {target}");
+        }
+    }
+
+    #[test]
+    fn classify_flow_without_participants_is_a_sequence() {
+        let model = parse(&two_task_model_source("a --> b")).unwrap();
+        assert_eq!(classify_flow(&model, "a", "b"), FlowKind::Sequence { is_default: false });
+    }
+
+    #[test]
+    fn the_three_accepted_arrows_give_the_same_kind_for_the_same_ends() {
+        let pools = "participants:\n  - p1:\n      nodes:\n        - a: task\n  - p2:\n      nodes:\n        - b: task\n";
+        let same_pool = "participants:\n  - p1:\n      nodes:\n        - a: task\n        - b: task\n";
+        let data = "nodes:\n  - a: task\n  - b: dataObjectReference\n";
+        for (nodes, expected) in [(pools, FlowKind::Message), (same_pool, FlowKind::Sequence { is_default: false }), (data, FlowKind::DataAssociation)] {
+            for line in ["a --> b", "a -.-> b", "a -.- b", "a -- 이름 --> b", "a -->|이름| b"] {
+                let model = parse(&format!("{nodes}flows:\n  - {line}\n")).unwrap_or_else(|e| panic!("{line}: {e}"));
+                assert_eq!(model.flows[0].kind, expected, "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_plain_arrow_between_two_pools_parses_as_a_message_and_renders() {
+        let source = "participants:\n  - p1:\n      nodes:\n        - a: task 보내기\n  - p2:\n      nodes:\n        - b: task 받기\nflows:\n  - a --> b\n";
+        assert_eq!(parse(source).unwrap().flows[0].kind, FlowKind::Message);
+        let rendered = crate::diagram::bpmn::render(source, &crate::style::Theme::none(), 100, crate::diagram::options::DiagramOptions::default());
+        assert!(rendered.is_some(), "풀을 넘는 `-->`는 메시지 흐름으로 그려져야 한다");
+    }
+
+    #[test]
+    fn a_heavy_arrow_is_still_unsupported() {
+        assert_eq!(parse(&two_task_model_source("a ==> b")).unwrap_err(), ParseError::UnsupportedFlow("a ==> b".into()));
     }
 
     #[test]

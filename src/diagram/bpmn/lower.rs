@@ -383,9 +383,9 @@ fn line_for(kind: FlowKind) -> (LineKind, Marker, Marker) {
     match kind {
         FlowKind::Sequence { is_default: false } => (LineKind::Solid, Marker::None, Marker::Arrow),
         FlowKind::Sequence { is_default: true } => (LineKind::Solid, Marker::Slash, Marker::Arrow),
-        FlowKind::Message => (LineKind::Dashed, Marker::Circle, Marker::OpenArrow),
-        FlowKind::Association => (LineKind::Dashed, Marker::None, Marker::None),
-        FlowKind::DataAssociation => (LineKind::Dashed, Marker::None, Marker::OpenArrow),
+        FlowKind::Message => (LineKind::Dashed, Marker::Circle, Marker::Triangle),
+        FlowKind::Association => (LineKind::Dotted, Marker::None, Marker::None),
+        FlowKind::DataAssociation => (LineKind::Dotted, Marker::None, Marker::OpenArrow),
     }
 }
 
@@ -501,9 +501,9 @@ mod tests {
         let graph = lower(&model);
         assert_eq!((graph.edges[0].kind, graph.edges[0].tail, graph.edges[0].head, graph.edges[0].label.as_str()), (LineKind::Solid, Marker::None, Marker::Arrow, "조건"));
         assert_eq!((graph.edges[1].kind, graph.edges[1].tail, graph.edges[1].head), (LineKind::Solid, Marker::Slash, Marker::Arrow));
-        assert_eq!((graph.edges[2].kind, graph.edges[2].tail, graph.edges[2].head), (LineKind::Dashed, Marker::Circle, Marker::OpenArrow));
-        assert_eq!((graph.edges[3].kind, graph.edges[3].tail, graph.edges[3].head), (LineKind::Dashed, Marker::None, Marker::None));
-        assert_eq!((graph.edges[4].kind, graph.edges[4].tail, graph.edges[4].head), (LineKind::Dashed, Marker::None, Marker::OpenArrow));
+        assert_eq!((graph.edges[2].kind, graph.edges[2].tail, graph.edges[2].head), (LineKind::Dashed, Marker::Circle, Marker::Triangle));
+        assert_eq!((graph.edges[3].kind, graph.edges[3].tail, graph.edges[3].head), (LineKind::Dotted, Marker::None, Marker::None));
+        assert_eq!((graph.edges[4].kind, graph.edges[4].tail, graph.edges[4].head), (LineKind::Dotted, Marker::None, Marker::OpenArrow));
     }
 
     #[test]
@@ -574,7 +574,7 @@ mod tests {
 
         let customer_group = graph.groups.iter().position(|g| g.title == "고객").expect("고객 풀 그룹이 있어야 한다");
         let message_edge = graph.edges.iter().find(|e| e.label == "주문").expect("메시지 흐름 간선이 있어야 한다");
-        assert_eq!((message_edge.kind, message_edge.tail, message_edge.head), (LineKind::Dashed, Marker::Circle, Marker::OpenArrow));
+        assert_eq!((message_edge.kind, message_edge.tail, message_edge.head), (LineKind::Dashed, Marker::Circle, Marker::Triangle));
 
         let anchor_node = &graph.nodes[message_edge.from];
         assert_eq!(anchor_node.shape, Shape::Anchor);
