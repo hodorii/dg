@@ -1377,6 +1377,67 @@ mod tests {
         assert_no_defect_in_either_direction(source, |_, rows, grid| message_lines_avoid_node_boxes_defect(&["주문 검토", "30분", "기록"], rows, grid));
     }
 
+    /// 풀 테두리를 이루거나 테두리 위에서 선이 넘는 칸에 올 수 있는 글자.
+    const POOL_FRAME_GLYPHS: &str = "─│┌┐└┘├┤┬┴┼";
+
+    /// 제목 `title`이 든 풀의 바깥 테두리. `box_around`는 제목 칸 구분선(가로 배치의 오른변, 세로 배치의 `├─┤` 아랫변)을
+    /// 테두리로 잡으므로 위아래 변과 오른변을 바깥 모서리 글자로만 다시 잡는다.
+    fn pool_frame(rows: &[String], grid: &[Vec<char>], title: &str) -> BoxBounds {
+        let title_cell = box_around(rows, grid, title);
+        let left = title_cell.left;
+        let title_row = row_of_text(rows, title);
+        let top = (0..title_row).rev().find(|&row| "┌╭".contains(grid[row][left])).expect("윗변 왼쪽 모서리가 있어야 한다");
+        let bottom = (title_row..grid.len()).find(|&row| "└╰".contains(grid[row][left])).expect("아랫변 왼쪽 모서리가 있어야 한다");
+        let right = (left + 1..grid[top].len()).find(|&col| "┐╮".contains(grid[top][col])).expect("윗변 오른쪽 모서리가 있어야 한다");
+        BoxBounds { top, left, bottom, right }
+    }
+
+    /// 메시지 이름표 `label`이 한 자리에 온전히 보이고, 제목이 `pool_titles`인 풀의 테두리가 어디서도 끊기지 않는지 본다.
+    /// 이름표가 풀 안, 풀 사이 간격 어디에 놓이든 상관없다.
+    fn message_label_defect<'a>(label: &'a str, pool_titles: &'a [&'a str]) -> impl Fn(Direction, &[String], &[Vec<char>]) -> Result<(), String> + 'a {
+        move |_, rows, grid| {
+            let occurrences: usize = rows.iter().map(|row| row.matches(label).count()).sum();
+            require(occurrences == 1, || format!("이름표 `{label}`의 글자가 모두 이어져 한 번 보여야 한다({occurrences}번)"))?;
+            for title in pool_titles {
+                let frame = pool_frame(rows, grid, title);
+                if let Some(((row, col), _)) = frame.border_cells().into_iter().find(|&((row, col), _)| !POOL_FRAME_GLYPHS.contains(grid[row][col])) {
+                    return Err(format!("`{title}` 풀 테두리 ({row}, {col}) 칸이 {:?}로 끊겼다", grid[row][col]));
+                }
+            }
+            let row = row_of_text(rows, label);
+            let start = display_col(&rows[row], label);
+            let end = start + crate::text::width_of(label);
+            // 이름표 바로 옆에 다른 글자가 붙으면 이름표가 노드 이름이나 다른 이름표를 덮었거나 그것과 한 낱말로 읽힌다.
+            // 테두리 칸은 막지 않는다: 간격을 이름표 폭만큼 늘리면 이름표가 두 테두리 사이에 꼭 맞게 붙는다.
+            for beside in [start.checked_sub(1), Some(end)].into_iter().flatten() {
+                let glyph = grid[row].get(beside).copied().unwrap_or(' ');
+                let is_other_text = glyph.is_alphanumeric() || glyph == '\0';
+                require(!is_other_text, || format!("이름표 `{label}` 바로 옆 ({row}, {beside}) 칸에 다른 글자 {glyph:?}가 붙었다"))?;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_message_name_never_covers_a_pool_border() {
+        let source = r#"<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL">
+  <collaboration id="c1">
+    <participant id="a" name="고객" processRef="pa"/>
+    <participant id="b" name="판매사" processRef="pb"/>
+    <messageFlow id="mf1" name="주문" sourceRef="send" targetRef="recv"/>
+  </collaboration>
+  <process id="pa">
+    <task id="send" name="보내기"/>
+  </process>
+  <process id="pb">
+    <startEvent id="recv" name="받음"><messageEventDefinition/></startEvent>
+    <task id="t" name="처리"/>
+    <sequenceFlow id="s1" sourceRef="recv" targetRef="t"/>
+  </process>
+</definitions>"#;
+        assert_no_defect_in_either_direction(source, message_label_defect("주문", &["고객", "판매사"]));
+    }
+
     #[test]
     fn a_plain_arrow_across_pools_draws_a_dashed_message_under_the_collaboration_caption() {
         let source = "participants:\n  - p1:\n      nodes:\n        - a: task 보내기\n  - p2:\n      nodes:\n        - b: task 받기\nflows:\n  - a --> b\n";
