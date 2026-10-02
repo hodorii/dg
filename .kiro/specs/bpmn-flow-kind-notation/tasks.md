@@ -41,12 +41,12 @@
   - _Depends: 1.2_
 
 - [ ] 3. 검증
-- [ ] 3.1 렌더링 통합 테스트
+- [x] 3.1 렌더링 통합 테스트
   - _DoneWhen: 네 흐름 YAML의 TB, LR 곧은 구간이 세 갈래, 풀 면 메시지 양방향 표식 위치, 자동 선택 문서와 위반 문서 결과, 글자 없는 상자 노드(mermaid, BPMN `task`, 주석)와 점 모양 노드 대조가 모두 출력 단언으로 통과_
   - _Requirements: 1.1, 1.2, 2.1, 2.2, 3.1_
   - _Difficulty: mid_
   - _Depends: 2.1, 2.2, 2.3_
-- [ ] 3.2 (P) 속성 테스트 P2, P3, P4
+- [x] 3.2 (P) 속성 테스트 P2, P3, P4
   - _DoneWhen: 세 속성 테스트가 정해진 반복 횟수만큼 통과하고, 실패 시 시드와 입력을 출력_
   - _Requirements: 2.1, 3.1, 4.2_
   - _Difficulty: mid_
@@ -56,3 +56,15 @@
   - _DoneWhen: `examples/bpmn.md` 네 흐름 블록 TB, LR 출력에 `─▶`, `○╌`, `┈>`가 보이고, `git diff examples/architecture.txt` 비어 있으며, 전체 테스트(해시 테스트 포함)와 clippy 통과_
   - _Requirements: 1.2, 4.1_
   - _Difficulty: low_
+
+- [ ] 4. 재작업: 블랙박스 풀 면 메시지 (3.1 검증에서 발견, 3.3보다 먼저 실행)
+- [ ] 4.1 노드에서 블랙박스 풀로 들어가는 메시지의 바깥 통로 방향
+  - _DoneWhen: 노드에서 블랙박스 풀로 가는 메시지가 TB, LR 모두 풀 면을 표식 칸 말고는 가로지르지 않고 풀 바깥 통로를 따라 풀 면 표식에 닿음(재현 테스트가 수정 전 실패, 수정 후 통과)_
+  - _Requirements: 1.1_
+  - _Difficulty: mid_
+  - _Boundary: layout::graph_
+- [ ] 4.2 한 블랙박스 풀 면에 메시지가 둘 이상 붙을 때 표식 분리
+  - _DoneWhen: 한 블랙박스 풀이 보내고 받는 메시지가 함께 있는 문서의 TB, LR 출력에서 풀 면에 `○`와 빈 삼각형이 모두 보이고 서로 다른 칸에 있음(재현 테스트가 수정 전 실패, 수정 후 통과)_
+  - _Requirements: 1.1_
+  - _Difficulty: high_
+  - _Boundary: layout::graph_
