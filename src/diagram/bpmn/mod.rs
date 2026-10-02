@@ -1254,6 +1254,97 @@ mod tests {
         }
     }
 
+    /// 가로, 세로 배치 각각의 결함을 모아 한 번에 알린다. 첫 배치에서 멈추면 다른 배치의 결함이 가려진다.
+    fn assert_no_defect_in_either_direction(source: &str, defect_in: impl Fn(Direction, &[String], &[Vec<char>]) -> Result<(), String>) {
+        let defects: Vec<String> = [Direction::LeftRight, Direction::TopDown]
+            .into_iter()
+            .filter_map(|direction| {
+                let rows = yaml_rows(source, direction);
+                let grid = crate::diagram::rendered_picture::display_grid(&rows);
+                defect_in(direction, &rows, &grid).err().map(|defect| format!("{direction:?}: {defect}:\n{}", rows.join("\n")))
+            })
+            .collect();
+        assert!(defects.is_empty(), "{}", defects.join("\n\n"));
+    }
+
+    fn require(is_met: bool, defect: impl FnOnce() -> String) -> Result<(), String> {
+        if is_met { Ok(()) } else { Err(defect()) }
+    }
+
+    /// 보내는 `고객` 풀이 받는 `판매사` 풀보다 앞에 놓이고 메시지가 읽는 방향(위에서 아래, 왼쪽에서 오른쪽)으로 흐르는지 본다.
+    /// 머리가 시작 이벤트에 어느 쪽에서 들어가는지는 배치에 맡긴다.
+    fn sender_first_defect(direction: Direction, rows: &[String], grid: &[Vec<char>]) -> Result<(), String> {
+        let is_stacked_top_down = direction == Direction::LeftRight;
+        let title_position = |needle: &str| {
+            let row = row_of_text(rows, needle);
+            (row, display_col(&rows[row], needle))
+        };
+        let (customer, shop) = (title_position("고객"), title_position("판매사"));
+        let is_customer_first = if is_stacked_top_down { customer.0 < shop.0 } else { customer.1 < shop.1 };
+        require(is_customer_first, || "보내는 `고객` 풀이 받는 `판매사` 풀보다 앞에 놓여야 한다".into())?;
+
+        let triangles = marker_cells(grid, HOLLOW_TRIANGLES);
+        require(triangles.len() == 1, || format!("메시지는 빈 삼각형 하나로 끝나야 한다({}개)", triangles.len()))?;
+        let head = triangles[0];
+        let points_into = pointing(grid[head.0][head.1]).map(|heading| cell_at(grid, step(head, heading)));
+        require(points_into == Some(Some('○')), || "빈 삼각형이 시작 이벤트를 가리켜야 한다".into())?;
+        let trace = trace_back_from_head(grid, head);
+        require(trace.stop == '○', || format!("메시지를 거슬러 가면 ○ 꼬리에 닿아야 한다({:?}에서 {:?})", trace.stop_cell, trace.stop))?;
+        let is_tail_before_head = if is_stacked_top_down { trace.stop_cell.0 < head.0 } else { trace.stop_cell.1 < head.1 };
+        require(is_tail_before_head, || "○ 꼬리가 빈 삼각형보다 앞(위, 왼쪽)에 있어야 한다".into())
+    }
+
+    #[test]
+    fn a_one_way_message_puts_the_sending_pool_first_even_when_it_is_declared_last() {
+        // 메시지 방향이 선언 순서보다 앞선다: 받는 풀 `판매사`를 먼저 적어도 보내는 `고객`이 앞에 와야 한다.
+        let source = "participants:\n  - shop:\n      name: 판매사\n      nodes:\n        - r:\n            kind: startEvent\n            name: 주문 접수\n        - t:\n            kind: task\n            name: 처리\n  - customer: 고객\nflows:\n  - customer --> r\n  - r --> t\n";
+        assert_no_defect_in_either_direction(source, sender_first_defect);
+    }
+
+    /// 메시지 `message_count`개가 모두 저마다의 ○ 꼬리에서 대시 선을 따라 저마다의 빈 삼각형에 닿는지 본다.
+    /// 선이 다른 메시지 선과 이음 글자로 합쳐지면 거슬러 가기가 그 글자에서 멈추고, 끝 칸이 겹치면 표식이 모자란다.
+    fn assert_every_message_runs_alone_from_its_circle_to_its_hollow_triangle(source: &str, message_count: usize) {
+        assert_no_defect_in_either_direction(source, |_, _, grid| {
+            let heads = marker_cells(grid, HOLLOW_TRIANGLES);
+            require(heads.len() == message_count, || format!("메시지 {message_count}개마다 빈 삼각형이 하나씩 보여야 한다({}개)", heads.len()))?;
+            let traces: Vec<Trace> = heads.iter().map(|&head| trace_back_from_head(grid, head)).collect();
+            for (head, trace) in heads.iter().zip(&traces) {
+                require(trace.stop == '○', || format!("{head:?}의 빈 삼각형을 거슬러 가면 다른 선과 합쳐지지 않고 ○ 꼬리에 닿아야 한다({:?}에서 {:?})", trace.stop_cell, trace.stop))?;
+                require(trace.straights.iter().all(|c| "╌╎".contains(*c)), || format!("{head:?}의 메시지는 대시 선이어야 한다"))?;
+            }
+            let tails: BTreeSet<Cell> = traces.iter().map(|trace| trace.stop_cell).collect();
+            require(tails.len() == message_count, || format!("메시지 {message_count}개마다 ○ 꼬리가 따로 있어야 한다({}개)", tails.len()))?;
+            // `┼`는 직교 교차라 두 선이 함께 지나도 된다. 그 밖의 칸을 함께 쓰면 같은 칸을 같은 방향으로 쓴 것이다.
+            let mut owner_of_cell = std::collections::BTreeMap::new();
+            for (head, trace) in heads.iter().zip(&traces) {
+                for &cell in trace.line_cells.iter().filter(|&&(row, col)| grid[row][col] != '┼') {
+                    if let Some(other_head) = owner_of_cell.insert(cell, *head) {
+                        return Err(format!("{other_head:?}와 {head:?}의 메시지 선이 {cell:?} 칸을 함께 쓰면 안 된다"));
+                    }
+                }
+            }
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn facing_pools_and_a_pool_in_between_keep_every_message_line_apart() {
+        let source = "participants:\n  - c: 고객\n  - v: 공급자\n  - w: 은행\n  - p1:\n      name: 판매\n      nodes:\n        - a: task 가\n        - b: task 나\n        - d: task 다\nflows:\n  - a --> b\n  - b --> d\n  - c --> v\n  - c --> w\n  - v --> c\n  - v --> a\n  - b --> c\n";
+        assert_every_message_runs_alone_from_its_circle_to_its_hollow_triangle(source, 5);
+    }
+
+    #[test]
+    fn several_messages_on_each_node_show_every_circle_and_hollow_triangle() {
+        let source = "participants:\n  - c: 고객\n  - v: 공급자\n  - p1:\n      name: 판매\n      nodes:\n        - a: task 가\n        - b: task 나\nflows:\n  - a --> b\n  - c --> v\n  - v --> c\n  - a --> c\n  - b --> v\n  - c --> b\n";
+        assert_every_message_runs_alone_from_its_circle_to_its_hollow_triangle(source, 5);
+    }
+
+    #[test]
+    fn three_messages_on_one_node_show_every_circle_and_hollow_triangle() {
+        let source = "participants:\n  - c: 고객\n  - p1:\n      name: 판매\n      nodes:\n        - a: task 가\nflows:\n  - a --> c\n  - c --> a\n  - a --> c\n";
+        assert_every_message_runs_alone_from_its_circle_to_its_hollow_triangle(source, 3);
+    }
+
     #[test]
     fn a_plain_arrow_across_pools_draws_a_dashed_message_under_the_collaboration_caption() {
         let source = "participants:\n  - p1:\n      nodes:\n        - a: task 보내기\n  - p2:\n      nodes:\n        - b: task 받기\nflows:\n  - a --> b\n";
