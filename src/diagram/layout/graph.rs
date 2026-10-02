@@ -2460,6 +2460,30 @@ fn marker_glyphs(marker: Marker, direction: Direction, at_top: bool) -> Vec<char
     glyphs
 }
 
+/// 결정적 의사난수(xorshift64) — 외부 crate 없이 seed로 재현 가능한 테스트 입력을 만든다
+/// (bugfix.md 재현 4의 파이썬 생성기와 같은 모양). 배치기 테스트와 BPMN 속성 테스트가 함께 쓴다.
+#[cfg(test)]
+pub(crate) struct Xorshift64(u64);
+
+#[cfg(test)]
+impl Xorshift64 {
+    pub(crate) fn new(seed: u64) -> Self {
+        // 0이면 xorshift가 0에 갇히므로 홀수로 섞는다.
+        Xorshift64((seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1)
+    }
+    pub(crate) fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+    pub(crate) fn below(&mut self, n: usize) -> usize {
+        (self.next_u64() % n as u64) as usize
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3420,28 +3444,6 @@ mod tests {
 
     // ── layout-crossgroup-edge-blowup: 재현·회귀 테스트 ──────────────────
 
-    /// 결정적 의사난수(xorshift64) — 외부 crate 없이 재현 가능한 합성 그래프를 만든다
-    /// (bugfix.md 재현 4의 파이썬 생성기와 같은 모양, seed로 고정).
-    struct Xorshift64(u64);
-
-    impl Xorshift64 {
-        fn new(seed: u64) -> Self {
-            // 0이면 xorshift가 0에 갇히므로 홀수로 섞는다.
-            Xorshift64((seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1)
-        }
-        fn next_u64(&mut self) -> u64 {
-            let mut x = self.0;
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            self.0 = x;
-            x
-        }
-        fn below(&mut self, n: usize) -> usize {
-            (self.next_u64() % n as u64) as usize
-        }
-    }
-
     /// bugfix.md 재현 4의 생성기와 같은 모양: subgraph 8개(그룹당 6~7노드 사슬) + 두 그룹
     /// 사이를 잇는 무작위 간선 `cross_edges`개. `chain_groups`면 그룹 0→1→…→7을 먼저 이어(실사용
     /// 펜스처럼 그룹이 사슬이 되는 구조) 어느 시도로도 폭에 안 들어가는 그래프를 만든다.
@@ -3595,9 +3597,13 @@ mod tests {
     /// 가운데 노드 하나에 `incoming`개가 들어오고 `outgoing`개가 나가는 왼쪽→오른쪽 그래프.
     /// 가운데 노드는 본문이 비어 글자 없는 도형(테두리만)으로 그려진다.
     fn lr_hub_graph(shape: Shape, incoming: usize, outgoing: usize) -> Graph {
+        lr_hub_graph_with_sections(shape, vec![Vec::new()], incoming, outgoing)
+    }
+
+    fn lr_hub_graph_with_sections(shape: Shape, sections: Vec<Vec<String>>, incoming: usize, outgoing: usize) -> Graph {
         let mut g = Graph { direction: Some(Direction::LeftRight), ..Graph::default() };
         let hub = g.intern("A", "A", shape, None);
-        g.nodes[hub].sections = vec![Vec::new()];
+        g.nodes[hub].sections = sections;
         for i in 0..incoming {
             let source = g.intern(&format!("I{i}"), &format!("i{i}"), Shape::Rect, None);
             g.add_edge(Edge { from: source, to: hub, head: Marker::Arrow, ..Edge::default() });
@@ -3655,5 +3661,69 @@ mod tests {
             out,
             ["     ┌────┐", "  ╭─▶│ o0 │", "  │  └────┘", "  │", "  │  ┌────┐", "○─┴┬▶│ o1 │", "   │ └────┘", "   │", "   │ ┌────┐", "   ╰▶│ o2 │", "     └────┘"]
         );
+    }
+
+    /// 같은 쪽 흐름이 가운데 노드 옆 칸에서 몇 줄로 드나드는지 센다. 들어오는 쪽은 가운데 노드 바로 앞
+    /// 열의 `▶`, 나가는 쪽은 가운데 노드 바로 뒤 열에서 왼쪽(노드 쪽)으로 이어지는 선 글자다.
+    /// 나가는 그래프에서 가운데 노드는 첫 층이라 0열에서 시작한다.
+    fn hub_side_port_rows(out: &[String], hub_width: usize, is_incoming: bool) -> usize {
+        let cells: Vec<Vec<char>> = out.iter().map(|row| row.chars().collect()).collect();
+        if is_incoming {
+            let Some(arrow_col) = cells.iter().filter_map(|row| row.iter().position(|&c| c == '▶')).min() else { return 0 };
+            cells.iter().filter(|row| row.get(arrow_col) == Some(&'▶')).count()
+        } else {
+            const CONNECTS_LEFT: [char; 9] = ['─', '┬', '┴', '┼', '┤', '╮', '╯', '┐', '┘'];
+            cells.iter().filter(|row| row.get(hub_width).is_some_and(|c| CONNECTS_LEFT.contains(c))).count()
+        }
+    }
+
+    #[test]
+    fn left_right_border_box_gives_each_same_side_flow_its_own_row() {
+        const ALL_SHAPES: [Shape; 19] = [
+            Shape::Rect,
+            Shape::Round,
+            Shape::Stadium,
+            Shape::Cylinder,
+            Shape::Diamond,
+            Shape::Hexagon,
+            Shape::Subroutine,
+            Shape::Circle,
+            Shape::Actor,
+            Shape::Interface,
+            Shape::Note,
+            Shape::Plain,
+            Shape::Start,
+            Shape::End,
+            Shape::Anchor,
+            Shape::Event(EventPosition::Start),
+            Shape::Event(EventPosition::Intermediate),
+            Shape::Event(EventPosition::End),
+            Shape::Subprocess,
+        ];
+        let border_boxes: Vec<Shape> = ALL_SHAPES.into_iter().filter(|shape| shape.is_border_box()).collect();
+        assert_eq!(border_boxes.len(), 10, "테두리 상자 도형 10종 전부를 입력 공간으로 쓴다");
+        let mut failures: Vec<String> = Vec::new();
+        for shape in border_boxes {
+            for is_named in [false, true] {
+                let sections = if is_named { vec![vec!["Hub".to_string()]] } else { vec![Vec::new()] };
+                let (hub_width, _) = shape::measure(shape, &sections);
+                for flows in 2..=5 {
+                    for is_incoming in [true, false] {
+                        let (incoming, outgoing) = if is_incoming { (flows, 0) } else { (0, flows) };
+                        let graph = lr_hub_graph_with_sections(shape, sections.clone(), incoming, outgoing);
+                        let Some(lines) = render(&graph, &Theme::none(), 80) else {
+                            failures.push(format!("shape={shape:?} named={is_named} k={flows} incoming={is_incoming}: 렌더링 실패"));
+                            continue;
+                        };
+                        let out = rows(lines);
+                        let port_rows = hub_side_port_rows(&out, hub_width, is_incoming);
+                        if port_rows != flows {
+                            failures.push(format!("shape={shape:?} named={is_named} k={flows} incoming={is_incoming}: 노드 옆 칸 {port_rows}줄\n{}", out.join("\n")));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "같은 쪽 흐름이 노드 옆 칸에서 서로 다른 줄이 아니다({}건):\n{}", failures.len(), failures.join("\n\n"));
     }
 }

@@ -6,6 +6,8 @@
 //! `render_model`을 바로 부른다.
 
 pub mod bizprocess;
+#[cfg(test)]
+mod flow_properties;
 pub mod lower;
 pub mod model;
 pub mod parse_bizprocess;
