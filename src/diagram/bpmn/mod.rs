@@ -278,6 +278,7 @@ mod tests {
     use super::*;
     use crate::diagram::ir::Direction;
     use crate::diagram::options::DiagramOptions;
+    use std::collections::BTreeSet;
 
     fn task(id: &str, name: &str, container: Option<&str>) -> Element {
         Element { id: id.into(), name: name.into(), kind: ElementKind::Task(TaskKind::None), container: container.map(str::to_string), attached_to: None, parent: None }
@@ -925,6 +926,279 @@ mod tests {
         let (_, overridden) = render(source, &Theme::none(), 100, options).expect("렌더링돼야 한다");
         let overridden_row_of = |needle: &str| overridden.iter().position(|l| l.text().contains(needle)).expect("있어야 한다");
         assert_ne!(overridden_row_of("참여자1"), overridden_row_of("참여자2"), "덮어쓴 방향에서는 풀 제목이 다른 줄에 있어야 한다");
+    }
+
+    // --- 흐름 종류별 선과 표식(그린 칸으로 확인) ---
+
+    type Cell = (usize, usize);
+    type Heading = (isize, isize);
+
+    const FILLED_HEADS: &str = "▶◀▲▼";
+    const HOLLOW_TRIANGLES: &str = "▷◁△▽";
+
+    /// 풀 `판매`의 시퀀스 둘, 풀 `고객`에서 오는 메시지, `문서`로 가는 데이터 연결, `메모`에서 오는 연결.
+    const FOUR_FLOW_KINDS_YAML: &str = "participants:\n  - p1:\n      name: 판매\n      nodes:\n        - s: startEvent\n        - t: task 처리\n        - e: endEvent\n        - d: dataObjectReference 문서\n        - n: textAnnotation 메모\n  - p2:\n      name: 고객\n      nodes:\n        - u: task 주문\nflows:\n  - s --> t\n  - t --> e\n  - u --> t\n  - t --> d\n  - n --> t\n";
+
+    fn yaml_rows(source: &str, direction: Direction) -> Vec<String> {
+        let options = DiagramOptions { direction: Some((direction, false)), ..DiagramOptions::default() };
+        let (_, lines) = render(source, &Theme::none(), 120, options).expect("렌더링돼야 한다");
+        lines.iter().map(Line::plain).collect()
+    }
+
+    /// 마크다운 코드블록이 쓰는 최상위 렌더러 결과(캡션 포함). `None`이면 원문 코드블록으로 물러난다.
+    fn fenced_bpmn_rows(source: &str) -> Option<Vec<String>> {
+        let lines = crate::diagram::render(crate::diagram::Language::Bpmn, source, &Theme::none(), 120, DiagramOptions::default())?;
+        Some(lines.iter().map(Line::plain).collect())
+    }
+
+    fn cell_at(grid: &[Vec<char>], (row, col): (isize, isize)) -> Option<char> {
+        grid.get(usize::try_from(row).ok()?)?.get(usize::try_from(col).ok()?).copied()
+    }
+
+    fn step((row, col): Cell, heading: Heading) -> (isize, isize) {
+        (row as isize + heading.0, col as isize + heading.1)
+    }
+
+    fn opposite(heading: Heading) -> Heading {
+        (-heading.0, -heading.1)
+    }
+
+    /// 머리 표식이 가리키는 쪽.
+    fn pointing(marker: char) -> Option<Heading> {
+        match marker {
+            '▶' | '▷' | '>' => Some((0, 1)),
+            '◀' | '◁' | '<' => Some((0, -1)),
+            '▲' | '△' | '∧' => Some((-1, 0)),
+            '▼' | '▽' | '∨' => Some((1, 0)),
+            _ => None,
+        }
+    }
+
+    /// 둥근 꺾임에 `heading`으로 들어왔을 때 나가는 쪽. 꺾임이 아니거나 들어온 쪽과 이어지지 않으면 `None`.
+    fn turn(corner: char, heading: Heading) -> Option<Heading> {
+        let arms: [Heading; 2] = match corner {
+            '╭' => [(0, 1), (1, 0)],
+            '╮' => [(0, -1), (1, 0)],
+            '╰' => [(0, 1), (-1, 0)],
+            '╯' => [(0, -1), (-1, 0)],
+            _ => return None,
+        };
+        arms.iter().position(|&arm| arm == opposite(heading)).map(|entered| arms[1 - entered])
+    }
+
+    struct Trace {
+        straights: Vec<char>,
+        stop: char,
+        stop_cell: Cell,
+        heading: Heading,
+    }
+
+    /// `start` 다음 칸부터 선을 따라간다. 꺾임은 따라 돌고 `┼`(풀 테두리를 넘는 칸)는 곧장 지나며
+    /// 곧은 선 글자만 모은다. 선이 아닌 칸(표식, 노드 테두리, 빈칸)에서 멈춘다.
+    fn trace_line(grid: &[Vec<char>], start: Cell, mut heading: Heading) -> Trace {
+        let mut position = (start.0 as isize, start.1 as isize);
+        let mut straights = Vec::new();
+        for _ in 0..grid.len() * grid.iter().map(Vec::len).max().unwrap_or(0) {
+            position = (position.0 + heading.0, position.1 + heading.1);
+            let cell = cell_at(grid, position).unwrap_or(' ');
+            let is_moving_sideways = heading.0 == 0;
+            match cell {
+                '─' | '╌' | '┈' if is_moving_sideways => straights.push(cell),
+                '│' | '╎' | '┊' if !is_moving_sideways => straights.push(cell),
+                '┼' => {}
+                _ => match turn(cell, heading) {
+                    Some(next) => heading = next,
+                    None => return Trace { straights, stop: cell, stop_cell: (position.0 as usize, position.1 as usize), heading },
+                },
+            }
+        }
+        panic!("선이 끝나지 않는다");
+    }
+
+    /// 머리 표식에서 꼬리 쪽으로 거슬러 따라간다.
+    fn trace_back_from_head(grid: &[Vec<char>], head: Cell) -> Trace {
+        let marker = grid[head.0][head.1];
+        trace_line(grid, head, opposite(pointing(marker).expect("머리 표식이어야 한다")))
+    }
+
+    fn marker_cells(grid: &[Vec<char>], markers: &str) -> Vec<Cell> {
+        grid.iter().enumerate().flat_map(|(row, cells)| cells.iter().enumerate().filter(|(_, c)| markers.contains(**c)).map(move |(col, _)| (row, col))).collect()
+    }
+
+    struct BoxBounds {
+        top: usize,
+        left: usize,
+        bottom: usize,
+        right: usize,
+    }
+
+    impl BoxBounds {
+        fn contains(&self, (row, col): (isize, isize)) -> bool {
+            (self.top as isize..=self.bottom as isize).contains(&row) && (self.left as isize..=self.right as isize).contains(&col)
+        }
+
+        /// 테두리 칸마다 바깥쪽 방향.
+        fn border_cells(&self) -> Vec<(Cell, Heading)> {
+            let horizontal = (self.left..=self.right).flat_map(|col| [((self.top, col), (-1, 0)), ((self.bottom, col), (1, 0))]);
+            let vertical = (self.top..=self.bottom).flat_map(|row| [((row, self.left), (0, -1)), ((row, self.right), (0, 1))]);
+            horizontal.chain(vertical).collect()
+        }
+    }
+
+    /// `needle` 글자를 둘러싼 테두리 상자.
+    fn box_around(rows: &[String], grid: &[Vec<char>], needle: &str) -> BoxBounds {
+        let row = row_of_text(rows, needle);
+        let col = display_col(&rows[row], needle);
+        let is_side = |c: &char| "│╎".contains(*c);
+        let is_at = |row: usize, col: usize, glyphs: &str| grid[row].get(col).is_some_and(|c| glyphs.contains(*c));
+        let left = (0..col).rev().find(|&c| is_side(&grid[row][c])).expect("왼쪽 테두리가 있어야 한다");
+        let right = (col..grid[row].len()).find(|&c| is_side(&grid[row][c])).expect("오른쪽 테두리가 있어야 한다");
+        let top = (0..row).rev().find(|&r| is_at(r, left, "┌╭")).expect("윗변이 있어야 한다");
+        let bottom = (row..grid.len()).find(|&r| is_at(r, left, "└╰")).expect("아랫변이 있어야 한다");
+        BoxBounds { top, left, bottom, right }
+    }
+
+    #[test]
+    fn four_flow_kinds_draw_three_disjoint_straight_line_families_with_their_markers() {
+        for direction in [Direction::TopDown, Direction::LeftRight] {
+            let rows = yaml_rows(FOUR_FLOW_KINDS_YAML, direction);
+            let picture = rows.join("\n");
+            let grid = crate::diagram::rendered_picture::display_grid(&rows);
+            let task_box = box_around(&rows, &grid, "처리");
+
+            let filled_heads = marker_cells(&grid, FILLED_HEADS);
+            assert_eq!(filled_heads.len(), 2, "시퀀스 둘은 채운 화살촉으로 끝나야 한다:\n{picture}");
+            let sequence: BTreeSet<char> = filled_heads.iter().flat_map(|&head| trace_back_from_head(&grid, head).straights).collect();
+
+            let triangles = marker_cells(&grid, HOLLOW_TRIANGLES);
+            assert_eq!(triangles.len(), 1, "메시지는 빈 삼각형 하나로 끝나야 한다:\n{picture}");
+            assert!(task_box.contains(step(triangles[0], pointing(grid[triangles[0].0][triangles[0].1]).unwrap())), "빈 삼각형은 받는 `처리`를 가리켜야 한다:\n{picture}");
+            let message_trace = trace_back_from_head(&grid, triangles[0]);
+            assert_eq!(message_trace.stop, '○', "메시지는 ○ 꼬리에서 나와야 한다:\n{picture}");
+            assert!(box_around(&rows, &grid, "주문").contains(step(message_trace.stop_cell, message_trace.heading)), "○ 꼬리는 보내는 `주문`에 붙어야 한다:\n{picture}");
+            let message: BTreeSet<char> = message_trace.straights.into_iter().collect();
+
+            let data_box = box_around(&rows, &grid, "«data»");
+            let open_heads: Vec<(Cell, Heading)> = data_box
+                .border_cells()
+                .into_iter()
+                .filter_map(|(border, outward)| {
+                    let outside = step(border, outward);
+                    let marker = cell_at(&grid, outside)?;
+                    let is_open_head_into_box = "><∧∨".contains(marker) && pointing(marker) == Some(opposite(outward));
+                    is_open_head_into_box.then_some(((outside.0 as usize, outside.1 as usize), outward))
+                })
+                .collect();
+            assert_eq!(open_heads.len(), 1, "«data» 상자 바로 바깥에 열린 화살촉 하나가 상자를 가리켜야 한다:\n{picture}");
+            let data_trace = trace_line(&grid, open_heads[0].0, open_heads[0].1);
+            assert!(task_box.contains((data_trace.stop_cell.0 as isize, data_trace.stop_cell.1 as isize)), "데이터 연결은 표식 없이 `처리`에서 나와야 한다:\n{picture}");
+
+            let note_box = box_around(&rows, &grid, "메모");
+            let association_traces: Vec<Trace> = note_box.border_cells().into_iter().map(|(border, outward)| trace_line(&grid, border, outward)).filter(|trace| !trace.straights.is_empty()).collect();
+            assert_eq!(association_traces.len(), 1, "`메모`에서 나가는 선은 하나여야 한다:\n{picture}");
+            let association = &association_traces[0];
+            assert!(task_box.contains((association.stop_cell.0 as isize, association.stop_cell.1 as isize)), "연결은 표식 없이 `처리` 테두리에 닿아야 한다:\n{picture}");
+
+            let data_family: BTreeSet<char> = data_trace.straights.iter().chain(&association.straights).copied().collect();
+            for (family, allowed) in [(&sequence, "─│"), (&message, "╌╎"), (&data_family, "┈┊")] {
+                assert!(!family.is_empty() && family.iter().all(|c| allowed.contains(*c)), "{direction:?}: 곧은 구간 {family:?}는 {allowed} 안이어야 한다:\n{picture}");
+            }
+            assert!(sequence.is_disjoint(&message) && message.is_disjoint(&data_family) && sequence.is_disjoint(&data_family), "{direction:?}: 세 갈래 곧은 구간이 겹치면 안 된다:\n{picture}");
+        }
+    }
+
+    /// 블랙박스 풀 `고객`과 풀 `판매`(시작 이벤트 -> `처리`)에 메시지 `message` 하나를 더한 문서.
+    fn blackbox_message_yaml(message: &str) -> String {
+        format!("participants:\n  - c: 고객\n  - p1:\n      name: 판매\n      nodes:\n        - s: startEvent\n        - t: task 처리\nflows:\n  - s --> t\n  - {message}\n")
+    }
+
+    /// 블랙박스 풀 `고객`이 `판매`를 마주하는 면의 칸들과 풀 안쪽 방향. 세로 배치에서는 풀이 오른쪽에
+    /// 서므로 왼쪽 면, 가로 배치에서는 아래에 놓이므로 윗면이다.
+    fn blackbox_face(rows: &[String], grid: &[Vec<char>], direction: Direction) -> (Vec<Cell>, Heading) {
+        let title_row = row_of_text(rows, "고객");
+        let face_col = display_col(&rows[title_row], "고객") - 1;
+        match direction {
+            Direction::LeftRight => ((face_col..grid[title_row - 1].len()).map(|col| (title_row - 1, col)).collect(), (1, 0)),
+            _ => ((title_row - 1..grid.len()).take_while(|&row| grid[row].get(face_col).is_some_and(|&c| c != ' ')).map(|row| (row, face_col)).collect(), (0, 1)),
+        }
+    }
+
+    #[test]
+    fn message_from_a_blackbox_pool_leaves_its_face_with_a_circle_and_reaches_the_node_with_a_hollow_triangle() {
+        for direction in [Direction::TopDown, Direction::LeftRight] {
+            let rows = yaml_rows(&blackbox_message_yaml("c --> s"), direction);
+            let picture = rows.join("\n");
+            let grid = crate::diagram::rendered_picture::display_grid(&rows);
+            let (face, inward) = blackbox_face(&rows, &grid, direction);
+            let tails: Vec<Cell> = face.into_iter().filter(|&(row, col)| grid[row][col] == '○').collect();
+            assert_eq!(tails.len(), 1, "{direction:?}: ○ 꼬리가 고객 풀 면에 있어야 한다:\n{picture}");
+            let trace = trace_line(&grid, tails[0], opposite(inward));
+            assert!(HOLLOW_TRIANGLES.contains(trace.stop), "{direction:?}: 풀 면에서 나간 메시지는 빈 삼각형으로 끝나야 한다:\n{picture}");
+            assert_eq!(pointing(trace.stop), Some(trace.heading), "{direction:?}: 빈 삼각형이 흐름 방향을 가리켜야 한다:\n{picture}");
+            assert_eq!(cell_at(&grid, step(trace.stop_cell, trace.heading)), Some('○'), "{direction:?}: 빈 삼각형 너머가 시작 이벤트여야 한다:\n{picture}");
+            assert!(!trace.straights.is_empty() && trace.straights.iter().all(|c| "╌╎".contains(*c)), "{direction:?}: 메시지는 대시 선이어야 한다:\n{picture}");
+        }
+    }
+
+    #[test]
+    fn message_into_a_blackbox_pool_leaves_the_node_with_a_circle_and_meets_the_face_with_a_hollow_triangle() {
+        for direction in [Direction::TopDown, Direction::LeftRight] {
+            let rows = yaml_rows(&blackbox_message_yaml("t --> c"), direction);
+            let picture = rows.join("\n");
+            let grid = crate::diagram::rendered_picture::display_grid(&rows);
+            let (face, inward) = blackbox_face(&rows, &grid, direction);
+            let heads: Vec<char> = face.iter().map(|&(row, col)| grid[row][col]).filter(|c| HOLLOW_TRIANGLES.contains(*c)).collect();
+            assert_eq!(heads.len(), 1, "{direction:?}: 빈 삼각형이 고객 풀 면에 있어야 한다:\n{picture}");
+            assert_eq!(pointing(heads[0]), Some(inward), "{direction:?}: 빈 삼각형이 풀 안쪽을 가리켜야 한다:\n{picture}");
+            assert!(face.iter().all(|&(row, col)| grid[row][col] != '○'), "{direction:?}: 받는 풀 면에 ○가 있으면 안 된다:\n{picture}");
+            let task_box = box_around(&rows, &grid, "처리");
+            let tails = task_box.border_cells().into_iter().filter(|&(border, outward)| cell_at(&grid, step(border, outward)) == Some('○')).count();
+            assert_eq!(tails, 1, "{direction:?}: ○ 꼬리가 보내는 `처리` 바로 바깥에 있어야 한다:\n{picture}");
+        }
+    }
+
+    #[test]
+    fn a_plain_arrow_across_pools_draws_a_dashed_message_under_the_collaboration_caption() {
+        let source = "participants:\n  - p1:\n      nodes:\n        - a: task 보내기\n  - p2:\n      nodes:\n        - b: task 받기\nflows:\n  - a --> b\n";
+        let rows = fenced_bpmn_rows(source).expect("그림으로 그려져야 한다");
+        let picture = rows.join("\n");
+        assert!(rows[0].starts_with("◈ bpmn · collaboration"), "{picture}");
+        let grid = crate::diagram::rendered_picture::display_grid(&rows);
+        let triangles = marker_cells(&grid, HOLLOW_TRIANGLES);
+        assert_eq!(triangles.len(), 1, "{picture}");
+        let trace = trace_back_from_head(&grid, triangles[0]);
+        assert_eq!(trace.stop, '○', "{picture}");
+        assert!(!trace.straights.is_empty() && trace.straights.iter().all(|c| "╌╎".contains(*c)), "풀을 넘는 `-->`는 대시 선이어야 한다:\n{picture}");
+    }
+
+    #[test]
+    fn dashed_arrows_between_flow_nodes_of_one_pool_or_no_pool_draw_a_solid_sequence() {
+        let same_pool = "participants:\n  - p1:\n      nodes:\n        - a: task 가\n        - b: task 나\nflows:\n  - a -.-> b\n";
+        let no_pool = "nodes:\n  - a: task 가\n  - b: task 나\nflows:\n  - a -.- b\n";
+        for source in [same_pool, no_pool] {
+            let rows = fenced_bpmn_rows(source).expect("그림으로 그려져야 한다");
+            let picture = rows.join("\n");
+            let grid = crate::diagram::rendered_picture::display_grid(&rows);
+            let heads = marker_cells(&grid, FILLED_HEADS);
+            assert_eq!(heads.len(), 1, "채운 화살촉 하나로 끝나야 한다:\n{picture}");
+            let trace = trace_back_from_head(&grid, heads[0]);
+            assert!(!trace.straights.is_empty() && trace.straights.iter().all(|c| "─│".contains(*c)), "실선이어야 한다:\n{picture}");
+            assert!(!picture.contains(['╌', '╎', '┈', '┊', '○']), "메시지나 데이터 계열 표기가 섞이면 안 된다:\n{picture}");
+        }
+    }
+
+    #[test]
+    fn a_labeled_flow_shows_its_label_on_the_line() {
+        let rows = fenced_bpmn_rows("nodes:\n  - a: task 가\n  - b: task 나\nflows:\n  - a -- 이름 --> b\n").expect("그림으로 그려져야 한다");
+        assert!(rows.iter().any(|row| row.contains("─이름─▶")), "{}", rows.join("\n"));
+    }
+
+    #[test]
+    fn a_flow_whose_chosen_kind_breaks_the_flow_rules_falls_back_to_the_raw_code_block() {
+        // 풀 id 끝은 메시지로 정해지지만 메시지는 같은 풀 안에 머물 수 없다.
+        let source = "participants:\n  - p1:\n      nodes:\n        - a: task 가\nflows:\n  - p1 --> a\n";
+        assert_eq!(parse_yaml::parse(source).expect("파싱은 된다").flows[0].kind, FlowKind::Message);
+        assert_eq!(fenced_bpmn_rows(source), None);
     }
 }
 
