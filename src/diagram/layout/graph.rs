@@ -12,6 +12,7 @@ use crate::diagram::layout::shape;
 use crate::line::Line;
 use crate::style::{Style, Theme};
 use crate::text::{truncate, width_of};
+use std::collections::BTreeMap;
 
 pub fn render(graph: &Graph, theme: &Theme, width: usize) -> Option<Vec<Line>> {
     if graph.nodes.is_empty() {
@@ -269,6 +270,9 @@ impl<'a> Layout<'a> {
             self.place();
             self.assign_ports();
             self.straighten();
+            self.route();
+        }
+        if self.reserve_pool_channel_room() {
             self.route();
         }
     }
@@ -796,7 +800,7 @@ impl<'a> Layout<'a> {
         node.shape == Shape::Anchor && node.group.is_some_and(|g| self.graph.groups[g].kind == GroupKind::Lane)
     }
 
-    /// 풀 닻에 닿는 간선 — 층 배치·구간 배선에서 빠지고 `draw_pool_edges()`가 풀 면 중앙으로 따로 긋는다.
+    /// 풀 닻에 닿는 간선 — 층 배치·구간 배선에서 빠지고 `draw_pool_edges()`가 풀 면으로 따로 긋는다.
     fn is_pool_edge(&self, edge: usize) -> bool {
         let edge = &self.graph.edges[edge];
         edge.from != edge.to && (self.is_pool_anchor(edge.from) || self.is_pool_anchor(edge.to))
@@ -2061,25 +2065,25 @@ impl<'a> Layout<'a> {
     }
 
     /// 풀 닻에 닿는 메시지 흐름: 끝에서 교차축으로 나가 풀 바로 바깥 통로까지, 통로를 따라 흐름축으로,
-    /// 다시 교차축으로 상대 끝까지 — 풀 쪽은 면의 중앙에 수직으로 닿는다.
+    /// 다시 교차축으로 상대 끝까지 — 풀 쪽은 면에 수직으로 닿는다.
     fn draw_pool_edges(&self, canvas: &mut Canvas) {
         let cross_direction = match self.direction {
             Direction::TopDown => Direction::LeftRight,
             Direction::LeftRight => Direction::TopDown,
         };
         let style = self.theme.diagram_line;
-        for (i, edge) in self.graph.edges.iter().enumerate() {
-            if !self.is_pool_edge(i) {
-                continue;
-            }
-            let (from_along, from_across, from_toward_higher) = self.pool_edge_end(edge.from, edge.to);
-            let (to_along, to_across, to_toward_higher) = self.pool_edge_end(edge.to, edge.from);
-            let (pool_across, pool_toward_higher) = if self.is_pool_anchor(edge.from) { (from_across, from_toward_higher) } else { (to_across, to_toward_higher) };
-            let channel = if pool_toward_higher { pool_across + 1 } else { pool_across.saturating_sub(1) };
-            self.line_across(canvas, from_across, channel, from_along, edge.kind, style);
-            self.line_along(canvas, from_along, to_along, channel, edge.kind, style);
-            self.line_across(canvas, channel, to_across, to_along, edge.kind, style);
-            if from_along != to_along {
+        for route in self.pool_edge_routes() {
+            let edge = &self.graph.edges[route.edge];
+            let (from_along, from_across, from_toward_higher) = route.from;
+            let (to_along, to_across, to_toward_higher) = route.to;
+            let channel = route.channel();
+            if from_along == to_along {
+                // 통로를 따라갈 구간이 없다 — 길이 0인 흐름축 조각을 그으면 통로 칸이 `┼`로 합쳐진다.
+                self.line_across(canvas, from_across, to_across, from_along, edge.kind, style);
+            } else {
+                self.line_across(canvas, from_across, channel, from_along, edge.kind, style);
+                self.line_along(canvas, from_along, to_along, channel, edge.kind, style);
+                self.line_across(canvas, channel, to_across, to_along, edge.kind, style);
                 for along in [from_along, to_along] {
                     let (x, y) = self.to_canvas(along, channel);
                     canvas.join(x, y, 0, edge.kind, style, true);
@@ -2099,6 +2103,85 @@ impl<'a> Layout<'a> {
                 self.draw_pool_edge_label(canvas, &edge.label.replace('\n', " "), (from_along, from_across), (to_along, to_across), channel);
             }
         }
+    }
+
+    /// 풀 간선마다 양 끝과 통로. 한 풀의 한 면에 여럿이 붙으면 면 칸을 나눠 주고(표식이 서로 덮지
+    /// 않게), 통로를 따라 달리는 구간이 겹치면 면에서 더 먼 통로 줄을 준다.
+    fn pool_edge_routes(&self) -> Vec<PoolEdgeRoute> {
+        let mut routes: Vec<PoolEdgeRoute> = (0..self.graph.edges.len())
+            .filter(|&i| self.is_pool_edge(i))
+            .map(|i| {
+                let edge = &self.graph.edges[i];
+                let is_pool_at_from = self.is_pool_anchor(edge.from);
+                PoolEdgeRoute { edge: i, from: self.pool_edge_end(edge.from, edge.to), to: self.pool_edge_end(edge.to, edge.from), is_pool_at_from, depth: 1 }
+            })
+            .collect();
+        self.spread_shared_face_points(&mut routes);
+        let mut channel_groups: BTreeMap<PoolFace, Vec<usize>> = BTreeMap::new();
+        for (r, route) in routes.iter().enumerate() {
+            let anchor = if route.is_pool_at_from { self.graph.edges[route.edge].from } else { self.graph.edges[route.edge].to };
+            channel_groups.entry((anchor, route.pool_end().2)).or_default().push(r);
+        }
+        for members in channel_groups.values() {
+            let spans: Vec<(usize, usize)> = members.iter().map(|&r| (routes[r].other_end().0, routes[r].pool_end().0)).collect();
+            for (&r, depth) in members.iter().zip(channel_depths(&spans)) {
+                routes[r].depth = depth;
+            }
+        }
+        routes
+    }
+
+    /// 한 풀 면에 붙는 끝이 둘 이상이면 면 중앙을 둘러 칸을 나눠 준다 — 상대 끝의 흐름축 순서대로
+    /// 놓아 통로를 달리는 구간끼리 엇갈리지 않게 한다. 하나뿐이면 면 중앙 그대로다.
+    fn spread_shared_face_points(&self, routes: &mut [PoolEdgeRoute]) {
+        let mut faces: BTreeMap<PoolFace, Vec<FaceAttachment>> = BTreeMap::new();
+        for (r, route) in routes.iter().enumerate() {
+            let edge = &self.graph.edges[route.edge];
+            for (anchor, end, other, is_from) in [(edge.from, route.from, route.to, true), (edge.to, route.to, route.from, false)] {
+                if self.is_pool_anchor(anchor) {
+                    faces.entry((anchor, end.2)).or_default().push(FaceAttachment { other_along: other.0, route: r, is_from });
+                }
+            }
+        }
+        for ((anchor, _), mut attachments) in faces {
+            if attachments.len() < 2 {
+                continue;
+            }
+            attachments.sort_unstable_by_key(|a| (a.other_along, a.route, a.is_from));
+            let block = self.lnode_block[anchor];
+            // 배너 구분선과 아래 모서리를 피한 면 안쪽 칸만 쓴다.
+            let interior = (self.banner_start(self.lane_depth(block) + 1) + 1, self.lane_along_end(block).saturating_sub(1));
+            let first = &attachments[0];
+            let center = if first.is_from { routes[first.route].from.0 } else { routes[first.route].to.0 };
+            for (attachment, along) in attachments.iter().zip(spread_face_points(center, attachments.len(), interior)) {
+                let route = &mut routes[attachment.route];
+                let end = if attachment.is_from { &mut route.from } else { &mut route.to };
+                end.0 = along;
+            }
+        }
+    }
+
+    /// 통로 깊이가 풀 사이 간격에 다 들어가지 않으면 그 면 바깥에 모자란 칸을 끼워 넣는다.
+    fn reserve_pool_channel_room(&mut self) -> bool {
+        // 바깥쪽 통로와 이웃 사이에 빈 칸 하나는 남긴다(간격이 한 칸뿐이면 그 칸이 곧 통로다).
+        let room = self.gap_across().saturating_sub(1).max(1);
+        let mut deepest: BTreeMap<(usize, bool), usize> = BTreeMap::new();
+        for route in self.pool_edge_routes() {
+            let (_, face, toward_higher) = route.pool_end();
+            let depth = deepest.entry((face, toward_higher)).or_default();
+            *depth = (*depth).max(route.depth);
+        }
+        let mut insertions: Vec<(usize, usize)> = deepest
+            .into_iter()
+            .filter(|&(_, depth)| depth > room)
+            .map(|((face, toward_higher), depth)| (if toward_higher { face + 1 } else { face }, depth - room))
+            .collect();
+        // 뒤쪽부터 끼워야 앞쪽 끼울 자리가 밀리지 않는다.
+        insertions.sort_unstable_by(|a, b| b.cmp(a));
+        for &(at, count) in &insertions {
+            self.insert_across(at, count);
+        }
+        !insertions.is_empty()
     }
 
     /// 경로의 가로 조각 가운데 가장 긴 것에 라벨을 가운데 맞춰 얹는다(들어갈 때만).
@@ -2411,6 +2494,72 @@ fn side_label_x(line_x: usize, rank: (usize, usize), label_width: usize) -> usiz
 /// 끝 라벨 폭에 따른 접점 간격: 표식, 한 칸, 라벨, 한 칸.
 fn port_spacing_for(label_width: usize) -> usize {
     if label_width == 0 { 2 } else { label_width + 3 }
+}
+
+/// 풀 닻 노드와 그 풀이 상대를 마주하는 면(교차축 큰 쪽이면 true).
+type PoolFace = (usize, bool);
+
+/// 풀 면 하나에 붙는 간선 끝: 상대 끝의 흐름축 위치, 경로 번호, 출발 쪽 끝인지.
+struct FaceAttachment {
+    other_along: usize,
+    route: usize,
+    is_from: bool,
+}
+
+/// 풀 닻에 닿는 간선 하나의 경로. 끝은 `pool_edge_end()`와 같은 (흐름축, 교차축, 상대 쪽 부호).
+struct PoolEdgeRoute {
+    edge: usize,
+    from: (usize, usize, bool),
+    to: (usize, usize, bool),
+    /// 통로를 풀 쪽 끝(둘 다 풀이면 출발 쪽)의 면에 둔다.
+    is_pool_at_from: bool,
+    /// 통로가 면에서 떨어진 칸 수(1 = 면 바로 바깥).
+    depth: usize,
+}
+
+impl PoolEdgeRoute {
+    fn pool_end(&self) -> (usize, usize, bool) {
+        if self.is_pool_at_from { self.from } else { self.to }
+    }
+
+    fn other_end(&self) -> (usize, usize, bool) {
+        if self.is_pool_at_from { self.to } else { self.from }
+    }
+
+    fn channel(&self) -> usize {
+        let (_, face, toward_higher) = self.pool_end();
+        if toward_higher { face + self.depth } else { face.saturating_sub(self.depth) }
+    }
+}
+
+/// 면 중앙을 둘러 `count`칸을 사이에 빈 칸 하나씩 두고(면이 짧으면 붙여서) `interior` 안에 놓는다.
+fn spread_face_points(center: usize, count: usize, (low, high): (usize, usize)) -> Vec<usize> {
+    let room = high.saturating_sub(low) + 1;
+    let spacing = if 2 * (count - 1) < room { 2 } else { 1 };
+    let span = spacing * (count - 1);
+    let first = center.saturating_sub(span / 2).min(high.saturating_sub(span)).max(low);
+    (0..count).map(|k| first + k * spacing).collect()
+}
+
+/// 한 면 바깥 통로를 함께 쓰는 간선들의 통로 깊이. `spans[i]`는 (상대 끝 흐름축, 면 칸 흐름축).
+/// 통로 구간이 겹치는 둘 가운데 상대 끝이 면 칸에서 더 먼 쪽(면 칸 앞쪽이면 더 앞, 뒤쪽이면 더
+/// 뒤)이 면에 가까운 통로를 쓰면, 그 상대 끝 다리는 더 깊은 통로에 닿기 전에 꺾이고 다른 쪽의
+/// 면 다리도 얕은 통로까지만 가므로 서로 가로지르지 않는다.
+fn channel_depths(spans: &[(usize, usize)]) -> Vec<usize> {
+    let mut depths = vec![1; spans.len()];
+    for is_before_face_point in [true, false] {
+        let mut order: Vec<usize> = (0..spans.len()).filter(|&i| if is_before_face_point { spans[i].0 < spans[i].1 } else { spans[i].0 > spans[i].1 }).collect();
+        order.sort_unstable_by_key(|&i| (spans[i].0, i));
+        if !is_before_face_point {
+            order.reverse();
+        }
+        for (k, &i) in order.iter().enumerate() {
+            let (low, high) = (spans[i].0.min(spans[i].1), spans[i].0.max(spans[i].1));
+            let overlapped = order[..k].iter().filter(|&&j| spans[j].0.min(spans[j].1) <= high && low <= spans[j].0.max(spans[j].1)).map(|&j| depths[j]).max();
+            depths[i] = overlapped.map_or(1, |depth| depth + 1);
+        }
+    }
+    depths
 }
 
 /// 끝 표식 글자들. `at_top`이면 위(또는 왼쪽) 노드에 붙는 쪽이다.
