@@ -21,7 +21,7 @@
   - _Boundary: bpmn::model, bpmn::validate_
 
 - [ ] 2. 핵심
-- [ ] 2.1 BPMN 대응표 변경
+- [x] 2.1 BPMN 대응표 변경
   - _DoneWhen: 대응표 단위 테스트 통과, 메시지 흐름 렌더링에 `○`, `╌`, `▷`가 보임_
   - _Requirements: 1.1_
   - _Difficulty: low_
