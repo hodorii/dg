@@ -783,6 +783,18 @@ mod tests {
     }
 
     #[test]
+    fn message_flow_is_drawn_with_circle_tail_dashed_line_and_hollow_triangle_head() {
+        // 풀은 배치 방향과 무관하게 위아래로 쌓이므로 풀 면으로 드나드는 메시지의 방향은 고정이 아니다.
+        for orientation in [model::Orientation::Horizontal, model::Orientation::Vertical] {
+            let rendered = render_rows(&blackbox_pool_message_flow_model(), orientation).join("\n");
+            assert!(rendered.contains('○'), "메시지 흐름 시작에 빈 원이 있어야 한다:\n{rendered}");
+            assert!(rendered.contains('╌') || rendered.contains('╎'), "메시지 흐름은 대시 선이어야 한다:\n{rendered}");
+            assert!(['△', '▽', '▷', '◁'].iter().any(|glyph| rendered.contains(*glyph)), "메시지 흐름 끝에 빈 삼각형이 있어야 한다:\n{rendered}");
+            assert!(!rendered.contains('∨') && !rendered.contains('∧'), "열린 화살촉이 남으면 안 된다:\n{rendered}");
+        }
+    }
+
+    #[test]
     fn message_flow_between_two_participant_ids_and_element_to_participant_do_not_panic() {
         let mut model = blackbox_pool_message_flow_model();
         // 양끝이 참여자인 메시지 흐름(닻 ↔ 닻)을 요소 → 참여자 메시지 흐름과 섞는다.
