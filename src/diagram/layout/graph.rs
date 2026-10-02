@@ -2074,7 +2074,7 @@ impl<'a> Layout<'a> {
             }
             let (from_along, from_across, from_toward_higher) = self.pool_edge_end(edge.from, edge.to);
             let (to_along, to_across, to_toward_higher) = self.pool_edge_end(edge.to, edge.from);
-            let (pool_across, pool_toward_higher) = if self.is_pool_anchor(edge.from) { (from_across, from_toward_higher) } else { (to_across, !to_toward_higher) };
+            let (pool_across, pool_toward_higher) = if self.is_pool_anchor(edge.from) { (from_across, from_toward_higher) } else { (to_across, to_toward_higher) };
             let channel = if pool_toward_higher { pool_across + 1 } else { pool_across.saturating_sub(1) };
             self.line_across(canvas, from_across, channel, from_along, edge.kind, style);
             self.line_along(canvas, from_along, to_along, channel, edge.kind, style);

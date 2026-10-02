@@ -1160,6 +1160,24 @@ mod tests {
     }
 
     #[test]
+    fn message_into_a_blackbox_pool_reaches_the_face_marker_along_the_channel_outside_the_pool() {
+        for direction in [Direction::TopDown, Direction::LeftRight] {
+            let rows = yaml_rows(&blackbox_message_yaml("t --> c"), direction);
+            let picture = rows.join("\n");
+            let grid = crate::diagram::rendered_picture::display_grid(&rows);
+            let (face, inward) = blackbox_face(&rows, &grid, direction);
+            assert!(face.iter().all(|&(row, col)| grid[row][col] != '┼'), "{direction:?}: 메시지가 표식 칸 말고 풀 면을 가로지르면 안 된다:\n{picture}");
+            let heads: Vec<Cell> = face.into_iter().filter(|&(row, col)| HOLLOW_TRIANGLES.contains(grid[row][col])).collect();
+            assert_eq!(heads.len(), 1, "{direction:?}: 빈 삼각형이 고객 풀 면에 있어야 한다:\n{picture}");
+            let outside = cell_at(&grid, step(heads[0], opposite(inward))).unwrap_or(' ');
+            assert!("╌╎╭╮╰╯".contains(outside), "{direction:?}: 표식 바로 바깥 통로 칸에 메시지 선이 있어야 한다:\n{picture}");
+            let trace = trace_line(&grid, heads[0], opposite(inward));
+            assert_eq!(trace.stop, '○', "{direction:?}: 풀 바깥 통로를 따라 거슬러 가면 ○ 꼬리에 닿아야 한다:\n{picture}");
+            assert!(box_around(&rows, &grid, "처리").contains(step(trace.stop_cell, trace.heading)), "{direction:?}: ○ 꼬리는 보내는 `처리`에 붙어야 한다:\n{picture}");
+        }
+    }
+
+    #[test]
     fn a_plain_arrow_across_pools_draws_a_dashed_message_under_the_collaboration_caption() {
         let source = "participants:\n  - p1:\n      nodes:\n        - a: task 보내기\n  - p2:\n      nodes:\n        - b: task 받기\nflows:\n  - a --> b\n";
         let rows = fenced_bpmn_rows(source).expect("그림으로 그려져야 한다");
