@@ -9,7 +9,7 @@
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4_
   - _Difficulty: mid_
   - _Boundary: bpmn 렌더링 테스트_
-- [ ] 1.2 입력 E 재현 테스트
+- [x] 1.2 입력 E 재현 테스트
   - _DoneWhen: 입력 E를 TB, LR로 렌더링해 메시지 선이 끝 노드 말고 다른 노드 상자를 지나지 않고 `기록` 테두리가 그대로임을 단언하는 테스트가 수정 전 코드에서 실패하는 것을 출력으로 확인_
   - _Requirements: 1.5, 2.5_
   - _Difficulty: mid_

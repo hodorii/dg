@@ -1060,7 +1060,9 @@ mod tests {
         }
     }
 
-    /// `needle` 글자를 둘러싼 테두리 상자.
+    /// `needle` 글자를 둘러싼 테두리 상자. 꼭짓점을 지나는 선이 꼭짓점을 이음 글자(`├` `┬` `┼` 등)로
+    /// 바꿔도 상자를 찾아야 그 결함을 단언할 수 있으므로 이음 글자도 꼭짓점으로 받는다. 왼쪽 변에서 `├`는
+    /// 꼭짓점에서만 생긴다(상자 안쪽으로 뻗는 선은 없다).
     fn box_around(rows: &[String], grid: &[Vec<char>], needle: &str) -> BoxBounds {
         let row = row_of_text(rows, needle);
         let col = display_col(&rows[row], needle);
@@ -1068,8 +1070,8 @@ mod tests {
         let is_at = |row: usize, col: usize, glyphs: &str| grid[row].get(col).is_some_and(|c| glyphs.contains(*c));
         let left = (0..col).rev().find(|&c| is_side(&grid[row][c])).expect("왼쪽 테두리가 있어야 한다");
         let right = (col..grid[row].len()).find(|&c| is_side(&grid[row][c])).expect("오른쪽 테두리가 있어야 한다");
-        let top = (0..row).rev().find(|&r| is_at(r, left, "┌╭")).expect("윗변이 있어야 한다");
-        let bottom = (row..grid.len()).find(|&r| is_at(r, left, "└╰")).expect("아랫변이 있어야 한다");
+        let top = (0..row).rev().find(|&r| is_at(r, left, "┌╭├┬┼")).expect("윗변이 있어야 한다");
+        let bottom = (row..grid.len()).find(|&r| is_at(r, left, "└╰├┴┼")).expect("아랫변이 있어야 한다");
         BoxBounds { top, left, bottom, right }
     }
 
@@ -1343,6 +1345,36 @@ mod tests {
     fn three_messages_on_one_node_show_every_circle_and_hollow_triangle() {
         let source = "participants:\n  - c: 고객\n  - p1:\n      name: 판매\n      nodes:\n        - a: task 가\nflows:\n  - a --> c\n  - c --> a\n  - a --> c\n";
         assert_every_message_runs_alone_from_its_circle_to_its_hollow_triangle(source, 3);
+    }
+
+    /// 메시지마다 ○ 꼬리에서 빈 삼각형까지 이어지고, 그 선이 `boxed_node_needles`로 찾은 어느 노드 상자도
+    /// 지나지 않는지 본다. 표식은 상자 바로 바깥에 붙으므로 끝 노드 상자도 선 칸을 품지 않는다 — 끝 노드를
+    /// 따로 빼지 않아도 된다. 선이 상자 테두리를 지나면 그 칸이 이음 글자로 바뀌어 거슬러 가기가 거기서 멈추므로
+    /// 테두리 글자도 따로 본다. 선이 상자를 어느 쪽으로 돌아가는지는 배치에 맡긴다.
+    fn message_lines_avoid_node_boxes_defect(boxed_node_needles: &[&str], rows: &[String], grid: &[Vec<char>]) -> Result<(), String> {
+        let boxes: Vec<(&str, BoxBounds)> = boxed_node_needles.iter().map(|&needle| (needle, box_around(rows, grid, needle))).collect();
+        for (needle, node_box) in &boxes {
+            let joints: BTreeSet<Cell> = node_box.border_cells().into_iter().map(|(cell, _)| cell).filter(|&(row, col)| "├┤┬┴┼".contains(grid[row][col])).collect();
+            require(joints.is_empty(), || format!("`{needle}` 상자 테두리가 다른 선과 만나 이음 글자로 바뀌면 안 된다({joints:?})"))?;
+        }
+        let heads = marker_cells(grid, HOLLOW_TRIANGLES);
+        require(!heads.is_empty(), || "메시지의 빈 삼각형이 보여야 한다".into())?;
+        for head in heads {
+            let trace = trace_back_from_head(grid, head);
+            require(trace.stop == '○', || format!("{head:?}의 빈 삼각형을 거슬러 가면 ○ 꼬리에 닿아야 한다({:?}에서 {:?})", trace.stop_cell, trace.stop))?;
+            for (needle, node_box) in &boxes {
+                let crossed = trace.line_cells.iter().find(|&&(row, col)| node_box.contains((row as isize, col as isize)));
+                require(crossed.is_none(), || format!("{head:?}의 메시지 선이 {crossed:?}에서 `{needle}` 상자를 지나면 안 된다"))?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_message_line_goes_around_other_nodes_in_the_receiving_pool() {
+        // 흐름 없는 주석 `기록`이 시작 이벤트로 가는 메시지의 곧은 길목에 놓인다.
+        let source = "participants:\n  - shop:\n      name: 판매사\n      nodes:\n        - received:\n            kind: startEvent\n            name: 주문 접수\n        - review:\n            kind: userTask\n            name: 주문 검토\n        - note:\n            kind: textAnnotation\n            name: 30분 안에 검토\n        - note2:\n            kind: textAnnotation\n            name: 기록\n  - customer: 고객\nflows:\n  - customer --> received\n  - received --> review\n  - note --> review\n  - review --> customer\n";
+        assert_no_defect_in_either_direction(source, |_, rows, grid| message_lines_avoid_node_boxes_defect(&["주문 검토", "30분", "기록"], rows, grid));
     }
 
     #[test]
