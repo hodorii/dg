@@ -2633,6 +2633,18 @@ impl Xorshift64 {
     }
 }
 
+/// 안정적인 해시(FNV-1a, 외부 crate 없이) — 큰 렌더링 결과를 바이트 그대로 담는 대신 쓴다.
+/// 배치기 테스트와 BPMN 속성 테스트가 함께 쓴다.
+#[cfg(test)]
+pub(crate) fn fnv1a(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3674,16 +3686,6 @@ mod tests {
         // 수정 전(release 프로파일 없는 이 디버그 빌드) 14.68초 — 3초는 그래도 8배 가까운 여유를
         // 남긴다. release 실측(0.5초 상한, design.md 2.1)은 task 4.1에서 release 바이너리로 잰다.
         assert!(elapsed < std::time::Duration::from_secs(3), "폴백 판정이 {elapsed:?}나 걸림(3초 상한, 디버그 빌드 여유 포함)");
-    }
-
-    /// 안정적인 해시(FNV-1a, 외부 crate 없이) — 큰 렌더링 결과를 바이트 그대로 담는 대신 쓴다.
-    fn fnv1a(text: &str) -> u64 {
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for byte in text.bytes() {
-            hash ^= byte as u64;
-            hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
-        }
-        hash
     }
 
     /// 2.1: 합성 가족(변형 4종 × seed 4개, 간선 적은 단계)의 결과 고정. `EXPECTED`는 수정 전
