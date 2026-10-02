@@ -990,6 +990,8 @@ mod tests {
 
     struct Trace {
         straights: Vec<char>,
+        /// 지나온 선 칸(곧은 선, 꺾임, `┼`).
+        line_cells: Vec<Cell>,
         stop: char,
         stop_cell: Cell,
         heading: Heading,
@@ -1000,9 +1002,11 @@ mod tests {
     fn trace_line(grid: &[Vec<char>], start: Cell, mut heading: Heading) -> Trace {
         let mut position = (start.0 as isize, start.1 as isize);
         let mut straights = Vec::new();
+        let mut line_cells = Vec::new();
         for _ in 0..grid.len() * grid.iter().map(Vec::len).max().unwrap_or(0) {
             position = (position.0 + heading.0, position.1 + heading.1);
             let cell = cell_at(grid, position).unwrap_or(' ');
+            let here = (position.0 as usize, position.1 as usize);
             let is_moving_sideways = heading.0 == 0;
             match cell {
                 '─' | '╌' | '┈' if is_moving_sideways => straights.push(cell),
@@ -1010,9 +1014,10 @@ mod tests {
                 '┼' => {}
                 _ => match turn(cell, heading) {
                     Some(next) => heading = next,
-                    None => return Trace { straights, stop: cell, stop_cell: (position.0 as usize, position.1 as usize), heading },
+                    None => return Trace { straights, line_cells, stop: cell, stop_cell: here, heading },
                 },
             }
+            line_cells.push(here);
         }
         panic!("선이 끝나지 않는다");
     }
@@ -1174,6 +1179,57 @@ mod tests {
             let trace = trace_line(&grid, heads[0], opposite(inward));
             assert_eq!(trace.stop, '○', "{direction:?}: 풀 바깥 통로를 따라 거슬러 가면 ○ 꼬리에 닿아야 한다:\n{picture}");
             assert!(box_around(&rows, &grid, "처리").contains(step(trace.stop_cell, trace.heading)), "{direction:?}: ○ 꼬리는 보내는 `처리`에 붙어야 한다:\n{picture}");
+        }
+    }
+
+    #[test]
+    fn a_blackbox_pool_that_sends_and_receives_shows_both_markers_on_separate_face_cells_with_disjoint_lines() {
+        let source = "participants:\n  - c: 고객\n  - p1:\n      name: 판매\n      nodes:\n        - s: startEvent\n        - t: task 처리\nflows:\n  - c --> s\n  - s --> t\n  - t --> c\n";
+        for direction in [Direction::TopDown, Direction::LeftRight] {
+            let rows = yaml_rows(source, direction);
+            let picture = rows.join("\n");
+            let grid = crate::diagram::rendered_picture::display_grid(&rows);
+            let (face, inward) = blackbox_face(&rows, &grid, direction);
+            let tails: Vec<Cell> = face.iter().copied().filter(|&(row, col)| grid[row][col] == '○').collect();
+            let heads: Vec<Cell> = face.iter().copied().filter(|&(row, col)| HOLLOW_TRIANGLES.contains(grid[row][col])).collect();
+            assert_eq!(tails.len(), 1, "{direction:?}: 보내는 메시지의 ○가 고객 풀 면에 하나 있어야 한다:\n{picture}");
+            assert_eq!(heads.len(), 1, "{direction:?}: 받는 메시지의 빈 삼각형이 고객 풀 면에 하나 있어야 한다:\n{picture}");
+            assert_eq!(pointing(grid[heads[0].0][heads[0].1]), Some(inward), "{direction:?}: 면의 빈 삼각형은 풀 안쪽을 가리켜야 한다:\n{picture}");
+
+            let outgoing = trace_line(&grid, tails[0], opposite(inward));
+            assert!(HOLLOW_TRIANGLES.contains(outgoing.stop) && pointing(outgoing.stop) == Some(outgoing.heading), "{direction:?}: 면의 ○에서 나간 선은 흐름 방향의 빈 삼각형으로 끝나야 한다:\n{picture}");
+            assert_eq!(cell_at(&grid, step(outgoing.stop_cell, outgoing.heading)), Some('○'), "{direction:?}: 그 빈 삼각형 너머가 시작 이벤트여야 한다:\n{picture}");
+
+            let incoming = trace_line(&grid, heads[0], opposite(inward));
+            assert_eq!(incoming.stop, '○', "{direction:?}: 면의 빈 삼각형을 거슬러 가면 ○ 꼬리에 닿아야 한다:\n{picture}");
+            assert!(box_around(&rows, &grid, "처리").contains(step(incoming.stop_cell, incoming.heading)), "{direction:?}: 그 ○ 꼬리는 보내는 `처리`에 붙어야 한다:\n{picture}");
+
+            for trace in [&outgoing, &incoming] {
+                assert!(!trace.straights.is_empty() && trace.straights.iter().all(|c| "╌╎".contains(*c)), "{direction:?}: 메시지는 대시 선이어야 한다:\n{picture}");
+            }
+            let outgoing_cells: BTreeSet<Cell> = outgoing.line_cells.iter().copied().collect();
+            assert!(incoming.line_cells.iter().all(|cell| !outgoing_cells.contains(cell)), "{direction:?}: 두 메시지 선이 칸을 함께 쓰면 안 된다:\n{picture}");
+        }
+    }
+
+    /// 풀 `판매`의 과업 `count`개 사슬에서 첫째는 블랙박스 풀 `고객`으로 보내고 둘째는 받는 문서.
+    fn blackbox_two_messages_yaml(count: usize) -> String {
+        let nodes: String = (0..count).map(|k| format!("        - n{k}: task 일{k}\n")).collect();
+        let chain: String = (1..count).map(|k| format!("  - n{} --> n{k}\n", k - 1)).collect();
+        format!("participants:\n  - c: 고객\n  - p1:\n      name: 판매\n      nodes:\n{nodes}flows:\n{chain}  - n0 --> c\n  - c --> n1\n")
+    }
+
+    #[test]
+    fn messages_sharing_a_blackbox_face_draw_no_crossing_glyph_where_nothing_crosses() {
+        // 상대 끝이 면 칸과 같은 흐름축에 오면 통로를 따라가는 구간이 없다 — 거기서 `┼`가 생기면 안 된다.
+        for (count, direction) in [(3, Direction::TopDown), (2, Direction::LeftRight)] {
+            let rows = yaml_rows(&blackbox_two_messages_yaml(count), direction);
+            let picture = rows.join("\n");
+            let grid = crate::diagram::rendered_picture::display_grid(&rows);
+            for (row, col) in marker_cells(&grid, "┼") {
+                let neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)].map(|heading| cell_at(&grid, step((row, col), heading)).unwrap_or(' '));
+                assert!(neighbors.iter().all(|&c| c != ' '), "{direction:?}: ({row}, {col})의 `┼`는 네 방향 모두 선이 있는 진짜 교차여야 한다:\n{picture}");
+            }
         }
     }
 
