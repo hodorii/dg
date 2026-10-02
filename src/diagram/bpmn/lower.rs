@@ -104,6 +104,20 @@ fn add_pools_and_lanes(graph: &mut Graph, model: &Model) -> HashMap<String, usiz
     group_of
 }
 
+/// 풀 쌍 사이 메시지가 한 방향뿐일 때 (보내는 풀 그룹, 받는 풀 그룹), 첫 메시지 순서. 양방향
+/// 쌍은 어느 쪽을 앞에 두어도 거슬러 오르는 선이 생기므로 제약 없이 기존 배치 순서에 맡긴다.
+fn one_way_message_pool_order(model: &Model, group_of: &HashMap<String, usize>) -> Vec<(usize, usize)> {
+    let mut directed_pairs: Vec<(usize, usize)> = Vec::new();
+    for flow in model.flows.iter().filter(|f| matches!(f.kind, FlowKind::Message)) {
+        let (Some(sender), Some(receiver)) = (model.participant_of_endpoint(&flow.source), model.participant_of_endpoint(&flow.target)) else { continue };
+        let pair = (group_of[&model.participants[sender].id], group_of[&model.participants[receiver].id]);
+        if sender != receiver && !directed_pairs.contains(&pair) {
+            directed_pairs.push(pair);
+        }
+    }
+    directed_pairs.iter().copied().filter(|&(sender, receiver)| !directed_pairs.contains(&(receiver, sender))).collect()
+}
+
 fn add_lanes(graph: &mut Graph, lanes: &[Lane], parent: Option<usize>, group_of: &mut HashMap<String, usize>) {
     for lane in lanes {
         let group = graph.add_lane(&lane.name, parent);
@@ -208,6 +222,7 @@ fn build_graph(model: &Model, subtree_root: Option<&str>, max_depth: Option<usiz
     let mut graph = Graph { direction: Some(orientation_to_direction(model.orientation)), title: if subtree_root.is_none() { model.title.clone() } else { String::new() }, ..Graph::default() };
 
     let lane_group_of = add_pools_and_lanes(&mut graph, model);
+    graph.lane_precedence = one_way_message_pool_order(model, &lane_group_of);
     let is_vis = |id: &str| is_visible(model, id, subtree_root, max_depth, force_fold);
     let is_fold = |id: &str| is_folded(model, id, max_depth, force_fold);
 

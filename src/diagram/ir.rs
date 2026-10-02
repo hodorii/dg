@@ -169,6 +169,9 @@ pub struct Graph {
     /// LeftRight 축을 뒤집어 만든다(`layout::graph`가 실제로 소비한다).
     pub direction_reversed: bool,
     pub title: String,
+    /// 최상위 레인 그룹 순서 제약 `(앞 그룹, 뒤 그룹)`. 비어 있으면 레인이 노드 등록 순서대로
+    /// 놓인다. 메시지가 읽는 방향으로 흐르도록 BPMN만 (보내는 풀, 받는 풀)을 채운다.
+    pub lane_precedence: Vec<(usize, usize)>,
 }
 
 impl Graph {

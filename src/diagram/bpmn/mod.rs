@@ -572,19 +572,15 @@ mod tests {
 
     #[test]
     fn message_flow_meets_the_blackbox_pool_face_at_its_center() {
-        let lr = order_collaboration_rows(Direction::LeftRight);
-        let top_border = &lr[row_of_text(&lr, "고객") - 1];
-        let last_col = crate::text::width_of(top_border) - 1;
-        let start_col = display_col(top_border, "○");
-        assert!(start_col.abs_diff(last_col / 2) <= 1, "가로: 고객 풀 윗면 가운데에서 나가야 한다:\n{}", lr.join("\n"));
-
-        let tb = order_collaboration_rows(Direction::TopDown);
-        let title_row = row_of_text(&tb, "고객");
-        let face_col = display_col(&tb[title_row], "고객") - 1;
-        let pool_rows: Vec<usize> = (title_row - 1..tb.len()).take_while(|&r| char_at_display_col(&tb[r], face_col).is_some_and(|c| c != ' ')).collect();
-        let (top, bottom) = (pool_rows[0], *pool_rows.last().unwrap());
-        let start_row = pool_rows.iter().copied().find(|&r| char_at_display_col(&tb[r], face_col) == Some('○')).unwrap_or_else(|| panic!("세로: 고객 풀 왼쪽 면에 ○가 있어야 한다:\n{}", tb.join("\n")));
-        assert!(start_row.abs_diff((top + bottom) / 2) <= 1, "세로: 고객 풀 왼쪽 면 가운데에서 나가야 한다:\n{}", tb.join("\n"));
+        for direction in [Direction::LeftRight, Direction::TopDown] {
+            let rows = order_collaboration_rows(direction);
+            let picture = rows.join("\n");
+            let grid = crate::diagram::rendered_picture::display_grid(&rows);
+            let (face, _) = pool_face_toward(&rows, &grid, "고객", "판매사", direction);
+            let tails: Vec<usize> = (0..face.len()).filter(|&i| grid[face[i].0][face[i].1] == '○').collect();
+            assert_eq!(tails.len(), 1, "{direction:?}: 고객 풀이 판매사를 마주하는 면에 ○가 있어야 한다:\n{picture}");
+            assert!(tails[0].abs_diff((face.len() - 1) / 2) <= 1, "{direction:?}: 고객 풀 면 가운데에서 나가야 한다:\n{picture}");
+        }
     }
 
     #[test]
@@ -1142,14 +1138,29 @@ mod tests {
         format!("participants:\n  - c: 고객\n  - p1:\n      name: 판매\n      nodes:\n        - s: startEvent\n        - t: task 처리\nflows:\n  - s --> t\n  - {message}\n")
     }
 
-    /// 블랙박스 풀 `고객`이 `판매`를 마주하는 면의 칸들과 풀 안쪽 방향. 세로 배치에서는 풀이 오른쪽에
-    /// 서므로 왼쪽 면, 가로 배치에서는 아래에 놓이므로 윗면이다.
+    /// 블랙박스 풀 `고객`이 `판매`를 마주하는 면의 칸들과 풀 안쪽 방향.
     fn blackbox_face(rows: &[String], grid: &[Vec<char>], direction: Direction) -> (Vec<Cell>, Heading) {
-        let title_row = row_of_text(rows, "고객");
-        let face_col = display_col(&rows[title_row], "고객") - 1;
+        pool_face_toward(rows, grid, "고객", "판매", direction)
+    }
+
+    /// 풀 `pool_title`이 이웃 풀 `neighbor_title`을 마주하는 면의 칸들과 풀 안쪽 방향. 풀 순서는 메시지
+    /// 방향에 따라 바뀌므로 두 제목 위치로 앞뒤를 가린다: 가로 배치는 위아래로, 세로 배치는 좌우로 나란하다.
+    fn pool_face_toward(rows: &[String], grid: &[Vec<char>], pool_title: &str, neighbor_title: &str, direction: Direction) -> (Vec<Cell>, Heading) {
+        let title_row = row_of_text(rows, pool_title);
+        let left_col = display_col(&rows[title_row], pool_title) - 1;
+        let neighbor_row = row_of_text(rows, neighbor_title);
         match direction {
-            Direction::LeftRight => ((face_col..grid[title_row - 1].len()).map(|col| (title_row - 1, col)).collect(), (1, 0)),
-            _ => ((title_row - 1..grid.len()).take_while(|&row| grid[row].get(face_col).is_some_and(|&c| c != ' ')).map(|row| (row, face_col)).collect(), (0, 1)),
+            Direction::LeftRight => {
+                let is_above_neighbor = title_row < neighbor_row;
+                let (face_row, inward) = if is_above_neighbor { ((title_row..grid.len()).find(|&row| grid[row].get(left_col) == Some(&'└')).expect("풀 아랫변"), (-1, 0)) } else { (title_row - 1, (1, 0)) };
+                ((left_col..grid[face_row].len()).map(|col| (face_row, col)).collect(), inward)
+            }
+            _ => {
+                let is_left_of_neighbor = left_col < display_col(&rows[neighbor_row], neighbor_title);
+                let top_row = title_row - 1;
+                let (face_col, inward) = if is_left_of_neighbor { ((left_col + 1..grid[top_row].len()).find(|&col| grid[top_row][col] == '┐').expect("풀 오른쪽 위 모서리"), (0, -1)) } else { (left_col, (0, 1)) };
+                ((top_row..grid.len()).take_while(|&row| grid[row].get(face_col).is_some_and(|&c| c != ' ')).map(|row| (row, face_col)).collect(), inward)
+            }
         }
     }
 

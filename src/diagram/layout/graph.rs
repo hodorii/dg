@@ -186,6 +186,61 @@ const FOLD_PATIENCE: usize = 12;
 /// bugfix.md 2.4에 따라 결과가 바뀔 수 있고 그게 맞다.
 const FOLD_SEGMENT_LIMIT: usize = 1500;
 
+/// 지금 순서대로 놓되, 놓을 항목에 아직 놓이지 않은 보내는 항목(`precedence`의 앞)이 있으면 그것을
+/// 지금 순서대로(재귀로) 먼저 놓는다. 제약이 없는 항목끼리의 앞뒤는 그대로다. 순환에 걸린 제약은
+/// 어느 쪽을 지켜도 다른 쪽을 어기므로 버리고 지금 순서를 따른다. `items`에 없는 항목의 제약은 무시한다.
+fn order_with_senders_pulled_forward(items: &[usize], precedence: &[(usize, usize)]) -> Vec<usize> {
+    let position_of = |item: usize| items.iter().position(|&candidate| candidate == item);
+    let mut senders_of: Vec<Vec<usize>> = vec![Vec::new(); items.len()];
+    for &(sender, receiver) in precedence {
+        if let (Some(sender), Some(receiver)) = (position_of(sender), position_of(receiver))
+            && sender != receiver
+        {
+            senders_of[receiver].push(sender);
+        }
+    }
+    let acyclic_senders_of: Vec<Vec<usize>> = (0..items.len())
+        .map(|receiver| {
+            let mut senders: Vec<usize> = senders_of[receiver].iter().copied().filter(|&sender| !is_reachable_through_senders(&senders_of, sender, receiver)).collect();
+            senders.sort_unstable();
+            senders.dedup();
+            senders
+        })
+        .collect();
+    let mut is_placed = vec![false; items.len()];
+    let mut ordered = Vec::with_capacity(items.len());
+    for position in 0..items.len() {
+        place_after_senders(position, &acyclic_senders_of, &mut is_placed, &mut |placed| ordered.push(items[placed]));
+    }
+    ordered
+}
+
+/// `from`에서 보내는 항목 쪽으로 거슬러 가 `target`에 닿는지 — 닿으면 두 항목은 같은 순환에 있다.
+fn is_reachable_through_senders(senders_of: &[Vec<usize>], from: usize, target: usize) -> bool {
+    let mut is_seen = vec![false; senders_of.len()];
+    let mut pending = vec![from];
+    while let Some(current) = pending.pop() {
+        if current == target {
+            return true;
+        }
+        if !std::mem::replace(&mut is_seen[current], true) {
+            pending.extend(senders_of[current].iter().copied());
+        }
+    }
+    false
+}
+
+/// `position`의 아직 놓이지 않은 보내는 항목을 지금 순서대로 먼저 놓고 자신을 놓는다(`senders_of`는 순환이 없다).
+fn place_after_senders(position: usize, senders_of: &[Vec<usize>], is_placed: &mut [bool], place: &mut impl FnMut(usize)) {
+    if std::mem::replace(&mut is_placed[position], true) {
+        return;
+    }
+    for &sender in &senders_of[position] {
+        place_after_senders(sender, senders_of, is_placed, place);
+    }
+    place(position);
+}
+
 impl<'a> Layout<'a> {
     fn build(graph: &'a Graph, theme: &'a Theme, direction: Direction, cap: usize, width: usize, allow_fold: bool) -> Option<Canvas> {
         let mut layout = Layout::new(graph, theme, direction, cap);
@@ -859,6 +914,7 @@ impl<'a> Layout<'a> {
                 cursor = self.block_parent(b);
             }
         }
+        self.order_root_lanes_by_precedence();
         // 레인 블록의 층 범위는 소속 범위(부모 레인 또는 다이어그램 전체) 전체로 강제한다 —
         // dummy_group()과 같은 출처(effective_group_ranges)라 두 판정이 어긋나지 않는다.
         let effective = self.effective_group_ranges();
@@ -881,6 +937,26 @@ impl<'a> Layout<'a> {
                     self.lane_children[block].push(b);
                 }
             }
+        }
+    }
+
+    /// 루트의 레인 블록만 `lane_precedence`를 따르도록 다시 줄 세운다. 레인이 아닌 자식의 자리와
+    /// 레인 안 하위 레인 순서는 그대로 둔다(레인 순서는 선언대로라는 규약은 하위 레인에만 걸린다).
+    fn order_root_lanes_by_precedence(&mut self) {
+        if self.graph.lane_precedence.is_empty() {
+            return;
+        }
+        let lane_slots: Vec<usize> = (0..self.blocks[0].children.len()).filter(|&slot| self.is_lane_child(self.blocks[0].children[slot])).collect();
+        let lane_groups: Vec<usize> = lane_slots
+            .iter()
+            .map(|&slot| match self.blocks[0].children[slot] {
+                Child::Block(block) => block - 1,
+                Child::Node(_) => unreachable!("레인 자리만 골랐다"),
+            })
+            .collect();
+        let ordered_groups = order_with_senders_pulled_forward(&lane_groups, &self.graph.lane_precedence);
+        for (slot, group) in lane_slots.into_iter().zip(ordered_groups) {
+            self.blocks[0].children[slot] = Child::Block(group + 1);
         }
     }
 
@@ -2659,6 +2735,18 @@ mod tests {
         g.add_edge(Edge { from: b, to: c, head: Marker::Arrow, ..Edge::default() });
         g.add_edge(Edge { from: c, to: a, head: Marker::Arrow, kind: LineKind::Dashed, ..Edge::default() });
         g
+    }
+
+    #[test]
+    fn senders_are_pulled_forward_while_unconstrained_items_keep_their_current_order() {
+        let (a, b, c) = (4, 1, 7);
+        assert_eq!(order_with_senders_pulled_forward(&[a, b, c], &[]), vec![a, b, c], "제약이 없으면 지금 순서 그대로");
+        assert_eq!(order_with_senders_pulled_forward(&[a, b, c], &[(c, a)]), vec![c, a, b], "보내는 항목만 받는 항목 바로 앞으로 끌어온다");
+        assert_eq!(order_with_senders_pulled_forward(&[a, b, c], &[(a, c)]), vec![a, b, c], "이미 만족한 제약은 순서를 바꾸지 않는다");
+        assert_eq!(order_with_senders_pulled_forward(&[a, b, c], &[(c, b), (b, a)]), vec![c, b, a], "보내는 항목의 보내는 항목도 재귀로 끌어온다");
+        assert_eq!(order_with_senders_pulled_forward(&[a, b, c], &[(a, b), (b, a)]), vec![a, b, c], "두 항목 순환은 지금 순서를 따른다");
+        assert_eq!(order_with_senders_pulled_forward(&[a, b, c], &[(a, b), (b, c), (c, a)]), vec![a, b, c], "세 항목 순환도 지금 순서를 따른다");
+        assert_eq!(order_with_senders_pulled_forward(&[a, b], &[(9, a)]), vec![a, b], "목록에 없는 항목의 제약은 무시한다");
     }
 
     fn rows(lines: Vec<Line>) -> Vec<String> {
