@@ -27,7 +27,7 @@
   - _Difficulty: low_
   - _Boundary: bpmn::lower_
   - _Depends: 1.1_
-- [ ] 2.2 (P) YAML 흐름 종류 자동 선택
+- [x] 2.2 (P) YAML 흐름 종류 자동 선택
   - _DoneWhen: 판정 표 단위 테스트 통과, 풀을 넘는 `-->` 문서가 메시지로 렌더링, `==>`는 원문_
   - _Requirements: 2.1, 2.2_
   - _Difficulty: mid_
