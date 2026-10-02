@@ -941,8 +941,16 @@ mod tests {
     /// 풀 `판매`의 시퀀스 둘, 풀 `고객`에서 오는 메시지, `문서`로 가는 데이터 연결, `메모`에서 오는 연결.
     const FOUR_FLOW_KINDS_YAML: &str = "participants:\n  - p1:\n      name: 판매\n      nodes:\n        - s: startEvent\n        - t: task 처리\n        - e: endEvent\n        - d: dataObjectReference 문서\n        - n: textAnnotation 메모\n  - p2:\n      name: 고객\n      nodes:\n        - u: task 주문\nflows:\n  - s --> t\n  - t --> e\n  - u --> t\n  - t --> d\n  - n --> t\n";
 
+    /// TB, LR과 그 반대인 BT, RL. 뒤집힌 배치에서는 표식이 꼬리와 머리를 바꿔 달아야 하므로 넷 모두 본다.
+    const ALL_LAYOUT_DIRECTIONS: [(Direction, bool); 4] = [(Direction::TopDown, false), (Direction::LeftRight, false), (Direction::TopDown, true), (Direction::LeftRight, true)];
+
     fn yaml_rows(source: &str, direction: Direction) -> Vec<String> {
-        let options = DiagramOptions { direction: Some((direction, false)), ..DiagramOptions::default() };
+        yaml_rows_toward(source, (direction, false))
+    }
+
+    /// `layout`은 (축, 뒤집힘).
+    fn yaml_rows_toward(source: &str, layout: (Direction, bool)) -> Vec<String> {
+        let options = DiagramOptions { direction: Some(layout), ..DiagramOptions::default() };
         let (_, lines) = render(source, &Theme::none(), 120, options).expect("렌더링돼야 한다");
         lines.iter().map(Line::plain).collect()
     }
@@ -1067,22 +1075,35 @@ mod tests {
 
     #[test]
     fn four_flow_kinds_draw_three_disjoint_straight_line_families_with_their_markers() {
-        for direction in [Direction::TopDown, Direction::LeftRight] {
-            let rows = yaml_rows(FOUR_FLOW_KINDS_YAML, direction);
+        for direction in ALL_LAYOUT_DIRECTIONS {
+            let rows = yaml_rows_toward(FOUR_FLOW_KINDS_YAML, direction);
             let picture = rows.join("\n");
             let grid = crate::diagram::rendered_picture::display_grid(&rows);
             let task_box = box_around(&rows, &grid, "처리");
 
             let filled_heads = marker_cells(&grid, FILLED_HEADS);
-            assert_eq!(filled_heads.len(), 2, "시퀀스 둘은 채운 화살촉으로 끝나야 한다:\n{picture}");
+            assert_eq!(filled_heads.len(), 2, "{direction:?}: 시퀀스 둘은 채운 화살촉으로 끝나야 한다:\n{picture}");
+            let mut sequence_receivers: Vec<&str> = filled_heads
+                .iter()
+                .map(|&head| {
+                    let beyond = step(head, pointing(grid[head.0][head.1]).unwrap());
+                    match cell_at(&grid, beyond) {
+                        _ if task_box.contains(beyond) => "처리",
+                        Some('◉') => "끝 이벤트",
+                        _ => "그 밖",
+                    }
+                })
+                .collect();
+            sequence_receivers.sort_unstable();
+            assert_eq!(sequence_receivers, ["끝 이벤트", "처리"], "{direction:?}: 채운 화살촉은 받는 `처리` 상자와 끝 이벤트 바로 앞에서 그쪽을 가리켜야 한다:\n{picture}");
             let sequence: BTreeSet<char> = filled_heads.iter().flat_map(|&head| trace_back_from_head(&grid, head).straights).collect();
 
             let triangles = marker_cells(&grid, HOLLOW_TRIANGLES);
-            assert_eq!(triangles.len(), 1, "메시지는 빈 삼각형 하나로 끝나야 한다:\n{picture}");
-            assert!(task_box.contains(step(triangles[0], pointing(grid[triangles[0].0][triangles[0].1]).unwrap())), "빈 삼각형은 받는 `처리`를 가리켜야 한다:\n{picture}");
+            assert_eq!(triangles.len(), 1, "{direction:?}: 메시지는 빈 삼각형 하나로 끝나야 한다:\n{picture}");
+            assert!(task_box.contains(step(triangles[0], pointing(grid[triangles[0].0][triangles[0].1]).unwrap())), "{direction:?}: 빈 삼각형은 받는 `처리`를 가리켜야 한다:\n{picture}");
             let message_trace = trace_back_from_head(&grid, triangles[0]);
-            assert_eq!(message_trace.stop, '○', "메시지는 ○ 꼬리에서 나와야 한다:\n{picture}");
-            assert!(box_around(&rows, &grid, "주문").contains(step(message_trace.stop_cell, message_trace.heading)), "○ 꼬리는 보내는 `주문`에 붙어야 한다:\n{picture}");
+            assert_eq!(message_trace.stop, '○', "{direction:?}: 메시지는 ○ 꼬리에서 나와야 한다:\n{picture}");
+            assert!(box_around(&rows, &grid, "주문").contains(step(message_trace.stop_cell, message_trace.heading)), "{direction:?}: ○ 꼬리는 보내는 `주문`에 붙어야 한다:\n{picture}");
             let message: BTreeSet<char> = message_trace.straights.into_iter().collect();
 
             let data_box = box_around(&rows, &grid, "«data»");
@@ -1096,15 +1117,15 @@ mod tests {
                     is_open_head_into_box.then_some(((outside.0 as usize, outside.1 as usize), outward))
                 })
                 .collect();
-            assert_eq!(open_heads.len(), 1, "«data» 상자 바로 바깥에 열린 화살촉 하나가 상자를 가리켜야 한다:\n{picture}");
+            assert_eq!(open_heads.len(), 1, "{direction:?}: «data» 상자 바로 바깥에 열린 화살촉 하나가 상자를 가리켜야 한다:\n{picture}");
             let data_trace = trace_line(&grid, open_heads[0].0, open_heads[0].1);
-            assert!(task_box.contains((data_trace.stop_cell.0 as isize, data_trace.stop_cell.1 as isize)), "데이터 연결은 표식 없이 `처리`에서 나와야 한다:\n{picture}");
+            assert!(task_box.contains((data_trace.stop_cell.0 as isize, data_trace.stop_cell.1 as isize)), "{direction:?}: 데이터 연결은 표식 없이 `처리`에서 나와야 한다:\n{picture}");
 
             let note_box = box_around(&rows, &grid, "메모");
             let association_traces: Vec<Trace> = note_box.border_cells().into_iter().map(|(border, outward)| trace_line(&grid, border, outward)).filter(|trace| !trace.straights.is_empty()).collect();
-            assert_eq!(association_traces.len(), 1, "`메모`에서 나가는 선은 하나여야 한다:\n{picture}");
+            assert_eq!(association_traces.len(), 1, "{direction:?}: `메모`에서 나가는 선은 하나여야 한다:\n{picture}");
             let association = &association_traces[0];
-            assert!(task_box.contains((association.stop_cell.0 as isize, association.stop_cell.1 as isize)), "연결은 표식 없이 `처리` 테두리에 닿아야 한다:\n{picture}");
+            assert!(task_box.contains((association.stop_cell.0 as isize, association.stop_cell.1 as isize)), "{direction:?}: 연결은 표식 없이 `처리` 테두리에 닿아야 한다:\n{picture}");
 
             let data_family: BTreeSet<char> = data_trace.straights.iter().chain(&association.straights).copied().collect();
             for (family, allowed) in [(&sequence, "─│"), (&message, "╌╎"), (&data_family, "┈┊")] {
@@ -1132,11 +1153,11 @@ mod tests {
 
     #[test]
     fn message_from_a_blackbox_pool_leaves_its_face_with_a_circle_and_reaches_the_node_with_a_hollow_triangle() {
-        for direction in [Direction::TopDown, Direction::LeftRight] {
-            let rows = yaml_rows(&blackbox_message_yaml("c --> s"), direction);
+        for direction in ALL_LAYOUT_DIRECTIONS {
+            let rows = yaml_rows_toward(&blackbox_message_yaml("c --> s"), direction);
             let picture = rows.join("\n");
             let grid = crate::diagram::rendered_picture::display_grid(&rows);
-            let (face, inward) = blackbox_face(&rows, &grid, direction);
+            let (face, inward) = blackbox_face(&rows, &grid, direction.0);
             let tails: Vec<Cell> = face.into_iter().filter(|&(row, col)| grid[row][col] == '○').collect();
             assert_eq!(tails.len(), 1, "{direction:?}: ○ 꼬리가 고객 풀 면에 있어야 한다:\n{picture}");
             let trace = trace_line(&grid, tails[0], opposite(inward));
