@@ -490,7 +490,9 @@ impl<'a> Layout<'a> {
                         // 점 표기 노드는 벌리지 않는다(위와 같은 이유).
                         let (incoming, outgoing) = degree[index];
                         let needed = 2 * incoming.max(outgoing) + 1;
-                        (w, if !point_anchored && h >= 3 { h.max(needed) } else { h })
+                        // 글자 없는 상자(테두리 두 줄)도 한쪽에 흐름이 둘 이상이면 키워 접점이 한 점에 모이지 않게 한다.
+                        let is_crowded_glyphless_box = h == 2 && node.shape.is_border_box() && incoming.max(outgoing) >= 2;
+                        (w, if !point_anchored && (h >= 3 || is_crowded_glyphless_box) { h.max(needed) } else { h })
                     }
                 };
                 LayoutNode { node: Some(0), edge: None, layer: 0, group: node.group, along_size, across_size, extra_across: 0, across: 0, sections, point_anchored }
@@ -3588,5 +3590,70 @@ mod tests {
         }
         assert!(mismatches.is_empty(), "결과가 바뀐 건: {mismatches:#?}");
         assert!(slow.is_empty(), "1초를 넘긴 건(디버그 빌드 여유 포함): {slow:#?}");
+    }
+
+    /// 가운데 노드 하나에 `incoming`개가 들어오고 `outgoing`개가 나가는 왼쪽→오른쪽 그래프.
+    /// 가운데 노드는 본문이 비어 글자 없는 도형(테두리만)으로 그려진다.
+    fn lr_hub_graph(shape: Shape, incoming: usize, outgoing: usize) -> Graph {
+        let mut g = Graph { direction: Some(Direction::LeftRight), ..Graph::default() };
+        let hub = g.intern("A", "A", shape, None);
+        g.nodes[hub].sections = vec![Vec::new()];
+        for i in 0..incoming {
+            let source = g.intern(&format!("I{i}"), &format!("i{i}"), Shape::Rect, None);
+            g.add_edge(Edge { from: source, to: hub, head: Marker::Arrow, ..Edge::default() });
+        }
+        for i in 0..outgoing {
+            let target = g.intern(&format!("O{i}"), &format!("o{i}"), Shape::Rect, None);
+            g.add_edge(Edge { from: hub, to: target, head: Marker::Arrow, ..Edge::default() });
+        }
+        g
+    }
+
+    /// 들어오는 화살표는 모두 가운데 노드의 왼쪽 테두리 바로 앞 같은 열에 닿고,
+    /// 나가는 흐름은 오른쪽 테두리 바로 뒤 칸에서 시작한다 — 그 줄 수를 센다.
+    fn assert_glyphless_hub_ports_separate(shape: Shape) {
+        let out = rows(render(&lr_hub_graph(shape, 2, 3), &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        assert!(!text.contains(['┬', '┴', '┼']), "흐름이 한 점에 모였다:\n{text}");
+        let cells: Vec<Vec<char>> = out.iter().map(|row| row.chars().collect()).collect();
+        let arrow_col = cells.iter().filter_map(|row| row.iter().position(|&c| c == '▶')).min().unwrap();
+        let (hub_width, _) = shape::measure(shape, &[Vec::new()]);
+        let hub_right = arrow_col + hub_width;
+        let incoming_rows = cells.iter().filter(|row| row.get(arrow_col) == Some(&'▶')).count();
+        let outgoing_rows = cells.iter().filter(|row| row.get(hub_right + 1) == Some(&'─')).count();
+        assert_eq!(incoming_rows, 2, "들어오는 흐름이 서로 다른 줄이 아니다:\n{text}");
+        assert_eq!(outgoing_rows, 3, "나가는 흐름이 서로 다른 줄이 아니다:\n{text}");
+    }
+
+    #[test]
+    fn left_right_glyphless_rect_separates_ports_per_flow() {
+        assert_glyphless_hub_ports_separate(Shape::Rect);
+    }
+
+    #[test]
+    fn left_right_glyphless_diamond_separates_ports_per_flow() {
+        assert_glyphless_hub_ports_separate(Shape::Diamond);
+    }
+
+    #[test]
+    fn left_right_glyphless_box_with_one_flow_per_side_keeps_two_rows() {
+        let out = rows(render(&lr_hub_graph(Shape::Rect, 1, 1), &Theme::none(), 80).unwrap());
+        assert_eq!(out, ["┌────┐          ┌────┐", "│ i0 │──▶┌──┐──▶│ o0 │", "└────┘   └──┘   └────┘"]);
+        let out = rows(render(&lr_hub_graph(Shape::Diamond, 1, 1), &Theme::none(), 80).unwrap());
+        assert_eq!(out, ["┌────┐            ┌────┐", "│ i0 │──▶ ╱──╲ ──▶│ o0 │", "└────┘    ╲──╱    └────┘"]);
+    }
+
+    #[test]
+    fn left_right_point_anchored_node_still_converges_flows() {
+        let out = rows(render(&lr_hub_graph(Shape::Start, 0, 3), &Theme::none(), 80).unwrap());
+        assert_eq!(
+            out,
+            ["     ┌────┐", "  ╭─▶│ o0 │", "  │  └────┘", "  │", "  │  ┌────┐", "●─┴┬▶│ o1 │", "   │ └────┘", "   │", "   │ ┌────┐", "   ╰▶│ o2 │", "     └────┘"]
+        );
+        let out = rows(render(&lr_hub_graph(Shape::Event(EventPosition::Start), 0, 3), &Theme::none(), 80).unwrap());
+        assert_eq!(
+            out,
+            ["     ┌────┐", "  ╭─▶│ o0 │", "  │  └────┘", "  │", "  │  ┌────┐", "○─┴┬▶│ o1 │", "   │ └────┘", "   │", "   │ ┌────┐", "   ╰▶│ o2 │", "     └────┘"]
+        );
     }
 }

@@ -20,7 +20,7 @@
   - _Difficulty: mid_
   - _Boundary: bpmn::model, bpmn::validate_
 
-- [ ] 2. 핵심
+- [x] 2. 핵심
 - [x] 2.1 BPMN 대응표 변경
   - _DoneWhen: 대응표 단위 테스트 통과, 메시지 흐름 렌더링에 `○`, `╌`, `▷`가 보임_
   - _Requirements: 1.1_
@@ -33,7 +33,7 @@
   - _Difficulty: mid_
   - _Boundary: bpmn::parse_yaml_
   - _Depends: 1.3_
-- [ ] 2.3 (P) LR 글자 없는 상자 노드 접점 분리
+- [x] 2.3 (P) LR 글자 없는 상자 노드 접점 분리
   - _DoneWhen: mermaid `flowchart LR`의 `A[" "]`에서 셋이 나가고 둘이 들어올 때 노드 옆 칸에 `┬` `┴` `┼`가 없고 흐름이 서로 다른 줄_
   - _Requirements: 3.1_
   - _Difficulty: high_
