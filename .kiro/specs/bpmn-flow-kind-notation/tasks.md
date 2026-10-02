@@ -40,7 +40,7 @@
   - _Boundary: layout::graph_
   - _Depends: 1.2_
 
-- [ ] 3. 검증
+- [x] 3. 검증
 - [x] 3.1 렌더링 통합 테스트
   - _DoneWhen: 네 흐름 YAML의 TB, LR 곧은 구간이 세 갈래, 풀 면 메시지 양방향 표식 위치, 자동 선택 문서와 위반 문서 결과, 글자 없는 상자 노드(mermaid, BPMN `task`, 주석)와 점 모양 노드 대조가 모두 출력 단언으로 통과_
   - _Requirements: 1.1, 1.2, 2.1, 2.2, 3.1_
@@ -52,8 +52,8 @@
   - _Difficulty: mid_
   - _Boundary: bpmn 테스트, layout::graph 테스트, layout::shape 테스트_
   - _Depends: 2.1, 2.2, 2.3_
-- [ ] 3.3 예제와 회귀(P1)
-  - _DoneWhen: `examples/bpmn.md` 네 흐름 블록 TB, LR 출력에 `─▶`, `○╌`, `┈>`가 보이고, `git diff examples/architecture.txt` 비어 있으며, 전체 테스트(해시 테스트 포함)와 clippy 통과_
+- [x] 3.3 예제와 회귀(P1)
+  - _DoneWhen: `examples/bpmn.md` 네 흐름 블록을 TB와 LR로 렌더링한 출력에서 시퀀스는 `─`/`│`에 `▶`(LR) 또는 `▼`(TB), 메시지는 `╌`/`╎`에 풀 면의 `○`와 끝의 `◁`/`△`, 데이터 연결은 `┈`/`┊`에 `>`(LR) 또는 `∨`(TB), 연결은 `┈`/`┊`에 머리 없음이 보이고, `git diff examples/architecture.txt` 비어 있으며, 전체 테스트(해시 테스트 포함)와 clippy 통과 (원래 문구는 가로 배치의 글자 인접을 가정해 세로에서 반증 불가였음, 3.3 검토에서 정정)_
   - _Requirements: 1.2, 4.1_
   - _Difficulty: low_
 

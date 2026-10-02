@@ -12,6 +12,36 @@
 ```
 
 ```bpmn
+title: 주문 접수와 기록
+participants:
+  - customer: 고객
+  - shop:
+      name: 판매사
+      nodes:
+        - received:
+            kind: startEvent
+            name: 주문 접수
+        - review:
+            kind: userTask
+            name: 주문 검토
+        - order_doc:
+            kind: dataObjectReference
+            name: 주문서
+        - note:
+            kind: textAnnotation
+            name: 30분 안에 검토
+        - done:
+            kind: endEvent
+            name: 검토 완료
+flows:
+  - customer --> received
+  - received --> review
+  - review --> order_doc
+  - note --> review
+  - review --> done
+```
+
+```bpmn
 <?xml version="1.0" encoding="UTF-8"?>
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL">
   <collaboration id="c1" name="주문 처리 협업">
