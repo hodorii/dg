@@ -17,6 +17,7 @@ pub enum LineKind {
     Solid,
     Dashed,
     Heavy,
+    Dotted,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -26,6 +27,7 @@ struct Cell {
     /// 이 칸을 지나는 선의 방향 비트. 0이면 글자 칸이다.
     lines: u8,
     dashed: bool,
+    dotted: bool,
     heavy: bool,
     round: bool,
     /// 넓은 글자(한글 등)의 오른쪽 절반.
@@ -42,6 +44,7 @@ impl Cell {
         style: Style::PLAIN,
         lines: 0,
         dashed: false,
+        dotted: false,
         heavy: false,
         round: false,
         continuation: false,
@@ -143,9 +146,10 @@ impl Canvas {
         match kind {
             LineKind::Dashed => cell.dashed = true,
             LineKind::Heavy => cell.heavy = true,
+            LineKind::Dotted => cell.dotted = true,
             LineKind::Solid => {}
         }
-        cell.ch = if cell.is_hop { HOP } else { line_char(cell.lines, cell.dashed, cell.heavy, cell.round) };
+        cell.ch = if cell.is_hop { HOP } else { line_char(cell.lines, cell.dashed, cell.dotted, cell.heavy, cell.round) };
     }
 
     /// 가로선. 양 끝은 안쪽 방향 비트만 갖는다.
@@ -202,7 +206,7 @@ impl Canvas {
             for (cx, cy) in [(x, y), (x1, y), (x, y1), (x1, y1)] {
                 if let Some(cell) = self.cells.get_mut(cy).and_then(|r| r.get_mut(cx)) {
                     cell.round = true;
-                    cell.ch = line_char(cell.lines, cell.dashed, cell.heavy, true);
+                    cell.ch = line_char(cell.lines, cell.dashed, cell.dotted, cell.heavy, true);
                 }
             }
         }
@@ -241,7 +245,7 @@ impl Canvas {
     }
 }
 
-fn line_char(bits: u8, dashed: bool, heavy: bool, round: bool) -> char {
+fn line_char(bits: u8, dashed: bool, dotted: bool, heavy: bool, round: bool) -> char {
     let n = bits & NORTH != 0;
     let s = bits & SOUTH != 0;
     let w = bits & WEST != 0;
@@ -251,6 +255,8 @@ fn line_char(bits: u8, dashed: bool, heavy: bool, round: bool) -> char {
         (true, false, false, false) | (false, true, false, false) | (true, true, false, false) => {
             if dashed {
                 '╎'
+            } else if dotted {
+                '┊'
             } else if heavy {
                 '┃'
             } else {
@@ -260,6 +266,8 @@ fn line_char(bits: u8, dashed: bool, heavy: bool, round: bool) -> char {
         (false, false, true, false) | (false, false, false, true) | (false, false, true, true) => {
             if dashed {
                 '╌'
+            } else if dotted {
+                '┈'
             } else if heavy {
                 '━'
             } else {
@@ -318,5 +326,42 @@ mod tests {
         c.text(0, 0, "한a", Style::PLAIN);
         c.hline(0, 5, 0, LineKind::Solid, Style::PLAIN);
         assert_eq!(rows(c), vec!["한a───"]);
+    }
+
+    #[test]
+    fn dotted_line_uses_fine_dots_and_keeps_round_corner() {
+        let mut c = Canvas::new(3, 2);
+        c.hline(0, 2, 0, LineKind::Dotted, Style::PLAIN);
+        c.vline(2, 0, 1, LineKind::Dotted, Style::PLAIN);
+        c.join(2, 0, 0, LineKind::Dotted, Style::PLAIN, true);
+        assert_eq!(rows(c), vec!["┈┈╮", "  ┊"]);
+    }
+
+    #[test]
+    fn dotted_line_crossed_by_solid_border_joins() {
+        let mut c = Canvas::new(5, 3);
+        c.vline(2, 0, 2, LineKind::Dotted, Style::PLAIN);
+        c.hline(0, 4, 1, LineKind::Solid, Style::PLAIN);
+        assert_eq!(rows(c), vec!["  ┊", "──┼──", "  ┊"]);
+    }
+
+    #[test]
+    fn dashed_wins_over_dotted_on_same_straight_cell() {
+        let mut c = Canvas::new(3, 1);
+        c.hline(0, 2, 0, LineKind::Dotted, Style::PLAIN);
+        c.hline(0, 2, 0, LineKind::Dashed, Style::PLAIN);
+        assert_eq!(rows(c), vec!["╌╌╌"]);
+    }
+
+    #[test]
+    fn straight_pattern_precedence_holds_vertically_and_dotted_beats_heavy() {
+        let mut vertical = Canvas::new(1, 3);
+        vertical.vline(0, 0, 2, LineKind::Dotted, Style::PLAIN);
+        vertical.vline(0, 0, 2, LineKind::Dashed, Style::PLAIN);
+        assert_eq!(rows(vertical), vec!["╎", "╎", "╎"]);
+        let mut heavy = Canvas::new(3, 1);
+        heavy.hline(0, 2, 0, LineKind::Heavy, Style::PLAIN);
+        heavy.hline(0, 2, 0, LineKind::Dotted, Style::PLAIN);
+        assert_eq!(rows(heavy), vec!["┈┈┈"]);
     }
 }

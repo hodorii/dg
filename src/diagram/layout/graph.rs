@@ -12,6 +12,7 @@ use crate::diagram::layout::shape;
 use crate::line::Line;
 use crate::style::{Style, Theme};
 use crate::text::{truncate, width_of};
+use std::collections::BTreeMap;
 
 pub fn render(graph: &Graph, theme: &Theme, width: usize) -> Option<Vec<Line>> {
     if graph.nodes.is_empty() {
@@ -271,6 +272,9 @@ impl<'a> Layout<'a> {
             self.straighten();
             self.route();
         }
+        if self.reserve_pool_channel_room() {
+            self.route();
+        }
     }
 
     /// 가상 노드·블록·배선 정보를 지우고 층 배정만 남긴다.
@@ -490,7 +494,9 @@ impl<'a> Layout<'a> {
                         // 점 표기 노드는 벌리지 않는다(위와 같은 이유).
                         let (incoming, outgoing) = degree[index];
                         let needed = 2 * incoming.max(outgoing) + 1;
-                        (w, if !point_anchored && h >= 3 { h.max(needed) } else { h })
+                        // 글자 없는 상자(테두리 두 줄)도 한쪽에 흐름이 둘 이상이면 키워 접점이 한 점에 모이지 않게 한다.
+                        let is_crowded_glyphless_box = h == 2 && node.shape.is_border_box() && incoming.max(outgoing) >= 2;
+                        (w, if !point_anchored && (h >= 3 || is_crowded_glyphless_box) { h.max(needed) } else { h })
                     }
                 };
                 LayoutNode { node: Some(0), edge: None, layer: 0, group: node.group, along_size, across_size, extra_across: 0, across: 0, sections, point_anchored }
@@ -794,7 +800,7 @@ impl<'a> Layout<'a> {
         node.shape == Shape::Anchor && node.group.is_some_and(|g| self.graph.groups[g].kind == GroupKind::Lane)
     }
 
-    /// 풀 닻에 닿는 간선 — 층 배치·구간 배선에서 빠지고 `draw_pool_edges()`가 풀 면 중앙으로 따로 긋는다.
+    /// 풀 닻에 닿는 간선 — 층 배치·구간 배선에서 빠지고 `draw_pool_edges()`가 풀 면으로 따로 긋는다.
     fn is_pool_edge(&self, edge: usize) -> bool {
         let edge = &self.graph.edges[edge];
         edge.from != edge.to && (self.is_pool_anchor(edge.from) || self.is_pool_anchor(edge.to))
@@ -2059,25 +2065,25 @@ impl<'a> Layout<'a> {
     }
 
     /// 풀 닻에 닿는 메시지 흐름: 끝에서 교차축으로 나가 풀 바로 바깥 통로까지, 통로를 따라 흐름축으로,
-    /// 다시 교차축으로 상대 끝까지 — 풀 쪽은 면의 중앙에 수직으로 닿는다.
+    /// 다시 교차축으로 상대 끝까지 — 풀 쪽은 면에 수직으로 닿는다.
     fn draw_pool_edges(&self, canvas: &mut Canvas) {
         let cross_direction = match self.direction {
             Direction::TopDown => Direction::LeftRight,
             Direction::LeftRight => Direction::TopDown,
         };
         let style = self.theme.diagram_line;
-        for (i, edge) in self.graph.edges.iter().enumerate() {
-            if !self.is_pool_edge(i) {
-                continue;
-            }
-            let (from_along, from_across, from_toward_higher) = self.pool_edge_end(edge.from, edge.to);
-            let (to_along, to_across, to_toward_higher) = self.pool_edge_end(edge.to, edge.from);
-            let (pool_across, pool_toward_higher) = if self.is_pool_anchor(edge.from) { (from_across, from_toward_higher) } else { (to_across, !to_toward_higher) };
-            let channel = if pool_toward_higher { pool_across + 1 } else { pool_across.saturating_sub(1) };
-            self.line_across(canvas, from_across, channel, from_along, edge.kind, style);
-            self.line_along(canvas, from_along, to_along, channel, edge.kind, style);
-            self.line_across(canvas, channel, to_across, to_along, edge.kind, style);
-            if from_along != to_along {
+        for route in self.pool_edge_routes() {
+            let edge = &self.graph.edges[route.edge];
+            let (from_along, from_across, from_toward_higher) = route.from;
+            let (to_along, to_across, to_toward_higher) = route.to;
+            let channel = route.channel();
+            if from_along == to_along {
+                // 통로를 따라갈 구간이 없다 — 길이 0인 흐름축 조각을 그으면 통로 칸이 `┼`로 합쳐진다.
+                self.line_across(canvas, from_across, to_across, from_along, edge.kind, style);
+            } else {
+                self.line_across(canvas, from_across, channel, from_along, edge.kind, style);
+                self.line_along(canvas, from_along, to_along, channel, edge.kind, style);
+                self.line_across(canvas, channel, to_across, to_along, edge.kind, style);
                 for along in [from_along, to_along] {
                     let (x, y) = self.to_canvas(along, channel);
                     canvas.join(x, y, 0, edge.kind, style, true);
@@ -2097,6 +2103,85 @@ impl<'a> Layout<'a> {
                 self.draw_pool_edge_label(canvas, &edge.label.replace('\n', " "), (from_along, from_across), (to_along, to_across), channel);
             }
         }
+    }
+
+    /// 풀 간선마다 양 끝과 통로. 한 풀의 한 면에 여럿이 붙으면 면 칸을 나눠 주고(표식이 서로 덮지
+    /// 않게), 통로를 따라 달리는 구간이 겹치면 면에서 더 먼 통로 줄을 준다.
+    fn pool_edge_routes(&self) -> Vec<PoolEdgeRoute> {
+        let mut routes: Vec<PoolEdgeRoute> = (0..self.graph.edges.len())
+            .filter(|&i| self.is_pool_edge(i))
+            .map(|i| {
+                let edge = &self.graph.edges[i];
+                let is_pool_at_from = self.is_pool_anchor(edge.from);
+                PoolEdgeRoute { edge: i, from: self.pool_edge_end(edge.from, edge.to), to: self.pool_edge_end(edge.to, edge.from), is_pool_at_from, depth: 1 }
+            })
+            .collect();
+        self.spread_shared_face_points(&mut routes);
+        let mut channel_groups: BTreeMap<PoolFace, Vec<usize>> = BTreeMap::new();
+        for (r, route) in routes.iter().enumerate() {
+            let anchor = if route.is_pool_at_from { self.graph.edges[route.edge].from } else { self.graph.edges[route.edge].to };
+            channel_groups.entry((anchor, route.pool_end().2)).or_default().push(r);
+        }
+        for members in channel_groups.values() {
+            let spans: Vec<(usize, usize)> = members.iter().map(|&r| (routes[r].other_end().0, routes[r].pool_end().0)).collect();
+            for (&r, depth) in members.iter().zip(channel_depths(&spans)) {
+                routes[r].depth = depth;
+            }
+        }
+        routes
+    }
+
+    /// 한 풀 면에 붙는 끝이 둘 이상이면 면 중앙을 둘러 칸을 나눠 준다 — 상대 끝의 흐름축 순서대로
+    /// 놓아 통로를 달리는 구간끼리 엇갈리지 않게 한다. 하나뿐이면 면 중앙 그대로다.
+    fn spread_shared_face_points(&self, routes: &mut [PoolEdgeRoute]) {
+        let mut faces: BTreeMap<PoolFace, Vec<FaceAttachment>> = BTreeMap::new();
+        for (r, route) in routes.iter().enumerate() {
+            let edge = &self.graph.edges[route.edge];
+            for (anchor, end, other, is_from) in [(edge.from, route.from, route.to, true), (edge.to, route.to, route.from, false)] {
+                if self.is_pool_anchor(anchor) {
+                    faces.entry((anchor, end.2)).or_default().push(FaceAttachment { other_along: other.0, route: r, is_from });
+                }
+            }
+        }
+        for ((anchor, _), mut attachments) in faces {
+            if attachments.len() < 2 {
+                continue;
+            }
+            attachments.sort_unstable_by_key(|a| (a.other_along, a.route, a.is_from));
+            let block = self.lnode_block[anchor];
+            // 배너 구분선과 아래 모서리를 피한 면 안쪽 칸만 쓴다.
+            let interior = (self.banner_start(self.lane_depth(block) + 1) + 1, self.lane_along_end(block).saturating_sub(1));
+            let first = &attachments[0];
+            let center = if first.is_from { routes[first.route].from.0 } else { routes[first.route].to.0 };
+            for (attachment, along) in attachments.iter().zip(spread_face_points(center, attachments.len(), interior)) {
+                let route = &mut routes[attachment.route];
+                let end = if attachment.is_from { &mut route.from } else { &mut route.to };
+                end.0 = along;
+            }
+        }
+    }
+
+    /// 통로 깊이가 풀 사이 간격에 다 들어가지 않으면 그 면 바깥에 모자란 칸을 끼워 넣는다.
+    fn reserve_pool_channel_room(&mut self) -> bool {
+        // 바깥쪽 통로와 이웃 사이에 빈 칸 하나는 남긴다(간격이 한 칸뿐이면 그 칸이 곧 통로다).
+        let room = self.gap_across().saturating_sub(1).max(1);
+        let mut deepest: BTreeMap<(usize, bool), usize> = BTreeMap::new();
+        for route in self.pool_edge_routes() {
+            let (_, face, toward_higher) = route.pool_end();
+            let depth = deepest.entry((face, toward_higher)).or_default();
+            *depth = (*depth).max(route.depth);
+        }
+        let mut insertions: Vec<(usize, usize)> = deepest
+            .into_iter()
+            .filter(|&(_, depth)| depth > room)
+            .map(|((face, toward_higher), depth)| (if toward_higher { face + 1 } else { face }, depth - room))
+            .collect();
+        // 뒤쪽부터 끼워야 앞쪽 끼울 자리가 밀리지 않는다.
+        insertions.sort_unstable_by(|a, b| b.cmp(a));
+        for &(at, count) in &insertions {
+            self.insert_across(at, count);
+        }
+        !insertions.is_empty()
     }
 
     /// 경로의 가로 조각 가운데 가장 긴 것에 라벨을 가운데 맞춰 얹는다(들어갈 때만).
@@ -2411,6 +2496,72 @@ fn port_spacing_for(label_width: usize) -> usize {
     if label_width == 0 { 2 } else { label_width + 3 }
 }
 
+/// 풀 닻 노드와 그 풀이 상대를 마주하는 면(교차축 큰 쪽이면 true).
+type PoolFace = (usize, bool);
+
+/// 풀 면 하나에 붙는 간선 끝: 상대 끝의 흐름축 위치, 경로 번호, 출발 쪽 끝인지.
+struct FaceAttachment {
+    other_along: usize,
+    route: usize,
+    is_from: bool,
+}
+
+/// 풀 닻에 닿는 간선 하나의 경로. 끝은 `pool_edge_end()`와 같은 (흐름축, 교차축, 상대 쪽 부호).
+struct PoolEdgeRoute {
+    edge: usize,
+    from: (usize, usize, bool),
+    to: (usize, usize, bool),
+    /// 통로를 풀 쪽 끝(둘 다 풀이면 출발 쪽)의 면에 둔다.
+    is_pool_at_from: bool,
+    /// 통로가 면에서 떨어진 칸 수(1 = 면 바로 바깥).
+    depth: usize,
+}
+
+impl PoolEdgeRoute {
+    fn pool_end(&self) -> (usize, usize, bool) {
+        if self.is_pool_at_from { self.from } else { self.to }
+    }
+
+    fn other_end(&self) -> (usize, usize, bool) {
+        if self.is_pool_at_from { self.to } else { self.from }
+    }
+
+    fn channel(&self) -> usize {
+        let (_, face, toward_higher) = self.pool_end();
+        if toward_higher { face + self.depth } else { face.saturating_sub(self.depth) }
+    }
+}
+
+/// 면 중앙을 둘러 `count`칸을 사이에 빈 칸 하나씩 두고(면이 짧으면 붙여서) `interior` 안에 놓는다.
+fn spread_face_points(center: usize, count: usize, (low, high): (usize, usize)) -> Vec<usize> {
+    let room = high.saturating_sub(low) + 1;
+    let spacing = if 2 * (count - 1) < room { 2 } else { 1 };
+    let span = spacing * (count - 1);
+    let first = center.saturating_sub(span / 2).min(high.saturating_sub(span)).max(low);
+    (0..count).map(|k| first + k * spacing).collect()
+}
+
+/// 한 면 바깥 통로를 함께 쓰는 간선들의 통로 깊이. `spans[i]`는 (상대 끝 흐름축, 면 칸 흐름축).
+/// 통로 구간이 겹치는 둘 가운데 상대 끝이 면 칸에서 더 먼 쪽(면 칸 앞쪽이면 더 앞, 뒤쪽이면 더
+/// 뒤)이 면에 가까운 통로를 쓰면, 그 상대 끝 다리는 더 깊은 통로에 닿기 전에 꺾이고 다른 쪽의
+/// 면 다리도 얕은 통로까지만 가므로 서로 가로지르지 않는다.
+fn channel_depths(spans: &[(usize, usize)]) -> Vec<usize> {
+    let mut depths = vec![1; spans.len()];
+    for is_before_face_point in [true, false] {
+        let mut order: Vec<usize> = (0..spans.len()).filter(|&i| if is_before_face_point { spans[i].0 < spans[i].1 } else { spans[i].0 > spans[i].1 }).collect();
+        order.sort_unstable_by_key(|&i| (spans[i].0, i));
+        if !is_before_face_point {
+            order.reverse();
+        }
+        for (k, &i) in order.iter().enumerate() {
+            let (low, high) = (spans[i].0.min(spans[i].1), spans[i].0.max(spans[i].1));
+            let overlapped = order[..k].iter().filter(|&&j| spans[j].0.min(spans[j].1) <= high && low <= spans[j].0.max(spans[j].1)).map(|&j| depths[j]).max();
+            depths[i] = overlapped.map_or(1, |depth| depth + 1);
+        }
+    }
+    depths
+}
+
 /// 끝 표식 글자들. `at_top`이면 위(또는 왼쪽) 노드에 붙는 쪽이다.
 /// 여러 글자면 선에서 노드 쪽으로 차례로 놓는다(마지막 글자가 노드에 닿는다).
 fn marker_glyphs(marker: Marker, direction: Direction, at_top: bool) -> Vec<char> {
@@ -2456,6 +2607,30 @@ fn marker_glyphs(marker: Marker, direction: Direction, at_top: bool) -> Vec<char
         Marker::Slash => vec!['╱'],
     };
     glyphs
+}
+
+/// 결정적 의사난수(xorshift64) — 외부 crate 없이 seed로 재현 가능한 테스트 입력을 만든다
+/// (bugfix.md 재현 4의 파이썬 생성기와 같은 모양). 배치기 테스트와 BPMN 속성 테스트가 함께 쓴다.
+#[cfg(test)]
+pub(crate) struct Xorshift64(u64);
+
+#[cfg(test)]
+impl Xorshift64 {
+    pub(crate) fn new(seed: u64) -> Self {
+        // 0이면 xorshift가 0에 갇히므로 홀수로 섞는다.
+        Xorshift64((seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1)
+    }
+    pub(crate) fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+    pub(crate) fn below(&mut self, n: usize) -> usize {
+        (self.next_u64() % n as u64) as usize
+    }
 }
 
 #[cfg(test)]
@@ -3418,28 +3593,6 @@ mod tests {
 
     // ── layout-crossgroup-edge-blowup: 재현·회귀 테스트 ──────────────────
 
-    /// 결정적 의사난수(xorshift64) — 외부 crate 없이 재현 가능한 합성 그래프를 만든다
-    /// (bugfix.md 재현 4의 파이썬 생성기와 같은 모양, seed로 고정).
-    struct Xorshift64(u64);
-
-    impl Xorshift64 {
-        fn new(seed: u64) -> Self {
-            // 0이면 xorshift가 0에 갇히므로 홀수로 섞는다.
-            Xorshift64((seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1)
-        }
-        fn next_u64(&mut self) -> u64 {
-            let mut x = self.0;
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            self.0 = x;
-            x
-        }
-        fn below(&mut self, n: usize) -> usize {
-            (self.next_u64() % n as u64) as usize
-        }
-    }
-
     /// bugfix.md 재현 4의 생성기와 같은 모양: subgraph 8개(그룹당 6~7노드 사슬) + 두 그룹
     /// 사이를 잇는 무작위 간선 `cross_edges`개. `chain_groups`면 그룹 0→1→…→7을 먼저 이어(실사용
     /// 펜스처럼 그룹이 사슬이 되는 구조) 어느 시도로도 폭에 안 들어가는 그래프를 만든다.
@@ -3588,5 +3741,138 @@ mod tests {
         }
         assert!(mismatches.is_empty(), "결과가 바뀐 건: {mismatches:#?}");
         assert!(slow.is_empty(), "1초를 넘긴 건(디버그 빌드 여유 포함): {slow:#?}");
+    }
+
+    /// 가운데 노드 하나에 `incoming`개가 들어오고 `outgoing`개가 나가는 왼쪽→오른쪽 그래프.
+    /// 가운데 노드는 본문이 비어 글자 없는 도형(테두리만)으로 그려진다.
+    fn lr_hub_graph(shape: Shape, incoming: usize, outgoing: usize) -> Graph {
+        lr_hub_graph_with_sections(shape, vec![Vec::new()], incoming, outgoing)
+    }
+
+    fn lr_hub_graph_with_sections(shape: Shape, sections: Vec<Vec<String>>, incoming: usize, outgoing: usize) -> Graph {
+        let mut g = Graph { direction: Some(Direction::LeftRight), ..Graph::default() };
+        let hub = g.intern("A", "A", shape, None);
+        g.nodes[hub].sections = sections;
+        for i in 0..incoming {
+            let source = g.intern(&format!("I{i}"), &format!("i{i}"), Shape::Rect, None);
+            g.add_edge(Edge { from: source, to: hub, head: Marker::Arrow, ..Edge::default() });
+        }
+        for i in 0..outgoing {
+            let target = g.intern(&format!("O{i}"), &format!("o{i}"), Shape::Rect, None);
+            g.add_edge(Edge { from: hub, to: target, head: Marker::Arrow, ..Edge::default() });
+        }
+        g
+    }
+
+    /// 들어오는 화살표는 모두 가운데 노드의 왼쪽 테두리 바로 앞 같은 열에 닿고,
+    /// 나가는 흐름은 오른쪽 테두리 바로 뒤 칸에서 시작한다 — 그 줄 수를 센다.
+    fn assert_glyphless_hub_ports_separate(shape: Shape) {
+        let out = rows(render(&lr_hub_graph(shape, 2, 3), &Theme::none(), 80).unwrap());
+        let text = out.join("\n");
+        assert!(!text.contains(['┬', '┴', '┼']), "흐름이 한 점에 모였다:\n{text}");
+        let cells: Vec<Vec<char>> = out.iter().map(|row| row.chars().collect()).collect();
+        let arrow_col = cells.iter().filter_map(|row| row.iter().position(|&c| c == '▶')).min().unwrap();
+        let (hub_width, _) = shape::measure(shape, &[Vec::new()]);
+        let hub_right = arrow_col + hub_width;
+        let incoming_rows = cells.iter().filter(|row| row.get(arrow_col) == Some(&'▶')).count();
+        let outgoing_rows = cells.iter().filter(|row| row.get(hub_right + 1) == Some(&'─')).count();
+        assert_eq!(incoming_rows, 2, "들어오는 흐름이 서로 다른 줄이 아니다:\n{text}");
+        assert_eq!(outgoing_rows, 3, "나가는 흐름이 서로 다른 줄이 아니다:\n{text}");
+    }
+
+    #[test]
+    fn left_right_glyphless_rect_separates_ports_per_flow() {
+        assert_glyphless_hub_ports_separate(Shape::Rect);
+    }
+
+    #[test]
+    fn left_right_glyphless_diamond_separates_ports_per_flow() {
+        assert_glyphless_hub_ports_separate(Shape::Diamond);
+    }
+
+    #[test]
+    fn left_right_glyphless_box_with_one_flow_per_side_keeps_two_rows() {
+        let out = rows(render(&lr_hub_graph(Shape::Rect, 1, 1), &Theme::none(), 80).unwrap());
+        assert_eq!(out, ["┌────┐          ┌────┐", "│ i0 │──▶┌──┐──▶│ o0 │", "└────┘   └──┘   └────┘"]);
+        let out = rows(render(&lr_hub_graph(Shape::Diamond, 1, 1), &Theme::none(), 80).unwrap());
+        assert_eq!(out, ["┌────┐            ┌────┐", "│ i0 │──▶ ╱──╲ ──▶│ o0 │", "└────┘    ╲──╱    └────┘"]);
+    }
+
+    #[test]
+    fn left_right_point_anchored_node_still_converges_flows() {
+        let out = rows(render(&lr_hub_graph(Shape::Start, 0, 3), &Theme::none(), 80).unwrap());
+        assert_eq!(
+            out,
+            ["     ┌────┐", "  ╭─▶│ o0 │", "  │  └────┘", "  │", "  │  ┌────┐", "●─┴┬▶│ o1 │", "   │ └────┘", "   │", "   │ ┌────┐", "   ╰▶│ o2 │", "     └────┘"]
+        );
+        let out = rows(render(&lr_hub_graph(Shape::Event(EventPosition::Start), 0, 3), &Theme::none(), 80).unwrap());
+        assert_eq!(
+            out,
+            ["     ┌────┐", "  ╭─▶│ o0 │", "  │  └────┘", "  │", "  │  ┌────┐", "○─┴┬▶│ o1 │", "   │ └────┘", "   │", "   │ ┌────┐", "   ╰▶│ o2 │", "     └────┘"]
+        );
+    }
+
+    /// 같은 쪽 흐름이 가운데 노드 옆 칸에서 몇 줄로 드나드는지 센다. 들어오는 쪽은 가운데 노드 바로 앞
+    /// 열의 `▶`, 나가는 쪽은 가운데 노드 바로 뒤 열에서 왼쪽(노드 쪽)으로 이어지는 선 글자다.
+    /// 나가는 그래프에서 가운데 노드는 첫 층이라 0열에서 시작한다.
+    fn hub_side_port_rows(out: &[String], hub_width: usize, is_incoming: bool) -> usize {
+        let cells: Vec<Vec<char>> = out.iter().map(|row| row.chars().collect()).collect();
+        if is_incoming {
+            let Some(arrow_col) = cells.iter().filter_map(|row| row.iter().position(|&c| c == '▶')).min() else { return 0 };
+            cells.iter().filter(|row| row.get(arrow_col) == Some(&'▶')).count()
+        } else {
+            const CONNECTS_LEFT: [char; 9] = ['─', '┬', '┴', '┼', '┤', '╮', '╯', '┐', '┘'];
+            cells.iter().filter(|row| row.get(hub_width).is_some_and(|c| CONNECTS_LEFT.contains(c))).count()
+        }
+    }
+
+    #[test]
+    fn left_right_border_box_gives_each_same_side_flow_its_own_row() {
+        const ALL_SHAPES: [Shape; 19] = [
+            Shape::Rect,
+            Shape::Round,
+            Shape::Stadium,
+            Shape::Cylinder,
+            Shape::Diamond,
+            Shape::Hexagon,
+            Shape::Subroutine,
+            Shape::Circle,
+            Shape::Actor,
+            Shape::Interface,
+            Shape::Note,
+            Shape::Plain,
+            Shape::Start,
+            Shape::End,
+            Shape::Anchor,
+            Shape::Event(EventPosition::Start),
+            Shape::Event(EventPosition::Intermediate),
+            Shape::Event(EventPosition::End),
+            Shape::Subprocess,
+        ];
+        let border_boxes: Vec<Shape> = ALL_SHAPES.into_iter().filter(|shape| shape.is_border_box()).collect();
+        assert_eq!(border_boxes.len(), 10, "테두리 상자 도형 10종 전부를 입력 공간으로 쓴다");
+        let mut failures: Vec<String> = Vec::new();
+        for shape in border_boxes {
+            for is_named in [false, true] {
+                let sections = if is_named { vec![vec!["Hub".to_string()]] } else { vec![Vec::new()] };
+                let (hub_width, _) = shape::measure(shape, &sections);
+                for flows in 2..=5 {
+                    for is_incoming in [true, false] {
+                        let (incoming, outgoing) = if is_incoming { (flows, 0) } else { (0, flows) };
+                        let graph = lr_hub_graph_with_sections(shape, sections.clone(), incoming, outgoing);
+                        let Some(lines) = render(&graph, &Theme::none(), 80) else {
+                            failures.push(format!("shape={shape:?} named={is_named} k={flows} incoming={is_incoming}: 렌더링 실패"));
+                            continue;
+                        };
+                        let out = rows(lines);
+                        let port_rows = hub_side_port_rows(&out, hub_width, is_incoming);
+                        if port_rows != flows {
+                            failures.push(format!("shape={shape:?} named={is_named} k={flows} incoming={is_incoming}: 노드 옆 칸 {port_rows}줄\n{}", out.join("\n")));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "같은 쪽 흐름이 노드 옆 칸에서 서로 다른 줄이 아니다({}건):\n{}", failures.len(), failures.join("\n\n"));
     }
 }

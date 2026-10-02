@@ -188,6 +188,20 @@ fn line_style(section: usize, text: &str, theme: &Theme) -> Style {
     }
 }
 
+/// BPMN 렌더링이 그리는 ASCII·한글 밖 글자 중 기본 CJK 모노 폰트(Noto Sans Mono CJK) 커버리지를
+/// 실측한(`fc-list ":family=Noto Sans Mono CJK KR:charset=<코드>"`) 허용 목록. 커버리지 고정 테스트와
+/// BPMN 렌더링 글자 속성 테스트가 함께 참조한다.
+#[cfg(test)]
+pub(crate) const CJK_MONO_COVERED_GLYPHS: &[char] = &[
+    '○', '◎', '◉', '╱', '×', '+', '*', // 게이트웨이 기호·이벤트 위치 글자·기본 흐름 빗금
+    '╲', '‹', '›', // 게이트웨이 마름모 테두리
+    '─', '│', '┌', '┐', '└', '┘', '╭', '╮', '╰', '╯', '├', '┤', '┬', '┴', '┼', // 실선·모서리·이음
+    '━', '┃', '┏', '┓', '┗', '┛', '┣', '┫', '┳', '┻', '╋', // 굵은 선
+    '╌', '╎', '┈', '┊', // 대시선·잔 점선
+    '▶', '◀', '▲', '▼', '▷', '◁', '△', '▽', '∧', '∨', // 채운 화살촉·빈 삼각형·세로 열린 화살촉
+    '«', '»', '…', // 태스크 종류 둘째 줄·잘린 이름
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,15 +282,14 @@ mod tests {
     /// 고정해 재발을 막는다(design 검증 속성 (b)).
     #[test]
     fn diamond_side_glyph_codepoints_are_within_cjk_mono_coverage() {
-        const COVERED: [char; 2] = ['‹', '›'];
         let rows = draw_rows(Shape::Diamond, vec![vec!["ok?".into()]]);
         let body = rows.iter().find(|row| row.contains("ok?")).expect("본문 줄이 있어야 한다");
         let body_chars: Vec<char> = body.chars().collect();
         for ch in [*body_chars.first().unwrap(), *body_chars.last().unwrap()] {
-            assert!(COVERED.contains(&ch), "{ch:?}(U+{:04X})가 커버리지 허용 목록 안에 있어야 한다", ch as u32);
+            assert!(CJK_MONO_COVERED_GLYPHS.contains(&ch), "{ch:?}(U+{:04X})가 커버리지 허용 목록 안에 있어야 한다", ch as u32);
         }
         for excluded in ['⟨', '⟩'] {
-            assert!(!COVERED.contains(&excluded), "{excluded:?}는 커버리지 밖이라 교체됐다");
+            assert!(!CJK_MONO_COVERED_GLYPHS.contains(&excluded), "{excluded:?}는 커버리지 밖이라 교체됐다");
         }
     }
 
@@ -334,17 +347,18 @@ mod tests {
     /// 폰트(Noto Sans Mono CJK) 커버리지 실측 안에 있는지 고정한다(요구사항 5.2,
     /// research.md "글자 커버리지 실측"). `⬠`(U+2B20)·`∗`(U+2217)는 커버리지 밖이라
     /// design §Key Decisions에서 `◎`·`*`로 교체됐다 — 그 교체 결과만 허용 목록에 남는다.
+    /// 흐름 종류별 선(대시선·잔 점선)과 메시지 도착 표식(빈 삼각형 네 방향)도 같은 실측 안이다.
     #[test]
     fn bpmn_glyph_codepoints_are_within_cjk_mono_coverage() {
-        const COVERED: [char; 7] = ['○', '◎', '◉', '╱', '×', '+', '*'];
         let gateway_symbols = ['×', '+', '○', '*', '◎'];
         let event_position_glyphs = ['○', '◎', '◉'];
         let slash = ['╱'];
-        for ch in gateway_symbols.into_iter().chain(event_position_glyphs).chain(slash) {
-            assert!(COVERED.contains(&ch), "{ch:?}(U+{:04X})가 커버리지 허용 목록 안에 있어야 한다", ch as u32);
+        let flow_kind_glyphs = ['╌', '╎', '┈', '┊', '▷', '◁', '△', '▽'];
+        for ch in gateway_symbols.into_iter().chain(event_position_glyphs).chain(slash).chain(flow_kind_glyphs) {
+            assert!(CJK_MONO_COVERED_GLYPHS.contains(&ch), "{ch:?}(U+{:04X})가 커버리지 허용 목록 안에 있어야 한다", ch as u32);
         }
         for excluded in ['⬠', '∗'] {
-            assert!(!COVERED.contains(&excluded), "{excluded:?}는 커버리지 밖이라 교체됐다");
+            assert!(!CJK_MONO_COVERED_GLYPHS.contains(&excluded), "{excluded:?}는 커버리지 밖이라 교체됐다");
         }
     }
 

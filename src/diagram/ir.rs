@@ -63,6 +63,23 @@ impl Shape {
     pub fn is_point_anchored(self) -> bool {
         matches!(self, Shape::Event(_))
     }
+
+    /// 테두리로 둘러싼 상자 도형인지(글자 줄이 없으면 위아래 테두리 두 줄로만 그려진다).
+    pub fn is_border_box(self) -> bool {
+        matches!(
+            self,
+            Shape::Rect
+                | Shape::Round
+                | Shape::Note
+                | Shape::Circle
+                | Shape::Subprocess
+                | Shape::Stadium
+                | Shape::Diamond
+                | Shape::Hexagon
+                | Shape::Subroutine
+                | Shape::Cylinder
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -236,6 +253,34 @@ mod tests {
         let boxed = g.add_group("Backend", None);
         assert_eq!(g.groups[lane].kind, GroupKind::Lane);
         assert_eq!(g.groups[boxed].kind, GroupKind::Box);
+    }
+
+    #[test]
+    fn border_box_predicate_covers_every_shape() {
+        let expectations = [
+            (Shape::Rect, true),
+            (Shape::Round, true),
+            (Shape::Note, true),
+            (Shape::Circle, true),
+            (Shape::Subprocess, true),
+            (Shape::Stadium, true),
+            (Shape::Diamond, true),
+            (Shape::Hexagon, true),
+            (Shape::Subroutine, true),
+            (Shape::Cylinder, true),
+            (Shape::Start, false),
+            (Shape::End, false),
+            (Shape::Event(EventPosition::Start), false),
+            (Shape::Event(EventPosition::Intermediate), false),
+            (Shape::Event(EventPosition::End), false),
+            (Shape::Interface, false),
+            (Shape::Anchor, false),
+            (Shape::Plain, false),
+            (Shape::Actor, false),
+        ];
+        for (shape, expected) in expectations {
+            assert_eq!(shape.is_border_box(), expected, "{shape:?}");
+        }
     }
 }
 

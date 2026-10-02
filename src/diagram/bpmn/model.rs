@@ -168,6 +168,11 @@ impl Model {
         self.participants.iter().position(|p| p.id == id)
     }
 
+    /// 흐름 끝 id → 소속 참여자 인덱스: 참여자 id는 그 자신, 요소 id는 `container`(풀·레인·하위 레인)의 참여자, 그 밖은 `None`.
+    pub fn participant_of_endpoint(&self, id: &str) -> Option<usize> {
+        self.participant_index(id).or_else(|| self.element(id)?.container.as_deref().and_then(|c| self.participant_of_container(c)))
+    }
+
     /// `parent`가 정확히 `parent_id`인 요소들, 선언 순서.
     pub fn children_of<'a>(&'a self, parent_id: &'a str) -> impl Iterator<Item = &'a Element> {
         self.elements.iter().filter(move |e| e.parent.as_deref() == Some(parent_id))
@@ -224,6 +229,29 @@ mod tests {
         assert_eq!(model.participant_index("lane-1"), None);
         assert_eq!(model.participant_index("lane-1-1"), None);
         assert_eq!(model.participant_index("unknown"), None);
+    }
+
+    fn element_in(id: &str, container: Option<&str>) -> Element {
+        Element { id: id.into(), name: id.into(), kind: ElementKind::Task(TaskKind::None), container: container.map(str::to_string), attached_to: None, parent: None }
+    }
+
+    #[test]
+    fn participant_of_endpoint_resolves_participant_lane_sub_lane_and_rejects_poolless_or_unknown() {
+        let mut participants = vec![Participant { id: "customer".into(), name: "고객".into(), lanes: Vec::new() }];
+        participants.extend(nested_model().participants);
+        let model = Model {
+            participants,
+            elements: vec![element_in("in-customer", Some("customer")), element_in("in-lane", Some("lane-1")), element_in("in-sub-lane", Some("lane-1-1")), element_in("in-pool", Some("pool-1")), element_in("no-pool", None)],
+            ..Model::default()
+        };
+        assert_eq!(model.participant_of_endpoint("customer"), Some(0));
+        assert_eq!(model.participant_of_endpoint("in-customer"), Some(0));
+        assert_eq!(model.participant_of_endpoint("pool-1"), Some(1));
+        assert_eq!(model.participant_of_endpoint("in-pool"), Some(1));
+        assert_eq!(model.participant_of_endpoint("in-lane"), Some(1));
+        assert_eq!(model.participant_of_endpoint("in-sub-lane"), Some(1));
+        assert_eq!(model.participant_of_endpoint("no-pool"), None);
+        assert_eq!(model.participant_of_endpoint("unknown"), None);
     }
 
     #[test]
