@@ -257,14 +257,13 @@ fn collect_lane_ids<'a>(lanes: &'a [super::model::Lane], ids: &mut HashSet<&'a s
 /// 흐름 끝의 소속 참여자 인덱스. 끝이 최상위 참여자 id면 그 참여자 자신. 요소를 못 찾거나
 /// `container` 참조가 이미 깨졌으면 `None`(앞 규칙에서 이미 보고된 참조라 뒤 규칙은 건너뛴다).
 fn pool_of(model: &Model, broken_container: &HashSet<&str>, element_id: &str) -> Option<Option<usize>> {
-    if let Some(i) = model.participant_index(element_id) {
-        return Some(Some(i));
+    if model.participant_index(element_id).is_none() {
+        let element = model.element(element_id)?;
+        if broken_container.contains(element.id.as_str()) {
+            return None;
+        }
     }
-    let element = model.element(element_id)?;
-    if broken_container.contains(element.id.as_str()) {
-        return None;
-    }
-    Some(element.container.as_deref().and_then(|c| model.participant_of_container(c)))
+    Some(model.participant_of_endpoint(element_id))
 }
 
 fn check_sequence_flows(model: &Model, broken_flow: &HashSet<&str>, broken_container: &HashSet<&str>, broken_parent: &HashSet<&str>, errors: &mut Vec<ModelError>) {
