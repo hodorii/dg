@@ -1,0 +1,22 @@
+{
+  "feature_name": "layout-group-excess-spacing",
+  "created_at": "2026-10-02T07:50:00Z",
+  "updated_at": "2026-10-06T14:00:00Z",
+  "language": "ko",
+  "phase": "tasks-approved",
+  "approvals": {
+    "bugfix": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": true
+}
