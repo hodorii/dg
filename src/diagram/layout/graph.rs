@@ -36,6 +36,7 @@ pub fn render(graph: &Graph, theme: &Theme, width: usize) -> Option<Vec<Line>> {
     None
 }
 
+#[derive(Clone)]
 struct LayoutNode {
     node: Option<usize>,
     /// 가상 노드가 속한 간선.
@@ -43,6 +44,8 @@ struct LayoutNode {
     layer: usize,
     group: Option<usize>,
     along_size: usize,
+    /// 메시지 끝 칸 때문에 늘리기 전의 흐름축 크기. 배치를 다시 할 때마다 여기서부터 다시 늘린다.
+    content_along_size: usize,
     across_size: usize,
     /// 자기 자신 간선처럼 상자 옆에 더 필요한 칸.
     extra_across: usize,
@@ -66,6 +69,7 @@ impl LayoutNode {
     }
 }
 
+#[derive(Clone)]
 struct Segment {
     edge: usize,
     from: usize,
@@ -103,6 +107,7 @@ struct FoldCandidate {
     others_max: usize,
 }
 
+#[derive(Clone)]
 struct Block {
     group: Option<usize>,
     children: Vec<Child>,
@@ -113,6 +118,7 @@ struct Block {
     registered: bool,
 }
 
+#[derive(Clone)]
 struct Layout<'a> {
     graph: &'a Graph,
     theme: &'a Theme,
@@ -324,13 +330,67 @@ impl<'a> Layout<'a> {
         self.assign_ports();
         self.straighten();
         self.widen_for_straight_lines();
-        self.route();
+        self.route_with_message_end_growth();
         if self.reserve_label_room() {
             self.place();
             self.assign_ports();
             self.straighten();
-            self.route();
+            self.route_with_message_end_growth();
         }
+        // 세로 배치에서는 늘린 노드가 통로 칸 끼우기를 거쳐서야 폭을 바꾸므로, 끼우기 전 상태를 두었다가 넘치면 되돌아간다.
+        // 끼우기 전에 이미 넘치면 끼운 뒤에도 넘치므로 둘 필요가 없다.
+        let before_channel_room = (self.direction == Direction::TopDown && self.has_grown_nodes() && self.fits_width()).then(|| self.clone());
+        self.finish_with_pool_channel_room();
+        if let Some(before_channel_room) = before_channel_room
+            && !self.fits_width()
+        {
+            self.keep_only_growth_that_fits(before_channel_room);
+        }
+    }
+
+    /// 메시지 끝 수만큼 노드를 흐름축으로 늘려 배선한다. 세로 배치는 늘림이 높이라 그대로 늘리고, 가로 배치는 늘림이 곧
+    /// 폭이라 늘리지 않은 배선의 폭에서 남는 만큼만 늘린다.
+    fn route_with_message_end_growth(&mut self) {
+        let wanted = self.along_sizes_for_message_ends();
+        match self.direction {
+            Direction::TopDown => {
+                self.set_along_sizes(&wanted);
+                self.route();
+            }
+            Direction::LeftRight => {
+                self.set_along_sizes(&vec![0; wanted.len()]);
+                self.route();
+                let affordable = self.growth_within_width(&wanted);
+                if self.set_along_sizes(&affordable) {
+                    self.route();
+                }
+            }
+        }
+    }
+
+    /// 가로 배치에서 폭 안에 드는 늘림만 남긴다. 폭은 층마다 가장 큰 노드의 흐름축 크기를 더한 것이라, 늘림이 작은
+    /// 노드부터 그 층의 최대 크기가 커지는 만큼을 남은 폭에서 빼며 고른다 — 한 노드 때문에 다른 노드까지 늘리지 못하는
+    /// 일이 없다. 늘리지 않은 배선이 끝난 뒤에 부른다.
+    fn growth_within_width(&self, wanted: &[usize]) -> Vec<usize> {
+        let mut room = self.width_limit.saturating_sub(self.canvas_size().0);
+        let mut layer_content = self.layer_content.clone();
+        let mut growth_order: Vec<usize> = (0..wanted.len()).filter(|&n| wanted[n] > self.lnodes[n].content_along_size).collect();
+        growth_order.sort_by_key(|&n| (wanted[n] - self.lnodes[n].content_along_size, n));
+        let mut affordable = vec![0; wanted.len()];
+        for n in growth_order {
+            let layer = self.lnodes[n].layer;
+            let widening = wanted[n].saturating_sub(layer_content[layer]);
+            if widening <= room {
+                room -= widening;
+                layer_content[layer] = layer_content[layer].max(wanted[n]);
+                affordable[n] = wanted[n];
+            }
+        }
+        affordable
+    }
+
+    /// 풀 간선 통로 칸을 끼우고 배선을 마친다.
+    fn finish_with_pool_channel_room(&mut self) {
         if self.reserve_pool_channel_room() {
             self.route();
         }
@@ -342,6 +402,7 @@ impl<'a> Layout<'a> {
         self.lnodes.truncate(real_count);
         for node in &mut self.lnodes {
             node.across = 0;
+            node.along_size = node.content_along_size;
         }
         self.segments.clear();
         self.outgoing_of.clear();
@@ -559,7 +620,7 @@ impl<'a> Layout<'a> {
                         (w, if !point_anchored && (h >= 3 || is_crowded_glyphless_box) { h.max(needed) } else { h })
                     }
                 };
-                LayoutNode { node: Some(0), edge: None, layer: 0, group: node.group, along_size, across_size, extra_across: 0, across: 0, sections, point_anchored }
+                LayoutNode { node: Some(0), edge: None, layer: 0, group: node.group, along_size, content_along_size: along_size, across_size, extra_across: 0, across: 0, sections, point_anchored }
             })
             .enumerate()
             .map(|(i, mut n)| {
@@ -770,6 +831,7 @@ impl<'a> Layout<'a> {
                     layer,
                     group,
                     along_size: 0,
+                    content_along_size: 0,
                     across_size: 1,
                     extra_across: 0,
                     across: 0,
@@ -2092,9 +2154,10 @@ impl<'a> Layout<'a> {
             match node.node {
                 Some(n) => {
                     let (x, y) = self.to_canvas(along, node.across);
+                    // 흐름축 크기는 메시지 끝 칸 때문에 측정값보다 클 수 있다.
                     let (min_width, min_height) = match self.direction {
-                        Direction::TopDown => (node.across_size, 0),
-                        Direction::LeftRight => (0, node.across_size),
+                        Direction::TopDown => (node.across_size, node.along_size),
+                        Direction::LeftRight => (node.along_size, node.across_size),
                     };
                     shape::draw(canvas, x, y, self.graph.nodes[n].shape, &node.sections, self.theme, min_width, min_height);
                 }
@@ -2124,17 +2187,8 @@ impl<'a> Layout<'a> {
     /// 풀 간선의 한쪽 끝(흐름축 위치, 교차축 위치, 상대 끝 쪽으로 향하는 교차축 부호). 노드는 상대를
     /// 향한 면 바로 바깥 칸에서, 풀은 상대를 향한 테두리 칸(면)의 흐름축 중앙에서 끝난다.
     fn pool_edge_end(&self, end: usize, other: usize) -> (usize, usize, bool) {
-        let across_range = |n: usize| {
-            if self.is_pool_anchor(n) {
-                let block = &self.blocks[self.lnode_block[n]];
-                (block.start, block.start + block.width - 1)
-            } else {
-                (self.lnodes[n].across, self.lnodes[n].across + self.lnodes[n].across_size - 1)
-            }
-        };
-        let (lo, hi) = across_range(end);
-        let (other_lo, other_hi) = across_range(other);
-        let toward_higher = other_lo + other_hi > lo + hi;
+        let (lo, hi) = self.pool_edge_end_across_range(end);
+        let toward_higher = self.faces_higher_across(end, other);
         if self.is_pool_anchor(end) {
             let block = self.lnode_block[end];
             let along = (self.banner_start(self.lane_depth(block)) + self.lane_along_end(block)) / 2;
@@ -2144,6 +2198,23 @@ impl<'a> Layout<'a> {
             let along = self.node_along(end) + if self.lnodes[end].point_anchored { 0 } else { self.lnodes[end].along_size / 2 };
             (along, if toward_higher { hi + 1 } else { lo.saturating_sub(1) }, toward_higher)
         }
+    }
+
+    /// 풀 간선 끝이 차지하는 교차축 범위: 풀 닻이면 풀 블록, 노드면 상자.
+    fn pool_edge_end_across_range(&self, end: usize) -> (usize, usize) {
+        if self.is_pool_anchor(end) {
+            let block = &self.blocks[self.lnode_block[end]];
+            (block.start, block.start + block.width - 1)
+        } else {
+            (self.lnodes[end].across, self.lnodes[end].across + self.lnodes[end].across_size - 1)
+        }
+    }
+
+    /// 풀 간선 끝 `end`가 상대 `other`를 교차축 큰 쪽에서 마주하는지.
+    fn faces_higher_across(&self, end: usize, other: usize) -> bool {
+        let (lo, hi) = self.pool_edge_end_across_range(end);
+        let (other_lo, other_hi) = self.pool_edge_end_across_range(other);
+        other_lo + other_hi > lo + hi
     }
 
     /// 풀 닻에 닿는 메시지 흐름: 끝에서 교차축으로 나가 풀 바로 바깥 통로까지, 통로를 따라 흐름축으로,
@@ -2189,18 +2260,29 @@ impl<'a> Layout<'a> {
         }
     }
 
-    /// 풀 간선마다 양 끝의 기본 자리. 한 풀의 한 면에 여럿이 붙으면 면 칸을 나눠 준다(표식이 서로 덮지 않게).
+    /// 풀 간선마다 양 끝의 기본 자리. 한 노드의 한 쪽이나 한 풀의 한 면에 여럿이 붙으면 칸을 나눠 준다(표식이 서로
+    /// 덮지 않게). 노드 쪽을 먼저 나눠야 면 칸이 나뉜 노드 쪽 칸 순서를 따라 통로 구간끼리 엇갈리지 않는다.
     fn base_pool_edge_routes(&self) -> Vec<PoolEdgeRoute> {
-        let mut routes: Vec<PoolEdgeRoute> = (0..self.graph.edges.len())
+        let unspread = self.unspread_pool_edge_routes();
+        let mut routes = unspread.clone();
+        self.spread_shared_end_points(&mut routes, &unspread, false, false);
+        self.spread_shared_end_points(&mut routes, &unspread, true, false);
+        // 풀끼리 오가는 메시지의 상대 끝도 풀 면이라 처음엔 나누기 전 자리로 줄 선다. 노드 쪽 끝을 나눈 경로가 붙은 면은
+        // 나눈 자리로 다시 줄 세워야 면 칸이 상대 끝 순서를 따라, 풀끼리 오가는 경로의 다리와 같은 칸에 놓이지 않는다.
+        self.spread_shared_end_points(&mut routes, &unspread, true, true);
+        routes
+    }
+
+    /// 풀 간선마다 양 끝을 `pool_edge_end()` 자리에 둔 경로(칸 나누기 전).
+    fn unspread_pool_edge_routes(&self) -> Vec<PoolEdgeRoute> {
+        (0..self.graph.edges.len())
             .filter(|&i| self.is_pool_edge(i))
             .map(|i| {
                 let edge = &self.graph.edges[i];
                 let is_pool_at_from = self.is_pool_anchor(edge.from);
-                PoolEdgeRoute { edge: i, from: self.pool_edge_end(edge.from, edge.to), to: self.pool_edge_end(edge.to, edge.from), is_pool_at_from, depth: 1, node_side_jog: None }
+                PoolEdgeRoute { edge: i, from: self.pool_edge_end(edge.from, edge.to), to: self.pool_edge_end(edge.to, edge.from), is_pool_at_from, depth: 1, node_side_jog: None, shares_node_side: false }
             })
-            .collect();
-        self.spread_shared_face_points(&mut routes);
-        routes
+            .collect()
     }
 
     /// 풀 간선 경로를 찾는다: 통로를 따라 달리는 구간이 겹치면 면에서 더 먼 통로 줄을 주고, 그러고도 교차축 다리끼리
@@ -2375,12 +2457,14 @@ impl<'a> Layout<'a> {
             .collect()
     }
 
-    /// 교차축 구간 `low..=high`가 경로 풀 블록과 같은 부모 안의 다른 블록을 끝이 아닌 채로 통째로 지나는지.
+    /// 교차축 구간 `low..=high`가 경로 풀 블록과 같은 부모 안의 다른 블록을 끝이 아닌 채로 통째로 지나는지. 칸을
+    /// 끼우기 전에는 깊어진 통로 줄이 그 블록의 먼 테두리에 놓일 수 있는데, 칸을 끼우면 블록을 지나게 되므로 테두리에
+    /// 닿기만 해도 지나는 것으로 센다.
     fn passes_through_sibling_block(&self, route: &PoolEdgeRoute, low: usize, high: usize) -> bool {
         let block = self.lnode_block[route.pool_anchor(self.graph)];
         let parent = self.block_parent(block).unwrap_or(0);
         self.blocks[parent].children.iter().any(|&child| match child {
-            Child::Block(b) => low < self.blocks[b].start && self.blocks[b].start + self.blocks[b].width - 1 < high,
+            Child::Block(b) => low <= self.blocks[b].start && self.blocks[b].start + self.blocks[b].width - 1 <= high,
             Child::Node(_) => false,
         })
     }
@@ -2513,32 +2597,124 @@ impl<'a> Layout<'a> {
         }
     }
 
-    /// 한 풀 면에 붙는 끝이 둘 이상이면 면 중앙을 둘러 칸을 나눠 준다 — 상대 끝의 흐름축 순서대로
-    /// 놓아 통로를 달리는 구간끼리 엇갈리지 않게 한다. 하나뿐이면 면 중앙 그대로다.
-    fn spread_shared_face_points(&self, routes: &mut [PoolEdgeRoute]) {
-        let mut faces: BTreeMap<PoolFace, Vec<FaceAttachment>> = BTreeMap::new();
+    /// 같은 끝 자리(`is_pool`이면 풀 닻의 면, 아니면 노드의 한 쪽)에 붙는 간선 끝 묶음.
+    fn shared_end_groups(&self, routes: &[PoolEdgeRoute], is_pool: bool) -> BTreeMap<EndSide, Vec<EndAttachment>> {
+        let mut groups: BTreeMap<EndSide, Vec<EndAttachment>> = BTreeMap::new();
         for (r, route) in routes.iter().enumerate() {
             let edge = &self.graph.edges[route.edge];
             for (anchor, end, other, is_from) in [(edge.from, route.from, route.to, true), (edge.to, route.to, route.from, false)] {
-                if self.is_pool_anchor(anchor) {
-                    faces.entry((anchor, end.2)).or_default().push(FaceAttachment { other_along: other.0, route: r, is_from });
+                if self.is_pool_anchor(anchor) == is_pool {
+                    groups.entry((anchor, end.2)).or_default().push(EndAttachment { other_along: other.0, route: r, is_from });
                 }
             }
         }
-        for ((anchor, _), mut attachments) in faces {
-            if attachments.len() < 2 {
+        groups
+    }
+
+    /// 한 풀 면이나 한 노드의 한 쪽에 붙는 끝이 둘 이상이면 나누기 전 자리(`unspread`)를 둘러 칸을 나눠 준다 — 상대
+    /// 끝의 흐름축 순서대로 놓아 통로를 달리는 구간끼리 엇갈리지 않게 한다. 하나뿐이면 나누기 전 자리 그대로다.
+    /// `only_beside_shared_node_sides`면 노드 쪽 끝을 나눠 받은 경로가 붙은 면만 다시 나눈다.
+    fn spread_shared_end_points(&self, routes: &mut [PoolEdgeRoute], unspread: &[PoolEdgeRoute], is_pool: bool, only_beside_shared_node_sides: bool) {
+        for ((anchor, _), mut attachments) in self.shared_end_groups(routes, is_pool) {
+            if attachments.len() < 2 || (only_beside_shared_node_sides && !attachments.iter().any(|a| routes[a.route].shares_node_side)) {
+                continue;
+            }
+            let range = if is_pool { self.face_interior(anchor) } else { self.node_end_spread_range(anchor) };
+            // 폭 때문에 늘리지 못한 노드는 끝이 칸 밖으로 밀려나지 않게 지금 칸에 모아 둔다.
+            if !is_pool && range.1 + 1 < range.0 + attachments.len() {
                 continue;
             }
             attachments.sort_unstable_by_key(|a| (a.other_along, a.route, a.is_from));
-            let interior = self.face_interior(anchor);
             let first = &attachments[0];
-            let center = if first.is_from { routes[first.route].from.0 } else { routes[first.route].to.0 };
-            for (attachment, along) in attachments.iter().zip(spread_face_points(center, attachments.len(), interior)) {
+            let center = if first.is_from { unspread[first.route].from.0 } else { unspread[first.route].to.0 };
+            for (attachment, along) in attachments.iter().zip(spread_face_points(center, attachments.len(), range)) {
                 let route = &mut routes[attachment.route];
+                route.shares_node_side |= !is_pool;
                 let end = if attachment.is_from { &mut route.from } else { &mut route.to };
                 end.0 = along;
             }
         }
+    }
+
+    /// 노드 쪽 끝을 나눠 놓을 흐름축 범위: 상자는 모서리를 뺀 안쪽, 점 표기는 글자 칸부터 노드 흐름축 끝까지.
+    fn node_end_spread_range(&self, node: usize) -> (usize, usize) {
+        let along = self.node_along(node);
+        self.node_end_range(node).unwrap_or((along, along + self.lnodes[node].along_size.max(1) - 1))
+    }
+
+    /// 노드마다 한 쪽에 붙는 메시지 끝이 저마다 한 칸씩 들어갈 흐름축 크기(끝이 하나뿐이면 0). 쪽은 교차축 자리만으로
+    /// 정해지므로 배선 전에도 셀 수 있다 — 늘린 크기로 처음부터 배선해 배선을 한 번 더 하지 않는다.
+    fn along_sizes_for_message_ends(&self) -> Vec<usize> {
+        let mut end_counts: BTreeMap<EndSide, usize> = BTreeMap::new();
+        for edge in self.graph.edges.iter().enumerate().filter(|&(i, _)| self.is_pool_edge(i)).map(|(_, edge)| edge) {
+            for (end, other) in [(edge.from, edge.to), (edge.to, edge.from)] {
+                if !self.is_pool_anchor(end) {
+                    *end_counts.entry((end, self.faces_higher_across(end, other))).or_default() += 1;
+                }
+            }
+        }
+        let mut needed = vec![0; self.graph.nodes.len()];
+        for ((node, _), count) in end_counts.into_iter().filter(|&(_, count)| count >= 2) {
+            needed[node] = needed[node].max(along_size_for_spread_ends(self.lnodes[node].point_anchored, count));
+        }
+        needed
+    }
+
+    fn has_grown_nodes(&self) -> bool {
+        self.lnodes.iter().any(|lnode| lnode.along_size > lnode.content_along_size)
+    }
+
+    /// 세로 배치에서 노드를 늘려 통로 칸을 끼운 그림이 폭을 넘었으면, 늘림이 작은 노드부터 몇 개까지 늘려도 폭 안에
+    /// 드는지 찾아 그만큼만 늘린다. 그림 대신 원문이 나오는 것보다 넘치게 만든 노드의 끝이 한 칸에 모이는 편이 낫다.
+    /// 하나도 늘리지 않아도 넘치면 다 늘린 채로 둔다(어차피 폭 안에 들지 않는다). `before_channel_room`은 통로 칸을
+    /// 끼우기 전 상태라, 후보마다 거기서 배선과 칸 끼우기만 다시 한다. 이분 탐색이라 다시 하는 횟수는 로그로 는다.
+    fn keep_only_growth_that_fits(&mut self, before_channel_room: Layout<'a>) {
+        let mut growth_order: Vec<usize> = (0..self.graph.nodes.len()).filter(|&n| before_channel_room.lnodes[n].along_size > before_channel_room.lnodes[n].content_along_size).collect();
+        growth_order.sort_by_key(|&n| (before_channel_room.lnodes[n].along_size - before_channel_room.lnodes[n].content_along_size, n));
+        let mut best = before_channel_room.arranged_with_growth_of(&growth_order[..0]);
+        if !best.fits_width() {
+            return;
+        }
+        let (mut fitting, mut overflowing) = (0, growth_order.len());
+        while overflowing - fitting > 1 {
+            let middle = (fitting + overflowing) / 2;
+            let layout = before_channel_room.arranged_with_growth_of(&growth_order[..middle]);
+            if layout.fits_width() {
+                best = layout;
+                fitting = middle;
+            } else {
+                overflowing = middle;
+            }
+        }
+        *self = best;
+    }
+
+    /// `grown` 노드만 늘리고 나머지는 본디 크기로 둔 채 배선과 통로 칸 끼우기를 다시 한 배치.
+    fn arranged_with_growth_of(&self, grown: &[usize]) -> Layout<'a> {
+        let mut layout = self.clone();
+        let mut sizes = vec![0; self.graph.nodes.len()];
+        for &n in grown {
+            sizes[n] = self.lnodes[n].along_size;
+        }
+        layout.set_along_sizes(&sizes);
+        layout.route();
+        layout.finish_with_pool_channel_room();
+        layout
+    }
+
+    fn fits_width(&self) -> bool {
+        self.canvas_size().0 <= self.width_limit
+    }
+
+    /// 노드 흐름축 크기를 본디 크기와 `needed` 가운데 큰 쪽으로 둔다. 바뀐 노드가 있으면 true.
+    fn set_along_sizes(&mut self, needed: &[usize]) -> bool {
+        let mut has_changed = false;
+        for (lnode, &needed) in self.lnodes.iter_mut().zip(needed) {
+            let along_size = lnode.content_along_size.max(needed);
+            has_changed |= along_size != lnode.along_size;
+            lnode.along_size = along_size;
+        }
+        has_changed
     }
 
     /// 풀 간선 경로를 한 번 찾아 그 결정을 `pool_route_plans`에 남기고 그 경로가 쓸 통로 칸을 끼운다. 다리 비켜 놓기는
@@ -2929,8 +3105,11 @@ fn port_spacing_for(label_width: usize) -> usize {
 /// 풀 닻 노드와 그 풀이 상대를 마주하는 면(교차축 큰 쪽이면 true).
 type PoolFace = (usize, bool);
 
-/// 풀 면 하나에 붙는 간선 끝: 상대 끝의 흐름축 위치, 경로 번호, 출발 쪽 끝인지.
-struct FaceAttachment {
+/// 간선 끝이 붙는 자리: 풀 닻이나 노드, 그리고 교차축 큰 쪽인지.
+type EndSide = (usize, bool);
+
+/// 풀 면이나 노드의 한 쪽에 붙는 간선 끝: 상대 끝의 흐름축 위치, 경로 번호, 출발 쪽 끝인지.
+struct EndAttachment {
     other_along: usize,
     route: usize,
     is_from: bool,
@@ -2948,6 +3127,8 @@ struct PoolEdgeRoute {
     depth: usize,
     /// 노드 쪽 다리가 막힌 칸을 피해 흐름축으로 비켜 지나면 그 꺾음.
     node_side_jog: Option<NodeSideJog>,
+    /// 노드 쪽 끝이 같은 노드 같은 쪽의 다른 끝과 칸을 나눠 받았는지.
+    shares_node_side: bool,
 }
 
 /// 통로에서 노드 쪽으로 꺾여 나가는 다리를 흐름축 `shifted_along`에서 내고, 노드를 품은 풀 바로 바깥 교차축
@@ -3245,7 +3426,13 @@ fn room_beyond(wanted: &[(usize, usize)], granted: &[(usize, usize)]) -> Vec<(us
     total_at(wanted).into_iter().filter_map(|(at, count)| count.checked_sub(granted.get(&at).copied().unwrap_or(0)).filter(|&extra| extra > 0).map(|extra| (at, extra))).collect()
 }
 
-/// 면 중앙을 둘러 `count`칸을 사이에 빈 칸 하나씩 두고(면이 짧으면 붙여서) `interior` 안에 놓는다.
+/// 한 쪽에 끝 `count`개가 저마다 한 칸씩 들어갈 노드 흐름축 크기. 상자는 모서리 두 칸에는 끝을 두지 않고, 점 표기는
+/// 글자 칸부터 끝을 둔다. 끝 사이 빈 칸까지 잡으면 메시지가 많은 문서에서 노드가 두 배로 커져 폭 안에 들지 않는다.
+fn along_size_for_spread_ends(is_point_anchored: bool, count: usize) -> usize {
+    if is_point_anchored { count } else { count + 2 }
+}
+
+/// 가운데(면 중앙이나 노드 쪽 기본 칸)를 둘러 `count`칸을 사이에 빈 칸 하나씩 두고(범위가 짧으면 붙여서) `interior` 안에 놓는다.
 fn spread_face_points(center: usize, count: usize, (low, high): (usize, usize)) -> Vec<usize> {
     let room = high.saturating_sub(low) + 1;
     let spacing = if 2 * (count - 1) < room { 2 } else { 1 };

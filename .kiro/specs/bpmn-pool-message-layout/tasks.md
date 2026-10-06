@@ -46,7 +46,7 @@
   - _Difficulty: high_
   - _Boundary: layout::graph_
   - _Depends: 3.2_
-- [ ] 3.4 노드 쪽 끝 칸 나누기
+- [x] 3.4 노드 쪽 끝 칸 나누기
   - _DoneWhen: 입력 C, D의 TB, LR 출력에서 모든 메시지의 `○`와 빈 삼각형이 노드 쪽에 따로 보이고 선이 합쳐지지 않음_
   - _Requirements: 1.4, 2.4_
   - _Difficulty: high_

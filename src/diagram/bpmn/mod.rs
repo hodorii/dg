@@ -1438,6 +1438,67 @@ mod tests {
         assert_every_message_runs_alone_from_its_circle_to_its_hollow_triangle(source, 3);
     }
 
+    #[test]
+    fn messages_from_two_facing_faces_into_one_node_keep_separate_ends() {
+        // 맞붙은 `고객`과 `공급자`가 저마다 `물류`의 과업 `다`로 보내, 두 메시지가 `다`의 같은 쪽에 붙는다.
+        let sources = [
+            "participants:\n  - p1:\n      name: 판매\n      nodes:\n        - a: task 가\n        - b: task 나\n  - c: 고객\n  - v: 공급자\n  - p2:\n      name: 물류\n      nodes:\n        - y: task 다\n        - x: task 라\nflows:\n  - a --> b\n  - y --> x\n  - c --> x\n  - c --> y\n  - a --> v\n  - b --> v\n  - v --> y\n",
+            "participants:\n  - p1:\n      name: 판매\n      nodes:\n        - a: task 가\n        - b: task 나\n        - d: task 마\n  - c: 고객\n  - v: 공급자\n  - p2:\n      name: 물류\n      nodes:\n        - y: task 다\n        - x: task 라\nflows:\n  - a --> b\n  - b --> d\n  - y --> x\n  - c --> x\n  - a --> v\n  - d --> v\n  - v --> y\n  - c --> y\n",
+        ];
+        for source in sources {
+            assert_every_message_runs_alone_from_its_circle_to_its_hollow_triangle(source, 5);
+        }
+    }
+
+    #[test]
+    fn a_document_crowded_with_messages_still_renders_as_a_picture_within_the_width() {
+        // 과업마다 같은 쪽에 메시지가 열둘씩 붙어, 끝마다 칸을 주려고 과업을 늘리면 가로 배치가 폭 120을 넘는다.
+        let tasks: String = (0..8).map(|k| format!("        - n{k}: task 일{k}\n")).collect();
+        let chain: String = (1..8).map(|k| format!("  - n{} --> n{k}\n", k - 1)).collect();
+        let messages: String = (0..8).flat_map(|k| std::iter::repeat_n(format!("  - n{k} --> c\n"), 12)).collect();
+        let source = format!("participants:\n  - c: 고객\n  - p1:\n      name: 판매\n      nodes:\n{tasks}flows:\n{chain}{messages}");
+        let options = DiagramOptions { direction: Some((Direction::LeftRight, false)), ..DiagramOptions::default() };
+        assert!(render(&source, &Theme::none(), 120, options).is_some(), "메시지가 많아도 폭 안에서 그림으로 그려져야 한다");
+    }
+
+    #[test]
+    fn growing_nodes_for_message_ends_keeps_a_top_down_picture_that_fit_the_width() {
+        // `라3`의 두 끝을 나누려고 늘리면 사이 통로 칸이 늘어 폭 58을 한 칸 넘는다. 늘리지 않은 배치는 폭 안에 든다.
+        let source = "participants:\n  - p0:\n      name: 레0\n      nodes:\n        - n0: task 가0\n  - p1:\n      name: 레1\n      nodes:\n        - n1: task 나1\n        - n2: task 다2\n  - p2:\n      name: 레2\n      nodes:\n        - n3: task 라3\n  - b3: 풀3\nflows:\n  - n1 --> n2\n  - n0 --> n2\n  - n1 --> b3\n  - b3 --> n3\n  - n3 --> n2\n  - n3 --> b3\n";
+        let options = DiagramOptions { direction: Some((Direction::TopDown, false)), ..DiagramOptions::default() };
+        let (_, lines) = render(source, &Theme::none(), 58, options).expect("렌더링돼야 한다");
+        let rows: Vec<String> = lines.iter().map(Line::plain).collect();
+        assert_eq!(row_of_text(&rows, "레0"), row_of_text(&rows, "풀3"), "풀이 옆으로 늘어선 세로 배치여야 한다:\n{}", rows.join("\n"));
+    }
+
+    #[test]
+    fn a_node_that_fits_its_grown_size_keeps_separate_ends_beside_a_node_that_cannot_grow() {
+        // `허브`의 서른 끝을 나누려고 늘리면 폭 52를 넘지만, `가`의 여섯 끝만 나누면 폭 안에 든다.
+        let messages: String = std::iter::repeat_n("  - h --> c\n", 30).chain(std::iter::repeat_n("  - k --> c\n", 6)).collect();
+        let source = format!("participants:\n  - c: 고객\n  - p1:\n      name: 판매\n      nodes:\n        - k: task 가\n        - h: task 허브\nflows:\n  - k --> h\n{messages}");
+        let options = DiagramOptions { direction: Some((Direction::LeftRight, false)), ..DiagramOptions::default() };
+        let (_, lines) = render(&source, &Theme::none(), 50, options).expect("렌더링돼야 한다");
+        let rows: Vec<String> = lines.iter().map(Line::plain).collect();
+        let grid = crate::diagram::rendered_picture::display_grid(&rows);
+        let node_box = box_around(&rows, &grid, "가");
+        let circles = (node_box.left..=node_box.right).filter(|&col| grid[node_box.bottom + 1][col] == '○').count();
+        assert_eq!(circles, 6, "`가` 아래에 메시지 여섯의 ○가 따로 보여야 한다:\n{}", rows.join("\n"));
+    }
+
+    #[test]
+    fn a_leg_whose_deeper_channel_lands_on_a_pool_border_still_counts_as_passing_that_pool() {
+        // `가0`에서 `풀1`로 가는 메시지가 `풀2`를 지나는데, 칸을 끼우기 전에는 깊어진 통로 줄이 `풀2` 테두리에 놓인다.
+        let source = "participants:\n  - p0:\n      name: 레0\n      nodes:\n        - n0: task 가0\n  - b1: 풀1\n  - b2: 풀2\nflows:\n  - b2 --> b1\n  - b1 --> b2\n  - n0 --> b1\n  - n0 --> b2\n  - b2 --> n0\n";
+        assert_no_defect_in(&[Direction::LeftRight], source, |_, _, grid| messages_running_alone_defect(grid, 5));
+    }
+
+    #[test]
+    fn messages_between_blackbox_pools_keep_apart_from_split_node_ends() {
+        // `가0`의 세 끝을 나누면 `풀0` 면의 칸 순서가 바뀌어, 풀끼리 오가는 `풀0 → 풀1`과 같은 통로 줄을 쓸 수 있다.
+        let source = "participants:\n  - b0: 풀0\n  - b1: 풀1\n  - p2:\n      name: 풀2\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\nflows:\n  - n0 --> n1\n  - b1 --> n0\n  - b0 --> n0\n  - n0 --> b0\n  - b0 --> b1\n  - n1 --> b1\n  - b1 --> b0\n";
+        assert_no_defect_in(&[Direction::LeftRight], source, |_, _, grid| messages_running_alone_defect(grid, 6));
+    }
+
     /// 메시지마다 ○ 꼬리에서 빈 삼각형까지 이어지고, 그 선이 `boxed_node_needles`로 찾은 어느 노드 상자도
     /// 지나지 않는지 본다. 표식은 상자 바로 바깥에 붙으므로 끝 노드 상자도 선 칸을 품지 않는다 — 끝 노드를
     /// 따로 빼지 않아도 된다. 선이 상자 테두리를 지나면 그 칸이 이음 글자로 바뀌어 거슬러 가기가 거기서 멈추므로
