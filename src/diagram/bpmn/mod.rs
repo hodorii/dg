@@ -1001,7 +1001,7 @@ mod tests {
         heading: Heading,
     }
 
-    /// `start` 다음 칸부터 선을 따라간다. 꺾임은 따라 돌고 `┼`(풀 테두리를 넘는 칸)는 곧장 지나며
+    /// `start` 다음 칸부터 선을 따라간다. 꺾임은 따라 돌고 `┼`(풀 테두리를 넘는 칸)와 `◠`(다른 선을 건너뛰는 칸)는 곧장 지나며
     /// 곧은 선 글자만 모은다. 선이 아닌 칸(표식, 노드 테두리, 빈칸)에서 멈춘다.
     fn trace_line(grid: &[Vec<char>], start: Cell, mut heading: Heading) -> Trace {
         let mut position = (start.0 as isize, start.1 as isize);
@@ -1015,7 +1015,7 @@ mod tests {
             match cell {
                 '─' | '╌' | '┈' if is_moving_sideways => straights.push(cell),
                 '│' | '╎' | '┊' if !is_moving_sideways => straights.push(cell),
-                '┼' => {}
+                '┼' | '◠' => {}
                 _ => match turn(cell, heading) {
                     Some(next) => heading = next,
                     None => return Trace { straights, line_cells, stop: cell, stop_cell: here, heading },
@@ -1269,8 +1269,13 @@ mod tests {
 
     /// 가로, 세로 배치 각각의 결함을 모아 한 번에 알린다. 첫 배치에서 멈추면 다른 배치의 결함이 가려진다.
     fn assert_no_defect_in_either_direction(source: &str, defect_in: impl Fn(Direction, &[String], &[Vec<char>]) -> Result<(), String>) {
-        let defects: Vec<String> = [Direction::LeftRight, Direction::TopDown]
-            .into_iter()
+        assert_no_defect_in(&[Direction::LeftRight, Direction::TopDown], source, defect_in);
+    }
+
+    fn assert_no_defect_in(directions: &[Direction], source: &str, defect_in: impl Fn(Direction, &[String], &[Vec<char>]) -> Result<(), String>) {
+        let defects: Vec<String> = directions
+            .iter()
+            .copied()
             .filter_map(|direction| {
                 let rows = yaml_rows(source, direction);
                 let grid = crate::diagram::rendered_picture::display_grid(&rows);
@@ -1317,33 +1322,66 @@ mod tests {
     /// 메시지 `message_count`개가 모두 저마다의 ○ 꼬리에서 대시 선을 따라 저마다의 빈 삼각형에 닿는지 본다.
     /// 선이 다른 메시지 선과 이음 글자로 합쳐지면 거슬러 가기가 그 글자에서 멈추고, 끝 칸이 겹치면 표식이 모자란다.
     fn assert_every_message_runs_alone_from_its_circle_to_its_hollow_triangle(source: &str, message_count: usize) {
-        assert_no_defect_in_either_direction(source, |_, _, grid| {
-            let heads = marker_cells(grid, HOLLOW_TRIANGLES);
-            require(heads.len() == message_count, || format!("메시지 {message_count}개마다 빈 삼각형이 하나씩 보여야 한다({}개)", heads.len()))?;
-            let traces: Vec<Trace> = heads.iter().map(|&head| trace_back_from_head(grid, head)).collect();
-            for (head, trace) in heads.iter().zip(&traces) {
-                require(trace.stop == '○', || format!("{head:?}의 빈 삼각형을 거슬러 가면 다른 선과 합쳐지지 않고 ○ 꼬리에 닿아야 한다({:?}에서 {:?})", trace.stop_cell, trace.stop))?;
-                require(trace.straights.iter().all(|c| "╌╎".contains(*c)), || format!("{head:?}의 메시지는 대시 선이어야 한다"))?;
-            }
-            let tails: BTreeSet<Cell> = traces.iter().map(|trace| trace.stop_cell).collect();
-            require(tails.len() == message_count, || format!("메시지 {message_count}개마다 ○ 꼬리가 따로 있어야 한다({}개)", tails.len()))?;
-            // `┼`는 직교 교차라 두 선이 함께 지나도 된다. 그 밖의 칸을 함께 쓰면 같은 칸을 같은 방향으로 쓴 것이다.
-            let mut owner_of_cell = std::collections::BTreeMap::new();
-            for (head, trace) in heads.iter().zip(&traces) {
-                for &cell in trace.line_cells.iter().filter(|&&(row, col)| grid[row][col] != '┼') {
-                    if let Some(other_head) = owner_of_cell.insert(cell, *head) {
-                        return Err(format!("{other_head:?}와 {head:?}의 메시지 선이 {cell:?} 칸을 함께 쓰면 안 된다"));
-                    }
+        assert_no_defect_in_either_direction(source, |_, _, grid| messages_running_alone_defect(grid, message_count));
+    }
+
+    fn messages_running_alone_defect(grid: &[Vec<char>], message_count: usize) -> Result<(), String> {
+        let heads = marker_cells(grid, HOLLOW_TRIANGLES);
+        require(heads.len() == message_count, || format!("메시지 {message_count}개마다 빈 삼각형이 하나씩 보여야 한다({}개)", heads.len()))?;
+        let traces: Vec<Trace> = heads.iter().map(|&head| trace_back_from_head(grid, head)).collect();
+        for (head, trace) in heads.iter().zip(&traces) {
+            require(trace.stop == '○', || format!("{head:?}의 빈 삼각형을 거슬러 가면 다른 선과 합쳐지지 않고 ○ 꼬리에 닿아야 한다({:?}에서 {:?})", trace.stop_cell, trace.stop))?;
+            require(trace.straights.iter().all(|c| "╌╎".contains(*c)), || format!("{head:?}의 메시지는 대시 선이어야 한다"))?;
+        }
+        let tails: BTreeSet<Cell> = traces.iter().map(|trace| trace.stop_cell).collect();
+        require(tails.len() == message_count, || format!("메시지 {message_count}개마다 ○ 꼬리가 따로 있어야 한다({}개)", tails.len()))?;
+        // `┼`와 `◠`는 직교 교차라 두 선이 함께 지나도 된다. 그 밖의 칸을 함께 쓰면 같은 칸을 같은 방향으로 쓴 것이다.
+        let mut owner_of_cell = std::collections::BTreeMap::new();
+        for (head, trace) in heads.iter().zip(&traces) {
+            for &cell in trace.line_cells.iter().filter(|&&(row, col)| !"┼◠".contains(grid[row][col])) {
+                if let Some(other_head) = owner_of_cell.insert(cell, *head) {
+                    return Err(format!("{other_head:?}와 {head:?}의 메시지 선이 {cell:?} 칸을 함께 쓰면 안 된다"));
                 }
             }
-            Ok(())
-        });
+        }
+        Ok(())
     }
 
     #[test]
     fn facing_pools_and_a_pool_in_between_keep_every_message_line_apart() {
         let source = "participants:\n  - c: 고객\n  - v: 공급자\n  - w: 은행\n  - p1:\n      name: 판매\n      nodes:\n        - a: task 가\n        - b: task 나\n        - d: task 다\nflows:\n  - a --> b\n  - b --> d\n  - c --> v\n  - c --> w\n  - v --> c\n  - v --> a\n  - b --> c\n";
         assert_every_message_runs_alone_from_its_circle_to_its_hollow_triangle(source, 5);
+    }
+
+    /// `고객`과 `공급자`가 맞붙고, 고객이 공급자 너머 `물류`로 보내는 메시지와 `판매`에서 공급자로 오는 메시지가
+    /// 두 풀 사이 통로를 함께 쓰는 문서. 앞 메시지는 고객 면에서, 뒤 메시지는 공급자 면에서 통로로 꺾인다.
+    const FACING_POOLS_SHARING_ONE_GAP: &str = "participants:\n  - p1:\n      name: 판매\n      nodes:\n        - a: task 가\n  - c: 고객\n  - v: 공급자\n  - p2:\n      name: 물류\n      nodes:\n        - y: task 나\n        - x: task 다\nflows:\n  - y --> x\n  - c --> x\n  - a --> v\n  - v --> y\n";
+
+    /// `pool_title` 풀이 `neighbor_title` 풀을 마주하는 면에서 `marker` 표식이 붙은 메시지가 면 바로 바깥 칸에서
+    /// 통로로 꺾이는지 — 그 꺾임 칸을 돌려준다.
+    fn channel_corner_outside_face(rows: &[String], grid: &[Vec<char>], direction: Direction, (pool_title, neighbor_title): (&str, &str), marker: &str) -> Result<Cell, String> {
+        let (face, inward) = pool_face_toward(rows, grid, pool_title, neighbor_title, direction);
+        let markers: Vec<Cell> = face.into_iter().filter(|&(row, col)| marker.contains(grid[row][col])).collect();
+        require(markers.len() == 1, || format!("`{pool_title}` 면에 `{marker}` 표식이 하나 있어야 한다({}개)", markers.len()))?;
+        let outside = step(markers[0], opposite(inward));
+        let corner = cell_at(grid, outside).unwrap_or(' ');
+        require("╭╮╰╯".contains(corner), || format!("`{pool_title}` 면의 메시지는 면 바로 바깥 통로 줄에서 꺾여야 한다({outside:?}에 {corner:?})"))?;
+        Ok((outside.0 as usize, outside.1 as usize))
+    }
+
+    #[test]
+    fn messages_of_two_facing_pools_take_separate_rows_of_the_gap_between_them() {
+        assert_no_defect_in_either_direction(FACING_POOLS_SHARING_ONE_GAP, |direction, rows, grid| {
+            messages_running_alone_defect(grid, 3)?;
+            // 두 메시지는 저마다 자기 풀 면 바로 바깥 줄을 쓰고, 한 줄뿐인 간격이면 칸을 끼워 두 줄이 갈라진다.
+            let sent_by_customer = channel_corner_outside_face(rows, grid, direction, ("고객", "공급자"), "○")?;
+            let received_by_supplier = channel_corner_outside_face(rows, grid, direction, ("공급자", "고객"), HOLLOW_TRIANGLES)?;
+            let rows_apart = match direction {
+                Direction::LeftRight => (sent_by_customer.0, received_by_supplier.0),
+                _ => (sent_by_customer.1, received_by_supplier.1),
+            };
+            require(rows_apart.0 < rows_apart.1, || format!("고객 면의 통로 줄 {}이 공급자 면의 통로 줄 {}보다 고객 쪽에 따로 있어야 한다", rows_apart.0, rows_apart.1))
+        });
     }
 
     #[test]

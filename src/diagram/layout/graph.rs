@@ -2195,8 +2195,7 @@ impl<'a> Layout<'a> {
         self.spread_shared_face_points(&mut routes);
         let mut channel_groups: BTreeMap<PoolFace, Vec<usize>> = BTreeMap::new();
         for (r, route) in routes.iter().enumerate() {
-            let anchor = if route.is_pool_at_from { self.graph.edges[route.edge].from } else { self.graph.edges[route.edge].to };
-            channel_groups.entry((anchor, route.pool_end().2)).or_default().push(r);
+            channel_groups.entry((route.pool_anchor(self.graph), route.pool_end().2)).or_default().push(r);
         }
         for members in channel_groups.values() {
             let spans: Vec<(usize, usize)> = members.iter().map(|&r| (routes[r].other_end().0, routes[r].pool_end().0)).collect();
@@ -2205,6 +2204,33 @@ impl<'a> Layout<'a> {
             }
         }
         routes
+    }
+
+    /// 경로를 통로가 놓이는 사이 통로(풀 쪽 끝의 면과 그 면이 마주한 이웃 사이)별로 묶는다.
+    fn routes_by_channel_gap(&self, routes: &[PoolEdgeRoute]) -> BTreeMap<ChannelGap, Vec<usize>> {
+        let mut gaps: BTreeMap<ChannelGap, Vec<usize>> = BTreeMap::new();
+        for (r, route) in routes.iter().enumerate() {
+            gaps.entry(self.channel_gap_of(route)).or_default().push(r);
+        }
+        gaps
+    }
+
+    /// 경로의 통로가 놓이는 사이 통로. 풀 블록과 같은 부모 안의 형제 가운데 그 면이 마주한 가장 가까운 것이
+    /// 맞은편이다 — 맞은편 풀의 면에서 센 통로도 같은 사이 통로로 묶인다.
+    fn channel_gap_of(&self, route: &PoolEdgeRoute) -> ChannelGap {
+        let (_, face, toward_higher) = route.pool_end();
+        let block = self.lnode_block[route.pool_anchor(self.graph)];
+        let parent = self.block_parent(block).unwrap_or(0);
+        let sibling_extents = self.blocks[parent].children.iter().filter_map(|&child| match child {
+            Child::Block(b) if b == block => None,
+            Child::Block(b) => Some((self.blocks[b].start, self.blocks[b].start + self.blocks[b].width - 1)),
+            Child::Node(n) => Some((self.lnodes[n].across, self.lnodes[n].across + self.lnodes[n].footprint().max(1) - 1)),
+        });
+        if toward_higher {
+            ChannelGap { low_face: Some(face), high_face: sibling_extents.map(|(start, _)| start).filter(|&start| start > face).min() }
+        } else {
+            ChannelGap { low_face: sibling_extents.map(|(_, end)| end).filter(|&end| end < face).max(), high_face: Some(face) }
+        }
     }
 
     /// 한 풀 면에 붙는 끝이 둘 이상이면 면 중앙을 둘러 칸을 나눠 준다 — 상대 끝의 흐름축 순서대로
@@ -2237,27 +2263,40 @@ impl<'a> Layout<'a> {
         }
     }
 
-    /// 통로 깊이가 풀 사이 간격에 다 들어가지 않으면 그 면 바깥에 모자란 칸을 끼워 넣는다.
+    /// 통로 깊이가 풀 사이 간격에 다 들어가지 않으면 그 사이 통로에 모자란 칸을 끼워 넣는다.
     fn reserve_pool_channel_room(&mut self) -> bool {
-        // 바깥쪽 통로와 이웃 사이에 빈 칸 하나는 남긴다(간격이 한 칸뿐이면 그 칸이 곧 통로다).
-        let room = self.gap_across().saturating_sub(1).max(1);
-        let mut deepest: BTreeMap<(usize, bool), usize> = BTreeMap::new();
-        for route in self.pool_edge_routes() {
-            let (_, face, toward_higher) = route.pool_end();
-            let depth = deepest.entry((face, toward_higher)).or_default();
-            *depth = (*depth).max(route.depth);
+        let routes = self.pool_edge_routes();
+        let mut insertions: Vec<(usize, usize)> = Vec::new();
+        for (gap, members) in self.routes_by_channel_gap(&routes) {
+            if faces_share_channel_rows(&routes, &members) {
+                insertions.extend(facing_gap_insertion(gap, &routes, &members));
+            } else {
+                insertions.extend(self.single_face_insertions(&routes, &members));
+            }
         }
-        let mut insertions: Vec<(usize, usize)> = deepest
-            .into_iter()
-            .filter(|&(_, depth)| depth > room)
-            .map(|((face, toward_higher), depth)| (if toward_higher { face + 1 } else { face }, depth - room))
-            .collect();
         // 뒤쪽부터 끼워야 앞쪽 끼울 자리가 밀리지 않는다.
         insertions.sort_unstable_by(|a, b| b.cmp(a));
         for &(at, count) in &insertions {
             self.insert_across(at, count);
         }
         !insertions.is_empty()
+    }
+
+    /// 한 면 쪽 통로만 쓰는 사이 통로에 끼울 (위치, 칸 수): 면마다 가장 깊은 통로가 남는 칸을 넘는 만큼 면 바깥에.
+    fn single_face_insertions(&self, routes: &[PoolEdgeRoute], members: &[usize]) -> Vec<(usize, usize)> {
+        // 바깥쪽 통로와 이웃 사이에 빈 칸 하나는 남긴다(간격이 한 칸뿐이면 그 칸이 곧 통로다).
+        let room = self.gap_across().saturating_sub(1).max(1);
+        let mut deepest: BTreeMap<(usize, bool), usize> = BTreeMap::new();
+        for &r in members {
+            let (_, face, toward_higher) = routes[r].pool_end();
+            let depth = deepest.entry((face, toward_higher)).or_default();
+            *depth = (*depth).max(routes[r].depth);
+        }
+        deepest
+            .into_iter()
+            .filter(|&(_, depth)| depth > room)
+            .map(|((face, toward_higher), depth)| (if toward_higher { face + 1 } else { face }, depth - room))
+            .collect()
     }
 
     /// 경로의 가로 조각 가운데 가장 긴 것에 라벨을 가운데 맞춰 얹는다(들어갈 때만).
@@ -2598,6 +2637,26 @@ impl PoolEdgeRoute {
         if self.is_pool_at_from { self.from } else { self.to }
     }
 
+    fn pool_anchor(&self, graph: &Graph) -> usize {
+        let edge = &graph.edges[self.edge];
+        if self.is_pool_at_from { edge.from } else { edge.to }
+    }
+
+    /// 두 끝이 흐름축으로 어긋나 통로 줄을 따라 달리는지. 어긋나지 않으면 교차축으로 곧게 그어 줄을 쓰지 않는다.
+    fn runs_along_channel(&self) -> bool {
+        self.from.0 != self.to.0
+    }
+
+    /// 통로 줄을 세는 면이 사이 통로의 낮은 쪽(교차축 작은 쪽)인지.
+    fn counts_from_low_face(&self) -> bool {
+        self.pool_end().2
+    }
+
+    /// 통로를 따라 달리는 흐름축 구간(양 끝 포함).
+    fn along_span(&self) -> (usize, usize) {
+        (self.from.0.min(self.to.0), self.from.0.max(self.to.0))
+    }
+
     fn other_end(&self) -> (usize, usize, bool) {
         if self.is_pool_at_from { self.to } else { self.from }
     }
@@ -2606,6 +2665,30 @@ impl PoolEdgeRoute {
         let (_, face, toward_higher) = self.pool_end();
         if toward_higher { face + self.depth } else { face.saturating_sub(self.depth) }
     }
+}
+
+/// 형제 블록 사이 간격 하나: 낮은 쪽 블록의 면과 높은 쪽 블록의 면(교차축). 그쪽에 형제가 없으면 `None`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ChannelGap {
+    low_face: Option<usize>,
+    high_face: Option<usize>,
+}
+
+/// 사이 통로의 두 면에서 각각 센 통로 줄이 같은 칸에 놓여 선이 합쳐질 수 있는지: 두 면 쪽 경로 가운데 통로를
+/// 따라 달리는 구간이 겹치는 짝이 있으면 그렇다. 겹치지 않으면 같은 줄을 나눠 써도 선이 닿지 않는다.
+fn faces_share_channel_rows(routes: &[PoolEdgeRoute], members: &[usize]) -> bool {
+    let row_users: Vec<&PoolEdgeRoute> = members.iter().map(|&r| &routes[r]).filter(|route| route.runs_along_channel()).collect();
+    let (low_face_users, high_face_users): (Vec<&PoolEdgeRoute>, Vec<&PoolEdgeRoute>) = row_users.into_iter().partition(|route| route.counts_from_low_face());
+    low_face_users.iter().any(|low| high_face_users.iter().any(|high| low.along_span().0 <= high.along_span().1 && high.along_span().0 <= low.along_span().1))
+}
+
+/// 마주 보는 사이 통로의 두 면에서 센 줄 수 합이 간격보다 크면 높은 쪽 면 앞에 끼울 (위치, 칸 수).
+fn facing_gap_insertion(gap: ChannelGap, routes: &[PoolEdgeRoute], members: &[usize]) -> Option<(usize, usize)> {
+    let (low_face, high_face) = (gap.low_face?, gap.high_face?);
+    let deepest_from = |is_low_face: bool| members.iter().map(|&r| &routes[r]).filter(|route| route.runs_along_channel() && route.counts_from_low_face() == is_low_face).map(|route| route.depth).max().unwrap_or(0);
+    let rows_needed = deepest_from(true) + deepest_from(false);
+    let rows_available = high_face.saturating_sub(low_face + 1);
+    (rows_needed > rows_available).then(|| (high_face, rows_needed - rows_available))
 }
 
 /// 면 중앙을 둘러 `count`칸을 사이에 빈 칸 하나씩 두고(면이 짧으면 붙여서) `interior` 안에 놓는다.
