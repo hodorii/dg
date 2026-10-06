@@ -12,7 +12,7 @@ use crate::diagram::layout::shape;
 use crate::line::Line;
 use crate::style::{Style, Theme};
 use crate::text::{truncate, width_of};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub fn render(graph: &Graph, theme: &Theme, width: usize) -> Option<Vec<Line>> {
     if graph.nodes.is_empty() {
@@ -159,6 +159,8 @@ struct Layout<'a> {
     debug: bool,
     /// 캔버스 가로 한도. 이웃 교환은 이 폭을 넘기는 후보를 받지 않는다.
     width_limit: usize,
+    /// 칸 끼우기 단계에서 찾은 풀 간선 경로의 결정(`base_pool_edge_routes()` 순서). 그리기가 다시 찾지 않고 쓴다.
+    pool_route_plans: Vec<PoolRoutePlan>,
 }
 
 const GAP_ALONG_MIN: usize = 3;
@@ -185,6 +187,8 @@ const FOLD_PATIENCE: usize = 12;
 /// 가릴 수 없다는 게 확인됐다(research.md) — 그래서 원안대로 되돌렸다: 12초 밖 입력은
 /// bugfix.md 2.4에 따라 결과가 바뀔 수 있고 그게 맞다.
 const FOLD_SEGMENT_LIMIT: usize = 1500;
+/// 다리 비켜 놓기 탐색이 경로 하나당 받는 옮김 수의 상한.
+const LEG_MOVES_PER_ROUTE: usize = 4;
 
 /// 지금 순서대로 놓되, 놓을 항목에 아직 놓이지 않은 보내는 항목(`precedence`의 앞)이 있으면 그것을
 /// 지금 순서대로(재귀로) 먼저 놓는다. 제약이 없는 항목끼리의 앞뒤는 그대로다. 순환에 걸린 제약은
@@ -349,6 +353,7 @@ impl<'a> Layout<'a> {
         self.lnode_block.clear();
         self.extra_across = 0;
         self.block_extra.clear();
+        self.pool_route_plans.clear();
     }
 
     /// 가장 넓은 줄의 맨 오른쪽 자식을 아래로 내린다. 나눌 줄이 없으면 false.
@@ -593,6 +598,7 @@ impl<'a> Layout<'a> {
             block_extra: Vec::new(),
             debug: std::env::var_os("DG_DEBUG").is_some(),
             width_limit: usize::MAX,
+            pool_route_plans: Vec::new(),
         };
         for edge in &graph.edges {
             if edge.from == edge.to {
@@ -2148,22 +2154,24 @@ impl<'a> Layout<'a> {
             Direction::LeftRight => Direction::TopDown,
         };
         let style = self.theme.diagram_line;
-        for route in self.pool_edge_routes() {
+        for route in self.planned_pool_edge_routes() {
+            debug_assert!(self.channel_fits_its_gap(&route), "통로 줄은 끼워 둔 사이 통로 칸 안에 놓여야 한다");
             let edge = &self.graph.edges[route.edge];
             let (from_along, from_across, from_toward_higher) = route.from;
             let (to_along, to_across, to_toward_higher) = route.to;
-            let channel = route.channel();
-            if from_along == to_along {
-                // 통로를 따라갈 구간이 없다 — 길이 0인 흐름축 조각을 그으면 통로 칸이 `┼`로 합쳐진다.
-                self.line_across(canvas, from_across, to_across, from_along, edge.kind, style);
-            } else {
-                self.line_across(canvas, from_across, channel, from_along, edge.kind, style);
-                self.line_along(canvas, from_along, to_along, channel, edge.kind, style);
-                self.line_across(canvas, channel, to_across, to_along, edge.kind, style);
-                for along in [from_along, to_along] {
-                    let (x, y) = self.to_canvas(along, channel);
-                    canvas.join(x, y, 0, edge.kind, style, true);
+            let waypoints = route.waypoints();
+            let corners = corner_points(&waypoints);
+            for piece in corners.windows(2) {
+                let ((along0, across0), (along1, across1)) = (piece[0], piece[1]);
+                if along0 == along1 {
+                    self.line_across(canvas, across0, across1, along0, edge.kind, style);
+                } else {
+                    self.line_along(canvas, along0, along1, across0, edge.kind, style);
                 }
+            }
+            for &(along, across) in corners.iter().skip(1).take(corners.len().saturating_sub(2)) {
+                let (x, y) = self.to_canvas(along, across);
+                canvas.join(x, y, 0, edge.kind, style, true);
             }
             for (marker, along, across, toward_higher) in [(edge.tail, from_along, from_across, from_toward_higher), (edge.head, to_along, to_across, to_toward_higher)] {
                 let glyphs = marker_glyphs(marker, cross_direction, toward_higher);
@@ -2176,34 +2184,306 @@ impl<'a> Layout<'a> {
                 }
             }
             if !edge.label.is_empty() {
-                self.draw_pool_edge_label(canvas, &edge.label.replace('\n', " "), (from_along, from_across), (to_along, to_across), channel);
+                self.draw_pool_edge_label(canvas, &edge.label.replace('\n', " "), &waypoints);
             }
         }
     }
 
-    /// 풀 간선마다 양 끝과 통로. 한 풀의 한 면에 여럿이 붙으면 면 칸을 나눠 주고(표식이 서로 덮지
-    /// 않게), 통로를 따라 달리는 구간이 겹치면 면에서 더 먼 통로 줄을 준다.
-    fn pool_edge_routes(&self) -> Vec<PoolEdgeRoute> {
+    /// 풀 간선마다 양 끝의 기본 자리. 한 풀의 한 면에 여럿이 붙으면 면 칸을 나눠 준다(표식이 서로 덮지 않게).
+    fn base_pool_edge_routes(&self) -> Vec<PoolEdgeRoute> {
         let mut routes: Vec<PoolEdgeRoute> = (0..self.graph.edges.len())
             .filter(|&i| self.is_pool_edge(i))
             .map(|i| {
                 let edge = &self.graph.edges[i];
                 let is_pool_at_from = self.is_pool_anchor(edge.from);
-                PoolEdgeRoute { edge: i, from: self.pool_edge_end(edge.from, edge.to), to: self.pool_edge_end(edge.to, edge.from), is_pool_at_from, depth: 1 }
+                PoolEdgeRoute { edge: i, from: self.pool_edge_end(edge.from, edge.to), to: self.pool_edge_end(edge.to, edge.from), is_pool_at_from, depth: 1, node_side_jog: None }
             })
             .collect();
         self.spread_shared_face_points(&mut routes);
+        routes
+    }
+
+    /// 풀 간선 경로를 찾는다: 통로를 따라 달리는 구간이 겹치면 면에서 더 먼 통로 줄을 주고, 그러고도 교차축 다리끼리
+    /// 같은 칸을 같은 방향으로 쓰면 다리를 흐름축으로 비켜 놓는다.
+    fn search_pool_edge_routes(&self) -> Vec<PoolEdgeRoute> {
+        let mut routes = self.depth_only_pool_edge_routes();
+        self.separate_colliding_legs(&mut routes);
+        routes
+    }
+
+    /// 칸을 끼우기 전에 찾아 둔 결정(`pool_route_plans`)을 지금 배치의 기본 자리에 입혀 그릴 경로를 만든다. 결정은
+    /// 기본 자리에서 옮긴 칸 수와 통로 깊이라 칸을 끼워 좌표가 밀려도 그대로 맞는다. 끼운 뒤에 다시 찾으면 끼운 칸보다
+    /// 깊은 통로 줄이 나와 풀 테두리 위에 그어질 수 있다.
+    fn planned_pool_edge_routes(&self) -> Vec<PoolEdgeRoute> {
+        let mut routes = self.base_pool_edge_routes();
+        if self.pool_route_plans.len() != routes.len() {
+            debug_assert!(false, "풀 간선 경로는 칸 끼우기 단계에서 정해 둬야 한다");
+            return self.search_pool_edge_routes();
+        }
+        for (route, plan) in routes.iter_mut().zip(&self.pool_route_plans) {
+            plan.apply_to(route);
+            if let Some(jog_shift) = plan.jog_shift {
+                let return_across = self.jog_return_across(route);
+                debug_assert!(return_across.is_some(), "칸을 끼워도 비켜 가기 자리는 노드와 통로 사이에 남는다");
+                route.node_side_jog = return_across.map(|return_across| NodeSideJog { shifted_along: route.other_end().0.saturating_add_signed(jog_shift), return_across });
+            }
+        }
+        routes
+    }
+
+    /// 같은 풀 면 바깥 통로를 함께 쓰는 경로 묶음(경로 번호 오름차순).
+    fn face_groups(&self, routes: &[PoolEdgeRoute]) -> Vec<Vec<usize>> {
         let mut channel_groups: BTreeMap<PoolFace, Vec<usize>> = BTreeMap::new();
         for (r, route) in routes.iter().enumerate() {
             channel_groups.entry((route.pool_anchor(self.graph), route.pool_end().2)).or_default().push(r);
         }
-        for members in channel_groups.values() {
-            let spans: Vec<(usize, usize)> = members.iter().map(|&r| (routes[r].other_end().0, routes[r].pool_end().0)).collect();
-            for (&r, depth) in members.iter().zip(channel_depths(&spans)) {
+        channel_groups.into_values().collect()
+    }
+
+    /// 같은 풀 면 바깥 통로를 함께 쓰는 경로들의 통로 깊이를 정한다.
+    fn assign_channel_depths(&self, routes: &mut [PoolEdgeRoute]) {
+        for members in self.face_groups(routes) {
+            let depths = face_group_depths(&members, |r| &routes[r]);
+            for (&r, depth) in members.iter().zip(depths) {
                 routes[r].depth = depth;
             }
         }
-        routes
+    }
+
+    /// 다른 풀을 곧게 지나는 다리(막힌 칸)와 같은 칸을 같은 방향으로 쓰는 다리가 없어질 때까지, 충돌한 경로 하나의
+    /// 끝이나 꺾임을 흐름축으로 한 칸씩 옮긴다. 메시지 선끼리 합쳐지지 않는 것이 먼저이고, 같으면 다리가 노드 상자나
+    /// 시퀀스 흐름 끝 칸에 덜 걸리는 옮김을 고른다. 그 순위가 줄어드는 옮김만 받으므로 끝난다. 직교 교차는 충돌이
+    /// 아니다(건너뛰기 글자가 맡는다).
+    fn separate_colliding_legs(&self, routes: &mut Vec<PoolEdgeRoute>) {
+        let mut search = self.start_leg_search(std::mem::take(routes));
+        if !search.collisions.is_empty() {
+            let obstacles = self.leg_obstacles();
+            search.count_obstacle_hits(|route, r| self.obstacle_hits(route, r, &obstacles));
+            // 순위가 줄어드는 옮김만 받아 끝나지만, 메시지가 아주 많은 문서에서 오래 돌지 않게 경로 수에 비례해 끊는다.
+            for _ in 0..LEG_MOVES_PER_ROUTE * search.routes.len() {
+                let Some(&first) = search.collisions.first() else { break };
+                let mut best: Option<LegMoveTrial> = None;
+                for r in first.movers_in_preference_order() {
+                    for moved in self.leg_moves(&search.routes, r) {
+                        let trial = self.try_leg_move(&search, r, moved, &obstacles);
+                        // 순위가 같으면 먼저 본 후보를 둔다.
+                        if best.as_ref().is_none_or(|best| trial.rank < best.rank) {
+                            best = Some(trial);
+                        }
+                    }
+                }
+                match best {
+                    Some(trial) if trial.rank < search.rank() => self.accept_leg_move(&mut search, trial),
+                    _ => break,
+                }
+            }
+        }
+        *routes = search.routes;
+    }
+
+    /// 경로들의 조각을 줄별로 색인하고 지금 충돌을 센 탐색 상태. 장애물 수는 충돌이 있을 때만 따로 센다.
+    fn start_leg_search(&self, routes: Vec<PoolEdgeRoute>) -> LegSearch {
+        let face_groups = self.face_groups(&routes);
+        let mut face_group_of = vec![0; routes.len()];
+        for (g, members) in face_groups.iter().enumerate() {
+            for &r in members {
+                face_group_of[r] = g;
+            }
+        }
+        let pieces_of = routes.iter().enumerate().map(|(r, route)| self.route_pieces(route, r)).collect();
+        let obstacle_hits_of = vec![0; routes.len()];
+        let mut search = LegSearch { routes, face_groups, face_group_of, pieces_of, pieces_on_line: BTreeMap::new(), collisions: Vec::new(), obstacle_hits_of, total_obstacle_hits: 0 };
+        search.reindex_pieces();
+        search
+    }
+
+    /// 경로 `r`을 `moved`로 바꿨을 때의 순위. 같은 면 묶음의 통로 깊이만 다시 정하고, 옮긴 경로와 깊이가 바뀐 경로의
+    /// 조각만 나머지 조각 색인과 견준다.
+    fn try_leg_move(&self, search: &LegSearch, r: usize, moved: PoolEdgeRoute, obstacles: &[CellRect]) -> LegMoveTrial {
+        let members = &search.face_groups[search.face_group_of[r]];
+        let depths = face_group_depths(members, |m| if m == r { &moved } else { &search.routes[m] });
+        let changed: Vec<(usize, PoolEdgeRoute)> = members
+            .iter()
+            .zip(depths)
+            .filter(|&(&m, depth)| m == r || depth != search.routes[m].depth)
+            .map(|(&m, depth)| {
+                let mut route = if m == r { moved.clone() } else { search.routes[m].clone() };
+                route.depth = depth;
+                (m, route)
+            })
+            .collect();
+        let affected: BTreeSet<usize> = changed.iter().map(|(m, _)| *m).collect();
+        let old_pieces: Vec<RoutePiece> = affected.iter().flat_map(|&m| search.pieces_of[m].iter().copied()).collect();
+        let new_pieces: Vec<RoutePiece> = changed.iter().flat_map(|(m, route)| self.route_pieces(route, *m)).collect();
+        let collisions = search.collisions.len() - search.collisions_involving(&old_pieces, &affected) + search.collisions_involving(&new_pieces, &affected);
+        if collisions > search.collisions.len() {
+            // 메시지 충돌이 늘면 받을 수 없으므로 장애물은 세지 않는다.
+            return LegMoveTrial { changed, obstacle_hits: Vec::new(), rank: (collisions, usize::MAX) };
+        }
+        let obstacle_hits: Vec<usize> = changed.iter().map(|(m, route)| self.obstacle_hits(route, *m, obstacles)).collect();
+        let old_hits: usize = affected.iter().map(|&m| search.obstacle_hits_of[m]).sum();
+        let total_hits = search.total_obstacle_hits - old_hits + obstacle_hits.iter().sum::<usize>();
+        LegMoveTrial { changed, obstacle_hits, rank: (collisions, total_hits) }
+    }
+
+    fn accept_leg_move(&self, search: &mut LegSearch, trial: LegMoveTrial) {
+        for ((m, route), hits) in trial.changed.into_iter().zip(trial.obstacle_hits) {
+            search.pieces_of[m] = self.route_pieces(&route, m);
+            search.total_obstacle_hits = search.total_obstacle_hits - search.obstacle_hits_of[m] + hits;
+            search.obstacle_hits_of[m] = hits;
+            search.routes[m] = route;
+        }
+        search.reindex_pieces();
+    }
+
+    /// 경로 조각이 걸린 장애물(노드 상자, 시퀀스 흐름 끝 칸) 수.
+    fn obstacle_hits(&self, route: &PoolEdgeRoute, r: usize, obstacles: &[CellRect]) -> usize {
+        self.route_pieces(route, r).iter().map(|piece| obstacles.iter().filter(|obstacle| obstacle.overlaps(&piece.rect())).count()).sum()
+    }
+
+    /// 메시지 다리가 지나면 안 되는 칸: 노드 상자(풀 닻 말고)와 시퀀스 흐름의 끝 칸, 끝 표식. 선의 끝 칸은 건너뛰기
+    /// 글자가 되지 못하고 이음 글자로 합쳐진다.
+    fn leg_obstacles(&self) -> Vec<CellRect> {
+        let boxes = self.lnodes.iter().enumerate().filter(|(i, lnode)| lnode.node.is_some() && !self.is_pool_anchor(*i) && lnode.along_size > 0 && lnode.across_size > 0).map(|(i, lnode)| {
+            let along = self.node_along(i);
+            CellRect { along: (along, along + lnode.along_size - 1), across: (lnode.across, lnode.across + lnode.across_size - 1) }
+        });
+        let mut line_end_cells: BTreeSet<(usize, usize)> = BTreeSet::new();
+        for (s, segment) in self.segments.iter().enumerate() {
+            let (top, bottom, _) = self.segment_span(s);
+            line_end_cells.extend(segment.is_first.then_some((top, segment.exit)));
+            line_end_cells.extend(segment.is_last.then_some((bottom, segment.entry)));
+            line_end_cells.extend(self.segment_marker_glyphs(s).into_iter().map(|(along, across, _)| (along, across)));
+        }
+        boxes.chain(line_end_cells.into_iter().map(|(along, across)| CellRect { along: (along, along), across: (across, across) })).collect()
+    }
+
+    /// 경로의 곧은 조각들. 교차축 조각은 같은 부모 안의 다른 블록(풀)을 통째로 지나면 막힌 칸이고, 흐름축 조각은
+    /// 노드 쪽 비켜 가기일 때만 막힌 칸이다(통로 줄끼리는 통로 깊이가 이미 갈랐다).
+    fn route_pieces(&self, route: &PoolEdgeRoute, r: usize) -> Vec<RoutePiece> {
+        let corners = corner_points(&route.waypoints());
+        let jog_across = route.node_side_jog.map(|jog| jog.return_across);
+        corners
+            .windows(2)
+            .map(|piece| {
+                let ((along0, across0), (along1, across1)) = (piece[0], piece[1]);
+                let is_across = along0 == along1;
+                let (fixed, low, high) = if is_across { (along0, across0.min(across1), across0.max(across1)) } else { (across0, along0.min(along1), along0.max(along1)) };
+                let is_blocking = if is_across { self.passes_through_sibling_block(route, low, high) } else { jog_across == Some(fixed) };
+                RoutePiece { route: r, is_across, fixed, low, high, is_blocking }
+            })
+            .collect()
+    }
+
+    /// 교차축 구간 `low..=high`가 경로 풀 블록과 같은 부모 안의 다른 블록을 끝이 아닌 채로 통째로 지나는지.
+    fn passes_through_sibling_block(&self, route: &PoolEdgeRoute, low: usize, high: usize) -> bool {
+        let block = self.lnode_block[route.pool_anchor(self.graph)];
+        let parent = self.block_parent(block).unwrap_or(0);
+        self.blocks[parent].children.iter().any(|&child| match child {
+            Child::Block(b) => low < self.blocks[b].start && self.blocks[b].start + self.blocks[b].width - 1 < high,
+            Child::Node(_) => false,
+        })
+    }
+
+    /// 경로 `r`을 흐름축으로 한 칸 비켜 놓은 후보들: 상대 끝, 풀 쪽 끝, 두 끝을 함께(곧은 경로가 곧게 남게) 옮기고,
+    /// 옮길 수 없는 노드 쪽 끝은 꺾임만 옮겨 노드 앞에서 돌아오게 한다(풀 쪽 끝도 그 흐름축으로 옮겨 곧게 지나는 것까지).
+    /// 저마다 상대 끝 쪽(통로를 덜 달리는 쪽)부터.
+    fn leg_moves(&self, routes: &[PoolEdgeRoute], r: usize) -> Vec<PoolEdgeRoute> {
+        let route = &routes[r];
+        let (pool_along, other_along) = (route.pool_end().0, route.other_end().0);
+        let toward_pool = steps_toward_first(other_along, pool_along);
+        let mut end_sets: Vec<Vec<(bool, usize)>> = toward_pool.iter().map(|&along| vec![(true, along)]).collect();
+        end_sets.extend(steps_toward_first(pool_along, other_along).into_iter().map(|along| vec![(false, along)]));
+        if pool_along == other_along {
+            end_sets.extend(toward_pool.iter().map(|&along| vec![(true, along), (false, along)]));
+        }
+        let mut moves: Vec<PoolEdgeRoute> = end_sets.iter().filter_map(|ends| self.with_ends_moved(routes, r, route.clone(), ends)).collect();
+        if let Some(return_across) = self.jog_return_across(route).filter(|_| route.node_side_jog.is_none()) {
+            for shifted_along in toward_pool.into_iter().filter(|&along| self.is_in_face_interior(route, along)) {
+                let mut jogged = route.clone();
+                jogged.node_side_jog = Some(NodeSideJog { shifted_along, return_across });
+                moves.extend(self.with_ends_moved(routes, r, jogged.clone(), &[(false, shifted_along)]));
+                moves.push(jogged);
+            }
+        }
+        moves
+    }
+
+    /// `moved`의 끝들을 `(상대 끝인지, 흐름축)`대로 옮긴 경로. 하나라도 옮길 수 없으면 `None`.
+    fn with_ends_moved(&self, routes: &[PoolEdgeRoute], r: usize, mut moved: PoolEdgeRoute, ends: &[(bool, usize)]) -> Option<PoolEdgeRoute> {
+        for &(is_other_end, along) in ends {
+            if !self.can_move_end(routes, r, &moved, is_other_end, along) {
+                return None;
+            }
+            moved.end_mut(is_other_end).0 = along;
+        }
+        Some(moved)
+    }
+
+    /// 경로 `r`의 한 끝을 흐름축 `along`으로 옮겨도 되는지: 풀 면이면 면 안쪽, 노드면 상자 안쪽(점 표기는 안 됨)에
+    /// 머물고 다른 경로의 끝 칸과 겹치지 않아야 한다.
+    fn can_move_end(&self, routes: &[PoolEdgeRoute], r: usize, route: &PoolEdgeRoute, is_other_end: bool, along: usize) -> bool {
+        let (anchor, end) = if is_other_end { (route.other_anchor(self.graph), route.other_end()) } else { (route.pool_anchor(self.graph), route.pool_end()) };
+        let stays_on_its_node = if self.is_pool_anchor(anchor) {
+            let (low, high) = self.face_interior(anchor);
+            (low..=high).contains(&along)
+        } else {
+            route.node_side_jog.is_none() && self.node_end_range(anchor).is_some_and(|(low, high)| (low..=high).contains(&along))
+        };
+        let is_free = routes.iter().enumerate().all(|(k, other)| k == r || [other.from, other.to].iter().all(|e| (e.0, e.1) != (along, end.1)));
+        stays_on_its_node && is_free
+    }
+
+    /// `along`이 경로 풀 면의 안쪽 흐름축 범위에 드는지. 최상위 풀들은 흐름축 범위가 같으므로 다리가 지나는 다른
+    /// 풀의 배너와 모서리도 함께 피한다.
+    fn is_in_face_interior(&self, route: &PoolEdgeRoute, along: usize) -> bool {
+        let (low, high) = self.face_interior(route.pool_anchor(self.graph));
+        (low..=high).contains(&along)
+    }
+
+    /// 풀 면에서 끝을 둘 수 있는 흐름축 범위: 배너 구분선과 아래 모서리를 뺀 면 안쪽.
+    fn face_interior(&self, anchor: usize) -> (usize, usize) {
+        let block = self.lnode_block[anchor];
+        (self.banner_start(self.lane_depth(block) + 1) + 1, self.lane_along_end(block).saturating_sub(1))
+    }
+
+    /// 노드 쪽 끝을 흐름축으로 옮길 수 있는 범위: 상자 모서리를 뺀 안쪽. 점 표기 노드는 글자 칸에서만 나간다.
+    fn node_end_range(&self, node: usize) -> Option<(usize, usize)> {
+        let lnode = &self.lnodes[node];
+        let along = self.node_along(node);
+        (!lnode.point_anchored && lnode.along_size >= 3).then(|| (along + 1, along + lnode.along_size - 2))
+    }
+
+    /// 노드 쪽 다리를 비켜 놓았다가 노드 흐름축으로 되돌아올 교차축 칸: 노드를 품은 풀(경로 풀과 같은 부모 안의 블록)
+    /// 바로 바깥, 통로 쪽. 노드가 풀에 없으면 노드 쪽 끝 바로 옆. 노드 쪽 끝과 통로 사이에 들지 않으면 비켜 갈 수 없다.
+    fn jog_return_across(&self, route: &PoolEdgeRoute) -> Option<usize> {
+        let node = route.other_anchor(self.graph);
+        if self.is_pool_anchor(node) {
+            return None;
+        }
+        let (_, end_across, _) = route.other_end();
+        let channel = route.channel();
+        let is_channel_higher = channel > end_across;
+        let pool_parent = self.block_parent(self.lnode_block[route.pool_anchor(self.graph)]).unwrap_or(0);
+        let mut block = self.lnode_block[node];
+        while block != 0 && self.block_parent(block) != Some(pool_parent) {
+            block = self.block_parent(block).unwrap_or(0);
+        }
+        let return_across = match (block != 0, is_channel_higher) {
+            (true, true) => self.blocks[block].start + self.blocks[block].width,
+            (true, false) => self.blocks[block].start.checked_sub(1)?,
+            (false, true) => end_across + 1,
+            (false, false) => end_across.checked_sub(1)?,
+        };
+        let is_between = if is_channel_higher { end_across < return_across && return_across < channel } else { channel < return_across && return_across < end_across };
+        is_between.then_some(return_across)
+    }
+
+    /// 경로의 통로 줄이 그 사이 통로 안(두 면 사이)에 드는지.
+    fn channel_fits_its_gap(&self, route: &PoolEdgeRoute) -> bool {
+        let gap = self.channel_gap_of(route);
+        let channel = route.channel();
+        gap.low_face.is_none_or(|face| face < channel) && gap.high_face.is_none_or(|face| channel < face)
     }
 
     /// 경로를 통로가 놓이는 사이 통로(풀 쪽 끝의 면과 그 면이 마주한 이웃 사이)별로 묶는다.
@@ -2250,9 +2530,7 @@ impl<'a> Layout<'a> {
                 continue;
             }
             attachments.sort_unstable_by_key(|a| (a.other_along, a.route, a.is_from));
-            let block = self.lnode_block[anchor];
-            // 배너 구분선과 아래 모서리를 피한 면 안쪽 칸만 쓴다.
-            let interior = (self.banner_start(self.lane_depth(block) + 1) + 1, self.lane_along_end(block).saturating_sub(1));
+            let interior = self.face_interior(anchor);
             let first = &attachments[0];
             let center = if first.is_from { routes[first.route].from.0 } else { routes[first.route].to.0 };
             for (attachment, along) in attachments.iter().zip(spread_face_points(center, attachments.len(), interior)) {
@@ -2263,23 +2541,48 @@ impl<'a> Layout<'a> {
         }
     }
 
-    /// 통로 깊이가 풀 사이 간격에 다 들어가지 않으면 그 사이 통로에 모자란 칸을 끼워 넣는다.
+    /// 풀 간선 경로를 한 번 찾아 그 결정을 `pool_route_plans`에 남기고 그 경로가 쓸 통로 칸을 끼운다. 다리 비켜 놓기는
+    /// 마주 보는 통로의 두 면 줄이 갈린 배치에서 찾아야 하므로, 먼저 통로 깊이만 정한 경로의 칸을 끼우고 그 위에서 찾은
+    /// 뒤 더 깊어진 만큼만 더 끼운다. 그릴 때는 다시 찾지 않고 남긴 결정을 쓴다.
     fn reserve_pool_channel_room(&mut self) -> bool {
-        let routes = self.pool_edge_routes();
+        let depth_only_room = self.channel_room_insertions(&self.depth_only_pool_edge_routes());
+        self.insert_channel_room(&depth_only_room);
+        let depth_only = self.depth_only_pool_edge_routes();
+        let mut searched = depth_only.clone();
+        self.separate_colliding_legs(&mut searched);
+        self.pool_route_plans = depth_only.iter().zip(&searched).map(|(base, searched)| PoolRoutePlan::between(base, searched)).collect();
+        let deeper_room = room_beyond(&self.channel_room_insertions(&searched), &self.channel_room_insertions(&depth_only));
+        self.insert_channel_room(&deeper_room);
+        !depth_only_room.is_empty() || !deeper_room.is_empty()
+    }
+
+    /// 기본 자리에 통로 깊이만 정한 경로(다리 비켜 놓기 전).
+    fn depth_only_pool_edge_routes(&self) -> Vec<PoolEdgeRoute> {
+        let mut routes = self.base_pool_edge_routes();
+        self.assign_channel_depths(&mut routes);
+        routes
+    }
+
+    /// 경로들의 통로 깊이가 풀 사이 간격에 다 들어가도록 끼울 (위치, 칸 수).
+    fn channel_room_insertions(&self, routes: &[PoolEdgeRoute]) -> Vec<(usize, usize)> {
         let mut insertions: Vec<(usize, usize)> = Vec::new();
-        for (gap, members) in self.routes_by_channel_gap(&routes) {
-            if faces_share_channel_rows(&routes, &members) {
-                insertions.extend(facing_gap_insertion(gap, &routes, &members));
+        for (gap, members) in self.routes_by_channel_gap(routes) {
+            if faces_share_channel_rows(routes, &members) {
+                insertions.extend(facing_gap_insertion(gap, routes, &members));
             } else {
-                insertions.extend(self.single_face_insertions(&routes, &members));
+                insertions.extend(self.single_face_insertions(routes, &members));
             }
         }
+        insertions
+    }
+
+    fn insert_channel_room(&mut self, insertions: &[(usize, usize)]) {
+        let mut insertions = insertions.to_vec();
         // 뒤쪽부터 끼워야 앞쪽 끼울 자리가 밀리지 않는다.
         insertions.sort_unstable_by(|a, b| b.cmp(a));
         for &(at, count) in &insertions {
             self.insert_across(at, count);
         }
-        !insertions.is_empty()
     }
 
     /// 한 면 쪽 통로만 쓰는 사이 통로에 끼울 (위치, 칸 수): 면마다 가장 깊은 통로가 남는 칸을 넘는 만큼 면 바깥에.
@@ -2300,8 +2603,8 @@ impl<'a> Layout<'a> {
     }
 
     /// 경로의 가로 조각 가운데 가장 긴 것에 라벨을 가운데 맞춰 얹는다(들어갈 때만).
-    fn draw_pool_edge_label(&self, canvas: &mut Canvas, label: &str, from: (usize, usize), to: (usize, usize), channel: usize) {
-        let points = [self.to_canvas(from.0, from.1), self.to_canvas(from.0, channel), self.to_canvas(to.0, channel), self.to_canvas(to.0, to.1)];
+    fn draw_pool_edge_label(&self, canvas: &mut Canvas, label: &str, waypoints: &[(usize, usize)]) {
+        let points: Vec<(usize, usize)> = waypoints.iter().map(|&(along, across)| self.to_canvas(along, across)).collect();
         let longest = points.windows(2).filter(|p| p[0].1 == p[1].1).max_by_key(|p| p[0].0.abs_diff(p[1].0));
         let width = width_of(label);
         if let Some(p) = longest
@@ -2471,38 +2774,50 @@ impl<'a> Layout<'a> {
         }
     }
 
-    fn draw_segment_decorations(&self, canvas: &mut Canvas, s: usize) {
+    /// 구간 양 끝 표식 글자와 그 자리(흐름축, 교차축). 여러 글자면 마지막 글자가 노드에 닿는다.
+    fn segment_marker_glyphs(&self, s: usize) -> Vec<(usize, usize, char)> {
         let segment = &self.segments[s];
         let edge = &self.graph.edges[segment.edge];
         let reversed = self.effective_reversed(segment.edge);
-        let (top, bottom, gap_start) = self.segment_span(s);
-        let (label, tail_label, head_label) = self.segment_labels(s);
+        let (top, bottom, _) = self.segment_span(s);
         let (top_marker, bottom_marker) = if reversed { (edge.head, edge.tail) } else { (edge.tail, edge.head) };
-        let marker_style = self.theme.diagram_line;
+        let mut placed = Vec::new();
         if segment.is_first {
             // 위쪽 끝: 마지막 글자가 노드(top)에 닿고, 앞 글자들은 그 아래로 이어진다.
             let glyphs = marker_glyphs(top_marker, self.direction, true);
             let count = glyphs.len();
             for (k, glyph) in glyphs.into_iter().enumerate() {
                 let along = top + (count - 1 - k);
-                if along > bottom {
-                    continue;
+                if along <= bottom {
+                    placed.push((along, segment.exit, glyph));
                 }
-                let (x, y) = self.to_canvas(along, segment.exit);
-                canvas.put(x, y, glyph, marker_style);
             }
         }
         if segment.is_last {
             let glyphs = marker_glyphs(bottom_marker, self.direction, false);
             let count = glyphs.len();
             for (k, glyph) in glyphs.into_iter().enumerate() {
-                let Some(along) = bottom.checked_sub(count - 1 - k) else { continue };
-                if along < top {
-                    continue;
+                if let Some(along) = bottom.checked_sub(count - 1 - k)
+                    && along >= top
+                {
+                    placed.push((along, segment.entry, glyph));
                 }
-                let (x, y) = self.to_canvas(along, segment.entry);
-                canvas.put(x, y, glyph, marker_style);
             }
+        }
+        placed
+    }
+
+    fn draw_segment_decorations(&self, canvas: &mut Canvas, s: usize) {
+        let segment = &self.segments[s];
+        let edge = &self.graph.edges[segment.edge];
+        let reversed = self.effective_reversed(segment.edge);
+        let (top, bottom, gap_start) = self.segment_span(s);
+        let (label, tail_label, head_label) = self.segment_labels(s);
+        let top_marker = if reversed { edge.head } else { edge.tail };
+        let marker_style = self.theme.diagram_line;
+        for (along, across, glyph) in self.segment_marker_glyphs(s) {
+            let (x, y) = self.to_canvas(along, across);
+            canvas.put(x, y, glyph, marker_style);
         }
         let label_style = self.theme.diagram_label;
         match self.direction {
@@ -2622,6 +2937,7 @@ struct FaceAttachment {
 }
 
 /// 풀 닻에 닿는 간선 하나의 경로. 끝은 `pool_edge_end()`와 같은 (흐름축, 교차축, 상대 쪽 부호).
+#[derive(Clone)]
 struct PoolEdgeRoute {
     edge: usize,
     from: (usize, usize, bool),
@@ -2630,6 +2946,199 @@ struct PoolEdgeRoute {
     is_pool_at_from: bool,
     /// 통로가 면에서 떨어진 칸 수(1 = 면 바로 바깥).
     depth: usize,
+    /// 노드 쪽 다리가 막힌 칸을 피해 흐름축으로 비켜 지나면 그 꺾음.
+    node_side_jog: Option<NodeSideJog>,
+}
+
+/// 통로에서 노드 쪽으로 꺾여 나가는 다리를 흐름축 `shifted_along`에서 내고, 노드를 품은 풀 바로 바깥 교차축
+/// `return_across` 칸에서 노드 쪽 끝의 흐름축으로 되돌린다 — 노드 쪽 끝은 옮길 수 없고 다리만 비켜야 할 때 쓴다.
+#[derive(Clone, Copy)]
+struct NodeSideJog {
+    shifted_along: usize,
+    return_across: usize,
+}
+
+/// 경로의 곧은 조각 하나. `is_across`면 흐름축 `fixed`에서 교차축 `low..=high`를, 아니면 교차축 `fixed`에서
+/// 흐름축 `low..=high`를 쓴다.
+#[derive(Clone, Copy)]
+struct RoutePiece {
+    route: usize,
+    is_across: bool,
+    fixed: usize,
+    low: usize,
+    high: usize,
+    is_blocking: bool,
+}
+
+/// 흐름축, 교차축 범위(양 끝 포함)로 잡은 칸 사각형.
+struct CellRect {
+    along: (usize, usize),
+    across: (usize, usize),
+}
+
+impl CellRect {
+    fn overlaps(&self, other: &CellRect) -> bool {
+        let spans_meet = |a: (usize, usize), b: (usize, usize)| a.0 <= b.1 && b.0 <= a.1;
+        spans_meet(self.along, other.along) && spans_meet(self.across, other.across)
+    }
+}
+
+impl RoutePiece {
+    /// 조각이 놓인 줄(방향, 고정 좌표). 같은 줄의 조각끼리만 같은 칸을 같은 방향으로 쓸 수 있다.
+    fn line(&self) -> (bool, usize) {
+        (self.is_across, self.fixed)
+    }
+
+    /// 같은 줄의 다른 경로 조각과 칸을 함께 쓰는 충돌인지. 적어도 한쪽이 막힌 칸이어야 센다 — 둘 다 한 노드 쪽 끝에
+    /// 모이는 다리라면 노드 쪽 끝 나누기가 맡는다.
+    fn collides_with(&self, other: &RoutePiece) -> bool {
+        let shares_cells = self.low <= other.high && other.low <= self.high;
+        self.route != other.route && shares_cells && (self.is_blocking || other.is_blocking)
+    }
+
+    fn rect(&self) -> CellRect {
+        if self.is_across { CellRect { along: (self.fixed, self.fixed), across: (self.low, self.high) } } else { CellRect { along: (self.low, self.high), across: (self.fixed, self.fixed) } }
+    }
+}
+
+/// 탐색이 정한 경로 하나의 결정: 기본 자리에서 옮긴 끝의 흐름축 칸 수, 비켜 가기 꺾임이 상대 끝에서 떨어진 칸 수,
+/// 통로 깊이. 칸을 끼워 좌표가 밀려도 그대로 쓸 수 있게 기본 자리에 대한 차이로 남긴다.
+#[derive(Clone, Copy)]
+struct PoolRoutePlan {
+    from_shift: isize,
+    to_shift: isize,
+    jog_shift: Option<isize>,
+    depth: usize,
+}
+
+impl PoolRoutePlan {
+    fn between(base: &PoolEdgeRoute, searched: &PoolEdgeRoute) -> PoolRoutePlan {
+        let shift = |from: usize, to: usize| to as isize - from as isize;
+        PoolRoutePlan {
+            from_shift: shift(base.from.0, searched.from.0),
+            to_shift: shift(base.to.0, searched.to.0),
+            jog_shift: searched.node_side_jog.map(|jog| shift(searched.other_end().0, jog.shifted_along)),
+            depth: searched.depth,
+        }
+    }
+
+    /// 끝 옮김과 통로 깊이를 기본 자리 `route`에 입힌다. 비켜 가기 교차축 칸은 배치에 달려 있어 부르는 쪽이 정한다.
+    fn apply_to(&self, route: &mut PoolEdgeRoute) {
+        route.from.0 = route.from.0.saturating_add_signed(self.from_shift);
+        route.to.0 = route.to.0.saturating_add_signed(self.to_shift);
+        route.depth = self.depth;
+    }
+}
+
+/// 다리 비켜 놓기 탐색의 상태: 경로, 같은 면 묶음, 경로별 조각과 줄별 조각 색인, 지금 충돌, 경로별 장애물 수.
+struct LegSearch {
+    routes: Vec<PoolEdgeRoute>,
+    face_groups: Vec<Vec<usize>>,
+    face_group_of: Vec<usize>,
+    pieces_of: Vec<Vec<RoutePiece>>,
+    pieces_on_line: BTreeMap<(bool, usize), Vec<RoutePiece>>,
+    collisions: Vec<LegCollision>,
+    obstacle_hits_of: Vec<usize>,
+    total_obstacle_hits: usize,
+}
+
+impl LegSearch {
+    /// 작을수록 낫다: 메시지 선끼리의 충돌 수가 먼저, 장애물에 걸린 수가 다음.
+    fn rank(&self) -> (usize, usize) {
+        (self.collisions.len(), self.total_obstacle_hits)
+    }
+
+    fn count_obstacle_hits(&mut self, hits_of: impl Fn(&PoolEdgeRoute, usize) -> usize) {
+        self.obstacle_hits_of = self.routes.iter().enumerate().map(|(r, route)| hits_of(route, r)).collect();
+        self.total_obstacle_hits = self.obstacle_hits_of.iter().sum();
+    }
+
+    /// 경로별 조각에서 줄별 색인과 충돌 목록을 다시 만든다. 줄 순서, 경로 순서로 훑어 충돌 순서가 늘 같다.
+    fn reindex_pieces(&mut self) {
+        self.pieces_on_line.clear();
+        for piece in self.pieces_of.iter().flatten() {
+            self.pieces_on_line.entry(piece.line()).or_default().push(*piece);
+        }
+        self.collisions.clear();
+        for pieces in self.pieces_on_line.values() {
+            for (k, first) in pieces.iter().enumerate() {
+                for second in &pieces[k + 1..] {
+                    if first.collides_with(second) {
+                        self.collisions.push(LegCollision { first_route: first.route, second_route: second.route, is_first_blocking: first.is_blocking, is_second_blocking: second.is_blocking });
+                    }
+                }
+            }
+        }
+    }
+
+    /// `pieces`(경로 `affected`의 조각)가 일으키는 충돌 수: 색인의 다른 경로 조각과, `pieces`끼리.
+    fn collisions_involving(&self, pieces: &[RoutePiece], affected: &BTreeSet<usize>) -> usize {
+        let with_others: usize = pieces.iter().map(|piece| self.pieces_on_line.get(&piece.line()).map_or(0, |line| line.iter().filter(|other| !affected.contains(&other.route) && piece.collides_with(other)).count())).sum();
+        let mut affected_on_line: BTreeMap<(bool, usize), Vec<&RoutePiece>> = BTreeMap::new();
+        for piece in pieces {
+            affected_on_line.entry(piece.line()).or_default().push(piece);
+        }
+        let among_themselves: usize = affected_on_line.values().map(|line| line.iter().enumerate().map(|(k, first)| line[k + 1..].iter().filter(|second| first.collides_with(second)).count()).sum::<usize>()).sum();
+        with_others + among_themselves
+    }
+}
+
+/// 후보 옮김 하나의 결과: 바뀐 경로들(번호, 새 경로)과 그 장애물 수, 옮긴 뒤의 순위.
+struct LegMoveTrial {
+    changed: Vec<(usize, PoolEdgeRoute)>,
+    obstacle_hits: Vec<usize>,
+    rank: (usize, usize),
+}
+
+/// 한 면 묶음 `members`의 통로 깊이. `route_of`로 경로를 바꿔 끼워 볼 수 있다.
+fn face_group_depths<'r>(members: &[usize], route_of: impl Fn(usize) -> &'r PoolEdgeRoute) -> Vec<usize> {
+    let spans: Vec<(usize, usize)> = members.iter().map(|&r| (route_of(r).other_bend_along(), route_of(r).pool_end().0)).collect();
+    channel_depths(&spans)
+}
+
+/// 두 경로의 조각이 같은 칸을 같은 방향으로 쓰는 충돌.
+#[derive(Clone, Copy)]
+struct LegCollision {
+    first_route: usize,
+    second_route: usize,
+    is_first_blocking: bool,
+    is_second_blocking: bool,
+}
+
+impl LegCollision {
+    /// 비켜 놓을 경로 순서: 한쪽만 막힌 칸이면 그 칸에 꺾임이나 끝이 걸린 다른 쪽부터, 둘 다면 나중 경로부터.
+    fn movers_in_preference_order(&self) -> [usize; 2] {
+        let later_first = [self.first_route.max(self.second_route), self.first_route.min(self.second_route)];
+        match (self.is_first_blocking, self.is_second_blocking) {
+            (true, false) => [self.second_route, self.first_route],
+            (false, true) => [self.first_route, self.second_route],
+            _ => later_first,
+        }
+    }
+}
+
+/// `from`에서 한 칸 옮긴 두 자리를 `toward` 쪽부터. 같으면 큰 쪽부터.
+fn steps_toward_first(from: usize, toward: usize) -> Vec<usize> {
+    let (near, far) = if toward < from { (from.checked_sub(1), Some(from + 1)) } else { (Some(from + 1), from.checked_sub(1)) };
+    near.into_iter().chain(far).collect()
+}
+
+/// 경유점에서 겹친 점과 곧게 이어지는 가운데 점을 뺀, 실제로 꺾이는 점들(양 끝 포함).
+fn corner_points(waypoints: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut corners: Vec<(usize, usize)> = Vec::new();
+    for &point in waypoints {
+        if corners.last() == Some(&point) {
+            continue;
+        }
+        if let [.., before, last] = corners[..] {
+            let is_straight_through = (before.0 == last.0 && last.0 == point.0) || (before.1 == last.1 && last.1 == point.1);
+            if is_straight_through {
+                corners.pop();
+            }
+        }
+        corners.push(point);
+    }
+    corners
 }
 
 impl PoolEdgeRoute {
@@ -2642,9 +3151,23 @@ impl PoolEdgeRoute {
         if self.is_pool_at_from { edge.from } else { edge.to }
     }
 
-    /// 두 끝이 흐름축으로 어긋나 통로 줄을 따라 달리는지. 어긋나지 않으면 교차축으로 곧게 그어 줄을 쓰지 않는다.
+    fn other_anchor(&self, graph: &Graph) -> usize {
+        let edge = &graph.edges[self.edge];
+        if self.is_pool_at_from { edge.to } else { edge.from }
+    }
+
+    fn end_mut(&mut self, is_other_end: bool) -> &mut (usize, usize, bool) {
+        if is_other_end == self.is_pool_at_from { &mut self.to } else { &mut self.from }
+    }
+
+    /// 상대 끝 쪽 다리가 통로에서 꺾여 나가는 흐름축 위치.
+    fn other_bend_along(&self) -> usize {
+        self.node_side_jog.map_or(self.other_end().0, |jog| jog.shifted_along)
+    }
+
+    /// 두 꺾임이 흐름축으로 어긋나 통로 줄을 따라 달리는지. 어긋나지 않으면 교차축으로 곧게 그어 줄을 쓰지 않는다.
     fn runs_along_channel(&self) -> bool {
-        self.from.0 != self.to.0
+        self.pool_end().0 != self.other_bend_along()
     }
 
     /// 통로 줄을 세는 면이 사이 통로의 낮은 쪽(교차축 작은 쪽)인지.
@@ -2654,7 +3177,25 @@ impl PoolEdgeRoute {
 
     /// 통로를 따라 달리는 흐름축 구간(양 끝 포함).
     fn along_span(&self) -> (usize, usize) {
-        (self.from.0.min(self.to.0), self.from.0.max(self.to.0))
+        let (pool_along, bend_along) = (self.pool_end().0, self.other_bend_along());
+        (pool_along.min(bend_along), pool_along.max(bend_along))
+    }
+
+    /// 출발 끝에서 도착 끝까지의 경유점(흐름축, 교차축): 풀 쪽 끝, 통로 줄의 두 꺾임, 비켜 가기가 있으면 그 두
+    /// 꺾임, 상대 끝. 통로를 따라갈 구간이 없으면 두 통로 꺾임이 한 점에 겹친다.
+    fn waypoints(&self) -> Vec<(usize, usize)> {
+        let channel = self.channel();
+        let ((pool_along, pool_across, _), (other_along, other_across, _)) = (self.pool_end(), self.other_end());
+        let bend_along = self.other_bend_along();
+        let mut points = vec![(pool_along, pool_across), (pool_along, channel), (bend_along, channel)];
+        if let Some(jog) = self.node_side_jog {
+            points.extend([(jog.shifted_along, jog.return_across), (other_along, jog.return_across)]);
+        }
+        points.push((other_along, other_across));
+        if !self.is_pool_at_from {
+            points.reverse();
+        }
+        points
     }
 
     fn other_end(&self) -> (usize, usize, bool) {
@@ -2689,6 +3230,19 @@ fn facing_gap_insertion(gap: ChannelGap, routes: &[PoolEdgeRoute], members: &[us
     let rows_needed = deepest_from(true) + deepest_from(false);
     let rows_available = high_face.saturating_sub(low_face + 1);
     (rows_needed > rows_available).then(|| (high_face, rows_needed - rows_available))
+}
+
+/// `wanted` 칸 끼우기 가운데 `granted`(같은 배치에서 이미 끼운 몫으로 센 것)를 넘는 만큼만, 자리별로.
+fn room_beyond(wanted: &[(usize, usize)], granted: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let total_at = |insertions: &[(usize, usize)]| {
+        let mut totals: BTreeMap<usize, usize> = BTreeMap::new();
+        for &(at, count) in insertions {
+            *totals.entry(at).or_default() += count;
+        }
+        totals
+    };
+    let granted = total_at(granted);
+    total_at(wanted).into_iter().filter_map(|(at, count)| count.checked_sub(granted.get(&at).copied().unwrap_or(0)).filter(|&extra| extra > 0).map(|extra| (at, extra))).collect()
 }
 
 /// 면 중앙을 둘러 `count`칸을 사이에 빈 칸 하나씩 두고(면이 짧으면 붙여서) `interior` 안에 놓는다.

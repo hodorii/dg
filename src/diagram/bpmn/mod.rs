@@ -1384,6 +1384,48 @@ mod tests {
         });
     }
 
+    /// 맞붙은 `고객`과 `공급자` 사이 통로에서 두 면의 메시지가 저마다 노드 쪽으로 꺾여 나가고, 판매에서 공급자로 가는
+    /// 다리와 고객에서 물류로 가는 다리가 흐름축으로 같은 칸에 오는 문서들. 판매 과업 수와 메시지 짝만 다르다. 한 노드에
+    /// 메시지가 둘 붙으면 노드 쪽 끝을 나누는 다른 결함이 섞이므로 노드마다 메시지를 하나씩만 둔다.
+    const FACING_FACES_WITH_LEGS_ON_ONE_FLOW_CELL: [&str; 2] = [
+        "participants:\n  - p1:\n      name: 판매\n      nodes:\n        - a: task 가\n        - b: task 나\n  - c: 고객\n  - v: 공급자\n  - p2:\n      name: 물류\n      nodes:\n        - y: task 다\n        - x: task 라\n        - z: task 바\nflows:\n  - a --> b\n  - y --> x\n  - x --> z\n  - c --> x\n  - c --> y\n  - a --> v\n  - b --> v\n  - v --> z\n",
+        "participants:\n  - p1:\n      name: 판매\n      nodes:\n        - a: task 가\n        - b: task 나\n        - d: task 마\n  - c: 고객\n  - v: 공급자\n  - p2:\n      name: 물류\n      nodes:\n        - y: task 다\n        - x: task 라\n        - z: task 바\nflows:\n  - a --> b\n  - b --> d\n  - y --> x\n  - x --> z\n  - c --> x\n  - a --> v\n  - d --> v\n  - v --> z\n  - c --> y\n",
+    ];
+
+    #[test]
+    fn legs_of_two_facing_faces_toward_their_nodes_never_merge() {
+        for source in FACING_FACES_WITH_LEGS_ON_ONE_FLOW_CELL {
+            assert_every_message_runs_alone_from_its_circle_to_its_hollow_triangle(source, 5);
+        }
+    }
+
+    /// 통로 줄이 여럿 필요한 사이 통로에 옮겨진 다리가 섞이는 문서들과 그 풀 제목들. 다리를 옮기면 통로가 깊어질 수
+    /// 있으므로, 그리는 통로 줄은 그 깊이만큼 끼운 칸 안에 있어야 풀 테두리와 겹치지 않는다. 마지막 문서는 옮긴
+    /// 다리 때문에 칸을 더 끼워야만 테두리가 온전하다.
+    const DOCUMENTS_WITH_DEEP_CHANNELS_BESIDE_MOVED_LEGS: [(&str, &[&str]); 3] = [
+        (
+            "participants:\n  - p0:\n      name: 레0\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\n        - n2: task 다2\n  - b1: 풀1\n  - p2:\n      name: 레2\n      nodes:\n        - n3: task 라3\n        - n4: task 마4\n        - n5: task 바5\nflows:\n  - n0 --> n1\n  - n1 --> n2\n  - n3 --> n4\n  - n4 --> n5\n  - b1 --> n1\n  - n2 --> n5\n  - n0 --> b1\n  - n4 --> b1\n  - b1 --> n3\n",
+            &["레0", "풀1", "레2"],
+        ),
+        (
+            "participants:\n  - b0: 풀0\n  - p1:\n      name: 레1\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\n  - p2:\n      name: 레2\n      nodes:\n        - n2: task 다2\n        - n3: task 라3\n        - n4: task 마4\n  - p3:\n      name: 레3\n      nodes:\n        - n5: task 바5\n        - n6: task 사6\nflows:\n  - n0 --> n1\n  - n2 --> n3\n  - n3 --> n4\n  - n5 --> n6\n  - b0 --> n6\n  - b0 --> n4\n  - n0 --> n5\n  - b0 --> n1\n  - n3 --> b0\n  - b0 --> n2\n",
+            &["풀0", "레1", "레2", "레3"],
+        ),
+        (
+            "participants:\n  - p0:\n      name: 레0\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\n  - b1: 풀1\n  - b2: 풀2\nflows:\n  - n0 --> n1\n  - b1 --> b2\n  - b1 --> n0\n  - b2 --> b1\n  - n1 --> b2\n",
+            &["풀1", "풀2", "레0"],
+        ),
+    ];
+
+    #[test]
+    fn message_channels_never_run_on_a_pool_border() {
+        // 풀 면의 메시지 표식과 테두리를 가로지르는 칸(`┼`)은 테두리의 일부로 본다. 메시지 선 글자가 보이면 통로 줄이 테두리 위에 놓인 것이다.
+        let allowed = format!("{POOL_FRAME_GLYPHS}○△▽◁▷");
+        for (source, titles) in DOCUMENTS_WITH_DEEP_CHANNELS_BESIDE_MOVED_LEGS {
+            assert_no_defect_in_either_direction(source, |_, rows, grid| titles.iter().try_for_each(|title| pool_frame_break_defect(rows, grid, title, &allowed)));
+        }
+    }
+
     #[test]
     fn several_messages_on_each_node_show_every_circle_and_hollow_triangle() {
         let source = "participants:\n  - c: 고객\n  - v: 공급자\n  - p1:\n      name: 판매\n      nodes:\n        - a: task 가\n        - b: task 나\nflows:\n  - a --> b\n  - c --> v\n  - v --> c\n  - a --> c\n  - b --> v\n  - c --> b\n";
@@ -1441,6 +1483,15 @@ mod tests {
         BoxBounds { top, left, bottom, right }
     }
 
+    /// 제목이 `title`인 풀의 바깥 테두리 칸이 모두 `allowed` 글자인지 — 다른 글자가 있으면 그 칸에서 테두리가 끊긴 것이다.
+    fn pool_frame_break_defect(rows: &[String], grid: &[Vec<char>], title: &str, allowed: &str) -> Result<(), String> {
+        let frame = pool_frame(rows, grid, title);
+        match frame.border_cells().into_iter().find(|&((row, col), _)| !allowed.contains(grid[row][col])) {
+            Some(((row, col), _)) => Err(format!("`{title}` 풀 테두리 ({row}, {col}) 칸이 {:?}로 끊겼다", grid[row][col])),
+            None => Ok(()),
+        }
+    }
+
     /// 메시지 이름표 `label`이 한 자리에 온전히 보이고, 제목이 `pool_titles`인 풀의 테두리가 어디서도 끊기지 않는지 본다.
     /// 이름표가 풀 안, 풀 사이 간격 어디에 놓이든 상관없다.
     fn message_label_defect<'a>(label: &'a str, pool_titles: &'a [&'a str]) -> impl Fn(Direction, &[String], &[Vec<char>]) -> Result<(), String> + 'a {
@@ -1448,10 +1499,7 @@ mod tests {
             let occurrences: usize = rows.iter().map(|row| row.matches(label).count()).sum();
             require(occurrences == 1, || format!("이름표 `{label}`의 글자가 모두 이어져 한 번 보여야 한다({occurrences}번)"))?;
             for title in pool_titles {
-                let frame = pool_frame(rows, grid, title);
-                if let Some(((row, col), _)) = frame.border_cells().into_iter().find(|&((row, col), _)| !POOL_FRAME_GLYPHS.contains(grid[row][col])) {
-                    return Err(format!("`{title}` 풀 테두리 ({row}, {col}) 칸이 {:?}로 끊겼다", grid[row][col]));
-                }
+                pool_frame_break_defect(rows, grid, title, POOL_FRAME_GLYPHS)?;
             }
             let row = row_of_text(rows, label);
             let start = display_col(&rows[row], label);

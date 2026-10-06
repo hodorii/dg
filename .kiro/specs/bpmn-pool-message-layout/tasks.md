@@ -40,7 +40,7 @@
   - _Difficulty: high_
   - _Boundary: layout::graph_
   - _Depends: 3.1_
-- [ ] 3.3 사이 통로를 곧게 지나는 다리의 충돌 회피
+- [x] 3.3 사이 통로를 곧게 지나는 다리의 충돌 회피
   - _DoneWhen: 입력 B의 TB, LR에서 다른 풀을 곧게 지나는 메시지가 다른 메시지 선과 같은 칸을 같은 방향으로 쓰지 않고 직교 교차만 남음, 입력 G(마주 보는 통로에서 두 면의 노드 쪽 다리가 같은 흐름축 칸)의 TB, LR에서도 이음 글자로 합쳐지지 않음_
   - _Requirements: 1.3, 2.3_
   - _Difficulty: high_
