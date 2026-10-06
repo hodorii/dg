@@ -350,7 +350,9 @@ const UNCHANGED_DOMAIN_BASE_SEED: u64 = 0x0400_B9A1;
 const UNCHANGED_DOMAIN_DIRECTIONS: [Option<(Direction, bool)>; 5] = [None, Some((Direction::TopDown, false)), Some((Direction::LeftRight, false)), Some((Direction::TopDown, true)), Some((Direction::LeftRight, true))];
 
 /// 0.4.0 코드로 기록한 (줄 수, FNV-1a 해시). `None`은 원문 코드블록으로 물러난 문서다. 표 순서가
-/// `UNCHANGED_DOMAIN_BASE_SEED`부터의 seed 순서다.
+/// `UNCHANGED_DOMAIN_BASE_SEED`부터의 seed 순서다. 생성기는 메시지 다리 길목에 같은 풀의 다른 노드나 흐름 끝이
+/// 놓이는 문서를 거르지 못한다(배치를 해 봐야 안다). 그런 문서(9, 12, 20, 44, 57, 67, 68, 74, 84번)는 0.4.0에서
+/// 다리가 다른 노드나 화살촉, 레인 제목 칸을 지났고, 다리가 그것을 비켜 간 렌더링으로 기록한다.
 const UNCHANGED_DOMAIN_RECORDED: [Option<(usize, u64)>; 100] = [
     Some((11, 0x9ba9a954f843517b)),
     Some((39, 0x267d122b395cb1a1)),
@@ -361,10 +363,10 @@ const UNCHANGED_DOMAIN_RECORDED: [Option<(usize, u64)>; 100] = [
     Some((8, 0x0248b48690aacad2)),
     Some((8, 0x18bd42ad69f2d585)),
     Some((21, 0x5ff8b94bf175a4c2)),
-    Some((21, 0x953cbbd887eaa2d4)),
+    Some((21, 0xc9fafae7a0069a3b)),
     Some((13, 0x0f47cb402f2831f1)),
     Some((8, 0xcdcd04f016458776)),
-    Some((31, 0xe7aef6b0071917b4)),
+    Some((32, 0xdf1d54f1cc916212)),
     Some((18, 0xa07e5af04997a864)),
     Some((13, 0x9fcf41cab9add195)),
     Some((13, 0x71da17fdd507e2d0)),
@@ -372,7 +374,7 @@ const UNCHANGED_DOMAIN_RECORDED: [Option<(usize, u64)>; 100] = [
     Some((4, 0x1965c44df5ab56e6)),
     Some((11, 0xabac60d505a8c1e9)),
     Some((27, 0xa08ccdaa505cdc64)),
-    Some((32, 0x8c8efaea59dff7a3)),
+    Some((32, 0x608d1b2c99b63716)),
     Some((8, 0x21cf9bae2cd59d58)),
     Some((14, 0x73386a990321fe77)),
     Some((7, 0xfa5530e9306491b9)),
@@ -396,7 +398,7 @@ const UNCHANGED_DOMAIN_RECORDED: [Option<(usize, u64)>; 100] = [
     Some((5, 0x44606d032e68a676)),
     Some((5, 0xb2e2dae8dfa55f72)),
     Some((20, 0x8b2a0359e212ee6d)),
-    Some((14, 0x96568a5d796ae630)),
+    Some((14, 0x755bc11408cc9472)),
     Some((3, 0x8cafa8649e983de8)),
     Some((13, 0xda9c05ef457d2743)),
     Some((22, 0x09637fc3872e640d)),
@@ -409,7 +411,7 @@ const UNCHANGED_DOMAIN_RECORDED: [Option<(usize, u64)>; 100] = [
     Some((21, 0x298c9be0b4e6689a)),
     Some((9, 0xc76db1bcd5a3de96)),
     Some((10, 0x5482f28c0c47cce7)),
-    Some((23, 0xc094986a285de43b)),
+    Some((23, 0x7dedaf9cdcf57ce5)),
     Some((14, 0xc5cc847de0304f55)),
     Some((43, 0x20e7974055bcb612)),
     Some((29, 0x081e3744900cfd46)),
@@ -419,14 +421,14 @@ const UNCHANGED_DOMAIN_RECORDED: [Option<(usize, u64)>; 100] = [
     Some((35, 0x6936ed070a64d2c0)),
     Some((9, 0x373d120c384a1d19)),
     Some((11, 0xafaf8b52855cb2e2)),
-    Some((24, 0x4c4a27f9690bab6c)),
-    Some((13, 0x864f9bb372025de3)),
+    Some((25, 0x30c3ff345106aee2)),
+    Some((13, 0x9a32208a1389d1a2)),
     Some((6, 0x6f6870d12e85e85e)),
     Some((9, 0xb2c8f3773b232b95)),
     Some((13, 0x08f37f569f0c6496)),
     Some((15, 0x94f89c9a2f9b1d71)),
     Some((42, 0x205c56f07a73d44e)),
-    Some((22, 0x596f738c8d3bcb4f)),
+    Some((22, 0x66d56ff1eaedfd79)),
     Some((14, 0xf8edaa63a247d40f)),
     Some((16, 0xfdb3cbb3fe6104ca)),
     Some((18, 0xc676a7741abb2f2c)),
@@ -436,7 +438,7 @@ const UNCHANGED_DOMAIN_RECORDED: [Option<(usize, u64)>; 100] = [
     Some((38, 0x8d9beadcdf44f640)),
     Some((33, 0x318aca5a7f488ad9)),
     Some((68, 0x054cd66acea827df)),
-    Some((46, 0xec65c6326776a279)),
+    Some((47, 0x78c088c0b1a5a62d)),
     Some((11, 0xd765f9254edeba52)),
     Some((18, 0xb35ec09fc2a838da)),
     Some((8, 0x41a19baeda9244f0)),

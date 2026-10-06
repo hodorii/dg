@@ -1529,6 +1529,48 @@ mod tests {
         assert_no_defect_in_either_direction(source, |_, rows, grid| message_lines_avoid_node_boxes_defect(&["주문 검토", "30분", "기록"], rows, grid));
     }
 
+    /// `examples/bpmn.md`의 `index`번째(0부터) bpmn 코드블록 본문.
+    fn example_bpmn_block(index: usize) -> &'static str {
+        const EXAMPLE_BPMN_MD: &str = include_str!("../../../examples/bpmn.md");
+        let block = EXAMPLE_BPMN_MD.split("```bpmn\n").nth(index + 1).expect("예제에 그만큼 bpmn 코드블록이 있어야 한다");
+        block.split("```").next().unwrap_or(block)
+    }
+
+    /// 수정 전에 곧던 흐름이 그대로 곧은지: 시작 이벤트 `주문 접수`에서 나간 시퀀스 흐름이 꺾이지 않고 화살촉까지 가고,
+    /// 가로 배치에서 `주문 검토`의 데이터 연결이 같은 줄로 `주문서`에 닿는다. 메시지 다리를 위해 칸을 끼워도 메시지가
+    /// 아닌 흐름의 배치는 바뀌면 안 된다.
+    fn example_flows_bent_defect(direction: Direction, rows: &[String], grid: &[Vec<char>]) -> Result<(), String> {
+        let row = row_of_text(rows, "○ 주문 접수");
+        let circle = (row, display_col(&rows[row], "○ 주문 접수"));
+        require(grid[circle.0][circle.1] == '○', || "`주문 접수` 앞에 시작 이벤트 글자가 있어야 한다".into())?;
+        // 가로 배치에서는 이름표 뒤에서, 세로 배치에서는 글자 바로 아래에서 흐름이 나간다.
+        let (start, heading) = if direction == Direction::LeftRight { ((row, circle.1 + crate::text::width_of("○ 주문 접수") - 1), (0, 1)) } else { (circle, (1, 0)) };
+        let trace = trace_line(grid, start, heading);
+        let is_straight = trace.line_cells.iter().all(|&(cell_row, cell_col)| if heading.0 == 0 { cell_row == start.0 } else { cell_col == start.1 });
+        require(FILLED_HEADS.contains(trace.stop) && is_straight, || format!("`주문 접수`에서 나간 흐름이 꺾이지 않고 화살촉에 닿아야 한다({:?}에서 {:?})", trace.stop_cell, trace.stop))?;
+        let review_row = &rows[row_of_text(rows, "주문 검토")];
+        require(direction != Direction::LeftRight || review_row.contains("┈┈>"), || "가로 배치에서 `주문 검토`의 데이터 연결이 꺾이지 않고 같은 줄로 `주문서`에 닿아야 한다".into())
+    }
+
+    #[test]
+    fn the_example_message_line_goes_around_the_annotation_standing_in_its_way() {
+        // 예제 둘째 그림에서 고객이 보낸 메시지가 시작 이벤트로 가는 곧은 길목에 주석 `30분 안에 검토`가 있다.
+        assert_no_defect_in_either_direction(example_bpmn_block(1), |direction, rows, grid| {
+            message_lines_avoid_node_boxes_defect(&["30분", "주문 검토", "주문서"], rows, grid)?;
+            example_flows_bent_defect(direction, rows, grid)
+        });
+    }
+
+    #[test]
+    fn a_leg_that_stays_blocked_leaves_no_empty_row_behind() {
+        // 세로 배치에서 `다2`가 `풀3`으로 보내는 다리는 층 사이에 빈 줄을 비워도 `바5`를 비켜 갈 수 없다. 쓰이지 않을
+        // 빈 줄은 되돌리므로 그림이 수정 전과 같아야 한다(수정 전 렌더링의 줄 수와 FNV-1a 해시).
+        let source = "participants:\n  - p0:\n      name: 레0\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\n        - n2: task 다2\n  - p1:\n      name: 레1\n      nodes:\n        - n3: task 라3\n        - n4: task 마4\n        - n5: task 바5\n  - p2:\n      name: 레2\n      nodes:\n        - n6: task 사6\n        - n7: task 아7\n  - b3: 풀3\nflows:\n  - n0 --> n1\n  - n1 --> n2\n  - n3 --> n4\n  - n4 --> n5\n  - n6 --> n7\n  - n2 --> b3\n  - n6 --> n1\n  - b3 --> n6\n  - n1 --> n6\n";
+        let rows = yaml_rows(source, Direction::TopDown);
+        let fingerprint = (rows.len(), crate::diagram::layout::graph::fnv1a(&rows.join("\n")));
+        assert_eq!(fingerprint, (27, 0xefb1_85ef_030f_1ad8), "다리를 풀어 주지 못한 빈 줄이 남으면 안 된다:\n{}", rows.join("\n"));
+    }
+
     /// 풀 테두리를 이루거나 테두리 위에서 선이 넘는 칸에 올 수 있는 글자.
     const POOL_FRAME_GLYPHS: &str = "─│┌┐└┘├┤┬┴┼";
 

@@ -52,7 +52,7 @@
   - _Difficulty: high_
   - _Boundary: layout::graph_
   - _Depends: 3.3_
-- [ ] 3.5 노드 쪽 다리의 다른 노드 피하기
+- [x] 3.5 노드 쪽 다리의 다른 노드 피하기
   - _DoneWhen: 입력 E의 TB, LR 출력과 `examples/bpmn.md`에서 메시지 선이 끝 노드 말고 다른 노드 상자를 지나지 않고 노드 테두리 글자가 그대로임, 입력 B에서 풀을 지나는 다리가 시퀀스 화살촉 칸과 다른 노드 상자(세로 배치 `나` 윗변)를 지나지 않음, 1.2 테스트와 입력 B 테스트 통과_
   - _Requirements: 1.5, 2.5, 3.2_
   - _Difficulty: high_
