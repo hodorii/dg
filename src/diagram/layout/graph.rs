@@ -289,7 +289,9 @@ impl<'a> Layout<'a> {
         layout.width_limit = width;
         layout.assign_layers();
         layout.push_outputs_below_groups();
-        layout.arrange(false);
+        // 폭을 넘는 배치는 세로 배치에서 층을 접을 때만 쓰인다(접을 줄과 폭 비교). 그 밖에는 넘는지만 맞으면 된다.
+        let too_wide_use = if allow_fold && direction == Direction::TopDown { TooWideUse::Folded } else { TooWideUse::Discarded };
+        layout.arrange(false, too_wide_use);
         let mut best_width = layout.canvas_size().0;
         let mut stalls = 0;
         for _ in 0..MAX_FOLDS {
@@ -303,10 +305,10 @@ impl<'a> Layout<'a> {
             if canvas_width <= width {
                 // 최종 배치에서만 이웃 교환으로 간선을 짧게 한다. 폭이 넘치면 교환 전으로 되돌린다.
                 layout.reset_arrangement();
-                layout.arrange(true);
+                layout.arrange(true, TooWideUse::Discarded);
                 if layout.canvas_size().0 > width {
                     layout.reset_arrangement();
-                    layout.arrange(false);
+                    layout.arrange(false, TooWideUse::Discarded);
                 }
                 return Some(layout.canvas_with_fewest_label_defects());
             }
@@ -314,7 +316,7 @@ impl<'a> Layout<'a> {
                 return None;
             }
             layout.reset_arrangement();
-            layout.arrange(false);
+            layout.arrange(false, too_wide_use);
             // (a) 접기 재시도의 구간 수 절대 상한: 접기 쳇바퀴(폭이 안 줄면서 층·가상 노드·구간
             // 수만 누적)에 빠진 시도를 배치 한 번의 크기가 커지기 전에 접는다.
             if layout.segments.len() > FOLD_SEGMENT_LIMIT {
@@ -334,25 +336,29 @@ impl<'a> Layout<'a> {
         None
     }
 
-    /// 그린 캔버스와 그 위에 놓은 이름표들. `placement`는 메시지 이름표를 놓는 방식이다.
-    fn drawn(&self, placement: PoolLabelPlacement) -> (Canvas, Vec<PlacedLabel>) {
-        let (canvas_width, canvas_height) = self.canvas_size();
-        let mut canvas = Canvas::new(canvas_width, canvas_height);
-        let labels = self.draw(&mut canvas, placement);
-        (canvas, labels)
-    }
-
     /// 그린 그림. 메시지 이름표를 다른 선, 글자, 레인 테두리를 비키는 자리로 옮겼는데 옮긴 이름표에 흠(`LabelDefects`)이
     /// 남으면, 옮기지 않고 가운데에 둔 그림을 다시 그려 그림 전체의 흠이 덜한 쪽을 쓴다. 깨끗한 자리가 없어 가장 가벼운
     /// 흠을 고른 이름표는 다른 이름표 바로 옆이거나 그 글자를 가릴 수 있어서다. 두 그림은 옮긴 이름표만 다르므로 옮긴
-    /// 이름표에 흠이 없으면 다시 그리지 않는다. 배치는 같고 그리기만 다시 하므로 흐름이 많아도 그림 하나 그리는 값이다.
+    /// 이름표에 흠이 없으면 다시 그리지 않는다. 두 그림은 메시지 이름표를 놓기 전까지 같으므로 캔버스 하나에 그 앞까지
+    /// 그려 두고, 이름표와 그 뒤에 그리는 그룹 제목이 바꾼 칸만 적어 두었다가 되돌려 다른 방식으로 다시 놓는다 — 넓은
+    /// 그림에서 캔버스를 둘 두면 메모리가 그림 하나만큼 는다.
     fn canvas_with_fewest_label_defects(&self) -> Canvas {
-        let (canvas, labels) = self.drawn(PoolLabelPlacement::AvoidingLines);
-        if label_defects(&canvas, labels.iter().filter(|label| label.is_moved)) == LabelDefects::default() {
-            return canvas;
+        let (canvas_width, canvas_height) = self.canvas_size();
+        let mut canvas = Canvas::new(canvas_width, canvas_height);
+        let before_labels = self.draw_until_pool_labels(&mut canvas);
+        canvas.start_journal();
+        let labels = self.draw_pool_labels_and_titles(&mut canvas, &before_labels, PoolLabelPlacement::AvoidingLines);
+        if label_defects(&canvas, labels.iter().filter(|label| label.is_moved)) != LabelDefects::default() {
+            let moved_defects = label_defects(&canvas, &labels);
+            canvas.restore_journal();
+            let centered_labels = self.draw_pool_labels_and_titles(&mut canvas, &before_labels, PoolLabelPlacement::Centered);
+            if label_defects(&canvas, &centered_labels) >= moved_defects {
+                canvas.restore_journal();
+                self.draw_pool_labels_and_titles(&mut canvas, &before_labels, PoolLabelPlacement::AvoidingLines);
+            }
         }
-        let (centered_canvas, centered_labels) = self.drawn(PoolLabelPlacement::Centered);
-        if label_defects(&centered_canvas, &centered_labels) < label_defects(&canvas, &labels) { centered_canvas } else { canvas }
+        canvas.stop_journal();
+        canvas
     }
 
     /// (가로, 세로) 캔버스 크기.
@@ -368,17 +374,69 @@ impl<'a> Layout<'a> {
     /// 층이 정해진 뒤의 배치 전 과정. `refine`이면 이웃 교환 탐색까지 한다. 이름표 때문에 무언가를 한 그림이 폭을 넘거나
     /// 폭에 맞추려고 늘린 노드나 비켜 놓은 다리를 덜어 냈으면 이름표를 살피지 않고 다시 놓는다 — 이름표가 테두리나 선에
     /// 걸리는 편이 메시지 끝 표식이 합쳐지거나 그림이 접히거나 다른 방향, 원문 코드로 떨어지는 것보다 낫고, 살피지 않은
-    /// 배치는 접기 판단도 살피기 전과 같다.
-    fn arrange(&mut self, refine: bool) {
-        self.arrange_steps(refine);
-        if (self.has_made_room_for_labels && !self.fits_width()) || (self.avoids_label_conflicts && self.has_shed_extras) {
-            self.reset_arrangement();
-            self.avoids_label_conflicts = false;
-            self.arrange_steps(refine);
+    /// 배치는 접기 판단도 살피기 전과 같다. `too_wide_use`는 폭을 넘는 배치를 부른 쪽이 쓰는지다.
+    ///
+    /// 간격 늘리기와 통로 칸 끼우기는 칸을 끼우기만 해 폭을 줄이지 않으므로, 그 앞에서 이미 폭을 넘는 배치는 끝까지 해도
+    /// 넘는다. 그때 이름표 때문에 무언가를 했으면 어차피 다시 놓으니 남은 단계를 하지 않는다. 폭을 넘는 배치를 버리는
+    /// 쪽이면, 이름표를 살피지 않은 배치가 폭을 넘을 때 어느 쪽을 골라도 넘으므로 이름표를 살핀 배치를 끝내지 않는다.
+    fn arrange(&mut self, refine: bool, too_wide_use: TooWideUse) {
+        self.arrange_until_label_room(refine);
+        if !self.fits_width() {
+            if self.has_made_room_for_labels {
+                self.rearrange_without_labels(refine);
+                return;
+            }
+            // 메시지가 없으면 남은 단계가 싸서, 이름표를 살피지 않은 배치를 따로 하는 편이 오히려 비싸다.
+            if self.may_rearrange_without_labels() && self.has_pool_edges() && self.discards_too_wide(too_wide_use) {
+                self.finish_too_wide_arrangement(refine);
+                return;
+            }
+        }
+        self.finish_arrangement();
+        if self.needs_rearrangement_without_labels() {
+            self.rearrange_without_labels(refine);
         }
     }
 
-    fn arrange_steps(&mut self, refine: bool) {
+    /// 폭을 넘는 배치를 버리는 쪽에서, 간격 늘리기 앞에서 이미 폭을 넘는 이름표를 살핀 배치를 마친다. 이름표를 살피지
+    /// 않은 배치가 폭 안에 들 때만 이름표를 살핀 배치를 끝까지 해 둘 가운데 무엇을 쓸지 가린다.
+    fn finish_too_wide_arrangement(&mut self, refine: bool) {
+        let mut without_labels = self.clone();
+        without_labels.rearrange_without_labels(refine);
+        if without_labels.fits_width() {
+            self.finish_arrangement();
+            if !self.needs_rearrangement_without_labels() {
+                return;
+            }
+        }
+        *self = without_labels;
+    }
+
+    /// 이름표를 살핀 배치를 이름표를 살피지 않고 다시 놓아야 하는지(`arrange()`).
+    fn needs_rearrangement_without_labels(&self) -> bool {
+        (self.has_made_room_for_labels && !self.fits_width()) || (self.avoids_label_conflicts && self.has_shed_extras)
+    }
+
+    /// 이름표를 살피는 배치라 이름표를 살피지 않고 다시 놓을 수 있는지. 가로 배치는 이름표를 살펴도 옮기거나 늘리는
+    /// 것이 없다.
+    fn may_rearrange_without_labels(&self) -> bool {
+        self.avoids_label_conflicts && self.direction == Direction::TopDown
+    }
+
+    /// 폭을 넘는 이 배치를 부른 쪽이 버리는지: 버린다고 했거나, 접을 줄이 없어 층 접기가 쓰지 않는다.
+    fn discards_too_wide(&self, too_wide_use: TooWideUse) -> bool {
+        too_wide_use == TooWideUse::Discarded || self.foldable_rows().is_empty()
+    }
+
+    fn rearrange_without_labels(&mut self, refine: bool) {
+        self.reset_arrangement();
+        self.avoids_label_conflicts = false;
+        self.arrange_until_label_room(refine);
+        self.finish_arrangement();
+    }
+
+    /// 배치의 앞 단계: 층 안 순서, 접점, 배선, 라벨 자리까지.
+    fn arrange_until_label_room(&mut self, refine: bool) {
         self.make_segments();
         self.build_blocks();
         for _ in 0..4 {
@@ -399,6 +457,10 @@ impl<'a> Layout<'a> {
             self.straighten();
             self.route_with_message_end_growth();
         }
+    }
+
+    /// 배치의 뒤 단계: 이름표 자리 간격 늘리기와 통로 칸 끼우기, 폭을 넘으면 덜어 내기.
+    fn finish_arrangement(&mut self) {
         self.widen_lane_gaps_for_labels();
         // 세로 배치에서는 늘린 노드가 통로 칸 끼우기를 거쳐서야 폭을 바꾸므로, 끼우기 전 상태를 두었다가 넘치면 덜어 낸다.
         // 비켜 놓은 메시지 다리도 폭을 바꾸지만, 그 전 상태는 걸린 다리가 있을 때만 칸 끼우기 단계가 둔다. 끼우기 전에
@@ -537,21 +599,15 @@ impl<'a> Layout<'a> {
 
     /// 접기 후보: 넓은 "줄"(한 블록의 한 층에 나란히 놓인 자식들)부터, 줄 안에서는 오른쪽 자식부터.
     fn fold_candidates(&self) -> Vec<FoldCandidate> {
-        let mut rows: Vec<(usize, usize, usize)> = Vec::new(); // (폭, 블록, 층)
-        for block in 0..self.blocks.len() {
-            if !self.blocks[block].registered {
-                continue;
-            }
-            for layer in self.blocks[block].layer_min..=self.blocks[block].layer_max {
-                let row = self.row_children(block, layer);
-                if row.iter().filter(|&&c| self.is_movable(c)).count() < 2 {
-                    continue;
-                }
+        let mut rows: Vec<(usize, usize, usize)> = self
+            .foldable_rows()
+            .into_iter()
+            .map(|(block, layer, row)| {
                 let start = row.iter().map(|&c| self.child_span(c).0).min().unwrap_or(0);
                 let end = row.iter().map(|&c| self.child_span(c).1).max().unwrap_or(0);
-                rows.push((end - start, block, layer));
-            }
-        }
+                (end - start, block, layer)
+            })
+            .collect(); // (폭, 블록, 층)
         rows.sort_by_key(|row| std::cmp::Reverse(row.0));
         let mut candidates = Vec::new();
         for (_, block, layer) in rows.into_iter().take(1) {
@@ -569,6 +625,17 @@ impl<'a> Layout<'a> {
             }
         }
         candidates
+    }
+
+    /// 접을 수 있는 줄(블록, 층, 그 줄의 자식들): 옮길 수 있는 자식이 둘 이상인 줄. 어느 줄이 있는지는 블록과 층에만
+    /// 달렸고 자리에는 달리지 않는다.
+    fn foldable_rows(&self) -> Vec<(usize, usize, Vec<Child>)> {
+        (0..self.blocks.len())
+            .filter(|&block| self.blocks[block].registered)
+            .flat_map(|block| (self.blocks[block].layer_min..=self.blocks[block].layer_max).map(move |layer| (block, layer)))
+            .map(|(block, layer)| (block, layer, self.row_children(block, layer)))
+            .filter(|(_, _, row)| row.iter().filter(|&&c| self.is_movable(c)).count() >= 2)
+            .collect()
     }
 
     /// 후보를 적용한다: 노드면 한 층 아래로, 하위 그룹이면 통째로 나머지 자식들 아래로(최소 층 제약).
@@ -1041,7 +1108,7 @@ impl<'a> Layout<'a> {
         node.shape == Shape::Anchor && node.group.is_some_and(|g| self.graph.groups[g].kind == GroupKind::Lane)
     }
 
-    /// 풀 닻에 닿는 간선 — 층 배치·구간 배선에서 빠지고 `draw_pool_edges()`가 풀 면으로 따로 긋는다.
+    /// 풀 닻에 닿는 간선 — 층 배치·구간 배선에서 빠지고 `draw_pool_edge_lines()`가 풀 면으로 따로 긋는다.
     fn is_pool_edge(&self, edge: usize) -> bool {
         let edge = &self.graph.edges[edge];
         edge.from != edge.to && (self.is_pool_anchor(edge.from) || self.is_pool_anchor(edge.to))
@@ -2085,7 +2152,7 @@ impl<'a> Layout<'a> {
         let is_free = |x: usize| stubs.iter().all(|&stub| stub + 1 < x || stub > x + label_width);
         if let Some(x) = center {
             let is_clear = |&x: &usize| is_free(x) && !placed_labels.iter().any(|&(start, end)| x < end && start < x + label_width);
-            return starts_between_sides(low, high, label_width, lane_sides).into_iter().find(is_clear).map_or((x, false), |inside| (inside, true));
+            return starts_between_sides(low, high, label_width, lane_sides).find(is_clear).map_or((x, false), |inside| (inside, true));
         }
         let right = high + 2;
         let inner_start = if lane_sides.is_empty() { 0 } else { self.routing_block_inner_start(s) };
@@ -2218,8 +2285,8 @@ impl<'a> Layout<'a> {
         named_routes
             .iter()
             .filter_map(|(route, label_width)| {
-                let run = self.pool_edge_label_run(*label_width, &route.waypoints())?;
-                (run.covers_lane_side && starts_between_sides(run.start, run.end, *label_width, lane_sides).is_empty()).then_some((run.start, run.end, *label_width))
+                let run = self.pool_edge_label_run(*label_width, &self.horizontal_runs(&route.waypoints()), lane_sides)?;
+                (run.covers_lane_side && starts_between_sides(run.start, run.end, *label_width, lane_sides).next().is_none()).then_some((run.start, run.end, *label_width))
             })
             .collect()
     }
@@ -2421,8 +2488,8 @@ impl<'a> Layout<'a> {
         }
     }
 
-    /// 그림을 그리고 놓은 간선 이름표들을 돌려준다. `placement`는 메시지 이름표를 놓는 방식이다.
-    fn draw(&self, canvas: &mut Canvas, placement: PoolLabelPlacement) -> Vec<PlacedLabel> {
+    /// 메시지 이름표를 놓기 전까지 그린다: 그룹, 노드, 흐름과 그 이름표, 메시지 선과 표식.
+    fn draw_until_pool_labels(&self, canvas: &mut Canvas) -> DrawnBeforePoolLabels {
         if self.debug {
             for (i, node) in self.lnodes.iter().enumerate() {
                 if let Some(n) = node.node {
@@ -2455,22 +2522,29 @@ impl<'a> Layout<'a> {
         for s in 0..self.segments.len() {
             self.draw_segment(canvas, s);
         }
-        let mut placed: Vec<PlacedLabel> = (0..self.segments.len()).filter_map(|s| self.draw_segment_decorations(canvas, s)).collect();
+        let segment_labels: Vec<PlacedLabel> = (0..self.segments.len()).filter_map(|s| self.draw_segment_decorations(canvas, s)).collect();
         self.draw_self_loops(canvas);
-        self.draw_pool_edges(canvas, placement, &mut placed);
+        let pool_edge_routes = self.draw_pool_edge_lines(canvas, &segment_labels);
+        DrawnBeforePoolLabels { pool_edge_routes, segment_labels }
+    }
+
+    /// 메시지 이름표를 `placement` 방식으로 놓고 그룹 제목을 그린다. 놓은 간선 이름표(흐름 이름표 포함)를 돌려준다.
+    fn draw_pool_labels_and_titles(&self, canvas: &mut Canvas, before_labels: &DrawnBeforePoolLabels, placement: PoolLabelPlacement) -> Vec<PlacedLabel> {
+        let mut placed = before_labels.segment_labels.clone();
+        placed.extend(self.draw_pool_edge_labels(canvas, &before_labels.pool_edge_routes, placement));
         canvas.set_edge_mode(false);
         self.draw_group_titles(canvas);
         placed
     }
 
     /// 풀 간선의 한쪽 끝(흐름축 위치, 교차축 위치, 상대 끝 쪽으로 향하는 교차축 부호). 노드는 상대를
-    /// 향한 면 바로 바깥 칸에서, 풀은 상대를 향한 테두리 칸(면)의 흐름축 중앙에서 끝난다.
-    fn pool_edge_end(&self, end: usize, other: usize) -> (usize, usize, bool) {
+    /// 향한 면 바로 바깥 칸에서, 풀은 상대를 향한 테두리 칸(면)의 흐름축 중앙에서 끝난다. `face_alongs`는 풀 닻 블록마다
+    /// 그 면의 흐름축 중앙(`pool_face_alongs()`)이다.
+    fn pool_edge_end(&self, end: usize, other: usize, face_alongs: &BTreeMap<usize, usize>) -> (usize, usize, bool) {
         let (lo, hi) = self.pool_edge_end_across_range(end);
         let toward_higher = self.faces_higher_across(end, other);
         if self.is_pool_anchor(end) {
-            let block = self.lnode_block[end];
-            let along = (self.banner_start(self.lane_depth(block)) + self.lane_along_end(block)) / 2;
+            let along = face_alongs[&self.lnode_block[end]];
             (along, if toward_higher { hi } else { lo }, toward_higher)
         } else {
             // 점 표기(이벤트)는 글자 칸, 상자는 흐름축 가운데에서 나간다.
@@ -2497,23 +2571,29 @@ impl<'a> Layout<'a> {
     }
 
     /// 풀 닻에 닿는 메시지 흐름: 끝에서 교차축으로 나가 풀 바로 바깥 통로까지, 통로를 따라 흐름축으로,
-    /// 다시 교차축으로 상대 끝까지 — 풀 쪽은 면에 수직으로 닿는다. 이름표는 모든 메시지 선과 표식을 그린 뒤에 얹어야
-    /// 뒤에 그린 선이 앞서 놓은 이름표를 덮지 않고, 이름표가 다른 메시지의 선과 표식을 비킬 수 있다. 이름표는 놓을 자리가
-    /// 좁은 메시지부터 얹는다 — 자리가 넓은 이름표가 먼저 좁은 조각을 차지하면 좁은 쪽은 비킬 데가 없다. 메시지 선이
-    /// 앞서 놓은 구간 이름표(`placed`) 줄을 지나면 이름표 글자 사이 빈칸이 선 글자로 바뀌므로 구간 이름표를 다시 쓴다
-    /// (메시지 표식은 남긴다). 놓은 이름표를 `placed`에 더한다.
-    fn draw_pool_edges(&self, canvas: &mut Canvas, placement: PoolLabelPlacement, placed: &mut Vec<PlacedLabel>) {
+    /// 다시 교차축으로 상대 끝까지 — 풀 쪽은 면에 수직으로 닿는다. 메시지 선과 표식을 긋고 그린 경로를 돌려준다. 메시지
+    /// 선이 앞서 놓은 구간 이름표(`segment_labels`) 줄을 지나면 이름표 글자 사이 빈칸이 선 글자로 바뀌므로 구간 이름표를
+    /// 다시 쓴다(메시지 표식은 남긴다). 메시지 이름표는 모든 선과 표식을 그린 뒤 `draw_pool_edge_labels()`가 얹는다.
+    fn draw_pool_edge_lines(&self, canvas: &mut Canvas, segment_labels: &[PlacedLabel]) -> Vec<PoolEdgeRoute> {
         let routes = self.planned_pool_edge_routes();
         for route in &routes {
             debug_assert!(self.channel_fits_its_gap(route), "통로 줄은 끼워 둔 사이 통로 칸 안에 놓여야 한다");
             self.draw_pool_edge_line(canvas, route);
         }
-        for label in placed.iter() {
+        for label in segment_labels {
             put_text_over_lines(canvas, label.x, label.row, &label.text, self.theme.diagram_label);
         }
+        routes
+    }
+
+    /// 메시지(`routes`) 이름표를 `placement` 방식으로 얹고 놓은 이름표를 돌려준다. 모든 메시지 선과 표식을 그린 뒤에
+    /// 얹어야 뒤에 그린 선이 앞서 놓은 이름표를 덮지 않고, 이름표가 다른 메시지의 선과 표식을 비킬 수 있다. 놓을 자리가
+    /// 좁은 메시지부터 얹는다 — 자리가 넓은 이름표가 먼저 좁은 조각을 차지하면 좁은 쪽은 비킬 데가 없다.
+    fn draw_pool_edge_labels(&self, canvas: &mut Canvas, routes: &[PoolEdgeRoute], placement: PoolLabelPlacement) -> Vec<PlacedLabel> {
         let mut by_label_room: Vec<&PoolEdgeRoute> = routes.iter().collect();
         by_label_room.sort_by_cached_key(|route| self.pool_edge_label_room(route));
-        placed.extend(by_label_room.into_iter().filter_map(|route| self.draw_pool_edge_label(canvas, route, placement)));
+        let lane_sides = self.lane_side_columns();
+        by_label_room.into_iter().filter_map(|route| self.draw_pool_edge_label(canvas, route, placement, &lane_sides)).collect()
     }
 
     /// 메시지 선과 양 끝 표식을 긋는다.
@@ -2561,19 +2641,20 @@ impl<'a> Layout<'a> {
         longest.saturating_sub(width_of(&label.replace('\n', " ")))
     }
 
-    /// 메시지 이름표를 경로의 가로 조각에 얹고(들어갈 때만) 놓은 이름표를 돌려준다.
-    fn draw_pool_edge_label(&self, canvas: &mut Canvas, route: &PoolEdgeRoute, placement: PoolLabelPlacement) -> Option<PlacedLabel> {
+    /// 메시지 이름표를 경로의 가로 조각에 얹고(들어갈 때만) 놓은 이름표를 돌려준다. `lane_sides`는 가로 조각을 가로지르는
+    /// 레인 변의 캔버스 열(`lane_side_columns()`)이다.
+    fn draw_pool_edge_label(&self, canvas: &mut Canvas, route: &PoolEdgeRoute, placement: PoolLabelPlacement, lane_sides: &[usize]) -> Option<PlacedLabel> {
         let edge = &self.graph.edges[route.edge];
         if edge.label.is_empty() {
             return None;
         }
         let text = edge.label.replace('\n', " ");
         let width = width_of(&text);
-        let waypoints = route.waypoints();
-        let run = self.pool_edge_label_run(width, &waypoints)?;
+        let runs = self.horizontal_runs(&route.waypoints());
+        let run = self.pool_edge_label_run(width, &runs, lane_sides)?;
         let centered = (run.centered, run.row);
         let (x, row) = match placement {
-            PoolLabelPlacement::AvoidingLines => self.pool_edge_label_x(canvas, width, &waypoints).unwrap_or(centered),
+            PoolLabelPlacement::AvoidingLines => self.pool_edge_label_x(canvas, width, &runs, lane_sides).unwrap_or(centered),
             PoolLabelPlacement::Centered => centered,
         };
         put_text_over_lines(canvas, x, row, &text, self.theme.diagram_label);
@@ -2595,13 +2676,25 @@ impl<'a> Layout<'a> {
 
     /// 풀 간선마다 양 끝을 `pool_edge_end()` 자리에 둔 경로(칸 나누기 전).
     fn unspread_pool_edge_routes(&self) -> Vec<PoolEdgeRoute> {
+        let face_alongs = self.pool_face_alongs();
         (0..self.graph.edges.len())
             .filter(|&i| self.is_pool_edge(i))
             .map(|i| {
                 let edge = &self.graph.edges[i];
                 let is_pool_at_from = self.is_pool_anchor(edge.from);
-                PoolEdgeRoute { edge: i, from: self.pool_edge_end(edge.from, edge.to), to: self.pool_edge_end(edge.to, edge.from), is_pool_at_from, depth: 1, node_side_jog: None, shares_node_side: false, is_detoured: false }
+                let (from, to) = (self.pool_edge_end(edge.from, edge.to, &face_alongs), self.pool_edge_end(edge.to, edge.from, &face_alongs));
+                PoolEdgeRoute { edge: i, from, to, is_pool_at_from, depth: 1, node_side_jog: None, shares_node_side: false, is_detoured: false }
             })
+            .collect()
+    }
+
+    /// 풀 닻 블록마다 그 면의 흐름축 중앙. 레인 제목 칸과 그림 끝을 셀 때마다 모든 블록을 훑으므로, 메시지 끝마다 세지
+    /// 않고 블록마다 한 번 센다.
+    fn pool_face_alongs(&self) -> BTreeMap<usize, usize> {
+        (0..self.graph.nodes.len())
+            .filter(|&node| self.is_pool_anchor(node))
+            .map(|node| self.lnode_block[node])
+            .map(|block| (block, (self.banner_start(self.lane_depth(block)) + self.lane_along_end(block)) / 2))
             .collect()
     }
 
@@ -2657,7 +2750,7 @@ impl<'a> Layout<'a> {
     /// 시퀀스 흐름 끝 칸에 덜 걸리는 옮김을 고른다. 그 순위가 줄어드는 옮김만 받으므로 끝난다. 직교 교차는 충돌이
     /// 아니다(건너뛰기 글자가 맡는다). 그다음 아직 장애물에 걸린 다리를 비켜 놓고(허락될 때), 비켜 놓았으면 true.
     fn separate_colliding_legs(&self, routes: &mut Vec<PoolEdgeRoute>, obstacles: &LegObstacles, prepared_detours: &[Option<Vec<PoolEdgeRoute>>]) -> bool {
-        let prepared_paths: Vec<Option<Vec<(usize, usize)>>> = prepared_detours.iter().zip(routes.iter()).map(|(prepared, route)| prepared.as_ref().map(|_| route.waypoints())).collect();
+        let prepared_paths: Vec<Option<RoutePoints>> = prepared_detours.iter().zip(routes.iter()).map(|(prepared, route)| prepared.as_ref().map(|_| route.waypoints())).collect();
         let mut search = self.start_leg_search(std::mem::take(routes));
         search.count_obstacle_hits(|route| self.obstacle_hits(route, obstacles));
         // 순위가 줄어드는 옮김만 받아 끝나지만, 메시지가 아주 많은 문서에서 오래 돌지 않게 경로 수에 비례해 끊는다.
@@ -2730,21 +2823,24 @@ impl<'a> Layout<'a> {
     /// 걸렸는데 그런 자리가 없으면 구간 이름표만 지나는 자리를 받는다 — 이름표 한 칸이 끊기는 편이 노드나 테두리를
     /// 지나는 것보다 낫다.
     fn detour_moves(&self, scan: &DetourScan, r: usize) -> Vec<PoolEdgeRoute> {
-        let clear = self.detour_moves_crossing(scan, r, false);
-        if !clear.is_empty() || !scan.obstacles.has_labels() || !scan.routes[r].legs().any(|line| scan.obstacles.hits_besides_labels(&line) > 0) {
-            return clear;
-        }
-        self.detour_moves_crossing(scan, r, true)
+        let may_cross_labels = scan.obstacles.has_labels() && scan.routes[r].legs().any(|line| scan.obstacles.hits_besides_labels(&line) > 0);
+        let places = self.detour_places(scan, r, may_cross_labels);
+        if places.clear.is_empty() && may_cross_labels { places.crossing_labels } else { places.clear }
     }
 
-    /// `detour_moves()`의 후보. `crosses_labels`면 구간 이름표에 걸린 자리도 받는다.
-    fn detour_moves_crossing(&self, scan: &DetourScan, r: usize, crosses_labels: bool) -> Vec<PoolEdgeRoute> {
+    /// 장애물에 걸리지 않는 `detour_moves()` 후보. 구간 이름표만 지나는 자리는 받지 않는다.
+    fn clear_detour_moves(&self, scan: &DetourScan, r: usize) -> Vec<PoolEdgeRoute> {
+        self.detour_places(scan, r, false).clear
+    }
+
+    /// 다리를 옮겨 볼 자리를 꺾임 앞뒤로 한 번 훑어 모은 후보: 장애물에 걸리지 않는 것과, `wants_crossing_labels`면
+    /// 구간 이름표만 지나는 것까지 받은 것. 이름표를 지나는 자리를 받는 쪽이 같은 자리에서 먼저 차므로, 걸리지 않는 후보를
+    /// 다 찾을 때까지만 훑으면 둘 다 찾는다 — 따로 훑으면 걸리지 않는 후보가 없을 때 같은 자리들을 두 번 끝까지 훑는다.
+    fn detour_places(&self, scan: &DetourScan, r: usize, wants_crossing_labels: bool) -> DetourCandidates {
         let (bend, lower, higher) = self.detour_reach(&scan.routes[r]);
-        let mut places = self.clear_detour_places(scan, r, lower, crosses_labels);
-        places.extend(self.clear_detour_places(scan, r, higher, crosses_labels));
-        // 같은 순위면 먼저 본 후보를 두므로 가까운 자리부터 둔다(같은 거리면 흐름축 앞쪽).
-        places.sort_by_key(|&(along, _)| along.abs_diff(bend));
-        places.into_iter().flat_map(|(_, clear)| clear).collect()
+        let mut places = self.detour_places_on_side(scan, r, lower, wants_crossing_labels);
+        places.extend(self.detour_places_on_side(scan, r, higher, wants_crossing_labels));
+        DetourCandidates { clear: nearest_places_first(places.clear, bend), crossing_labels: nearest_places_first(places.crossing_labels, bend) }
     }
 
     /// 다리를 옮겨 볼 흐름축 자리: 지금 꺾임과, 그 앞쪽(가까운 자리부터)과 뒤쪽. 풀 면 안쪽, 꺾임에서
@@ -2756,16 +2852,29 @@ impl<'a> Layout<'a> {
         (bend, (low..bend.min(high + 1)).rev(), (bend + 1).max(low)..=high)
     }
 
-    /// `alongs` 차례로 훑어 다리가 장애물에 걸리지 않는 후보가 있는 첫 `DETOURS_PER_SIDE`곳과 그 후보들.
-    fn clear_detour_places(&self, scan: &DetourScan, r: usize, alongs: impl Iterator<Item = usize>, crosses_labels: bool) -> Vec<(usize, Vec<PoolEdgeRoute>)> {
-        alongs.map(|along| (along, self.clear_detours_at(scan, r, along, crosses_labels))).filter(|(_, clear)| !clear.is_empty()).take(DETOURS_PER_SIDE).collect()
-    }
-
-    /// 흐름축 `along`에서 다리를 내는 후보 가운데 장애물에 걸리지 않는 것. `crosses_labels`면 구간 이름표에 걸린 것도
-    /// 받는다.
-    fn clear_detours_at(&self, scan: &DetourScan, r: usize, along: usize, crosses_labels: bool) -> Vec<PoolEdgeRoute> {
-        let hits = |line: &StraightLine| if crosses_labels { scan.obstacles.hits_besides_labels(line) } else { scan.obstacles.hits(line) };
-        self.detours_at(&scan.routes[r], scan.end_cells, along).into_iter().filter(|moved| !moved.legs().any(|line| hits(&line) > 0)).collect()
+    /// `alongs` 차례로 훑어 다리가 장애물에 걸리지 않는 후보가 있는 첫 `DETOURS_PER_SIDE`곳과 그 후보들, `wants_crossing_labels`면
+    /// 구간 이름표만 지나는 후보까지 받은 첫 `DETOURS_PER_SIDE`곳과 그 후보들.
+    fn detour_places_on_side(&self, scan: &DetourScan, r: usize, alongs: impl Iterator<Item = usize>, wants_crossing_labels: bool) -> DetourPlaces {
+        let mut places = DetourPlaces::default();
+        for along in alongs {
+            if places.clear.len() == DETOURS_PER_SIDE && (!wants_crossing_labels || places.crossing_labels.len() == DETOURS_PER_SIDE) {
+                break;
+            }
+            let (mut clear, mut crossing_labels) = (Vec::new(), Vec::new());
+            for moved in self.detours_at(&scan.routes[r], scan.end_cells, along) {
+                match scan.obstacles.clearance(&moved) {
+                    LegClearance::Clear if wants_crossing_labels => {
+                        crossing_labels.push(moved.clone());
+                        clear.push(moved);
+                    }
+                    LegClearance::Clear => clear.push(moved),
+                    LegClearance::CrossesLabels if wants_crossing_labels => crossing_labels.push(moved),
+                    _ => {}
+                }
+            }
+            places.add(along, clear, crossing_labels);
+        }
+        places
     }
 
     /// 경로 `r`의 상대 끝 쪽 다리를 흐름축 `along`에서 내는 경로들: 두 끝을 함께 옮겨 곧게 긋기(통로를 따라 달리지
@@ -3294,7 +3403,7 @@ impl<'a> Layout<'a> {
     fn prepared_detours(&self, routes: &[PoolEdgeRoute], obstacles: &LegObstacles) -> Vec<Option<Vec<PoolEdgeRoute>>> {
         let end_cells = EndCells::of(routes);
         let scan = DetourScan { routes, end_cells: &end_cells, obstacles };
-        (0..routes.len()).map(|r| self.hits_any_obstacle(&routes[r], obstacles).then(|| self.detour_moves_crossing(&scan, r, false))).collect()
+        (0..routes.len()).map(|r| self.hits_any_obstacle(&routes[r], obstacles).then(|| self.clear_detour_moves(&scan, r))).collect()
     }
 
     /// 비켜 갈 자리가 없는 경로(`stranded`)마다 자리를 마련한다: 끝 노드 바로 앞 칸이 막혔으면 그 앞에 칸을 끼우고,
@@ -3367,7 +3476,7 @@ impl<'a> Layout<'a> {
         let scan = DetourScan { routes: &search.routes, end_cells: &end_cells, obstacles: &obstacles };
         legs.iter()
             .map(|&r| {
-                search.obstacle_hits_of[r] == 0 || self.detour_moves_crossing(&scan, r, false).into_iter().any(|moved| self.try_leg_move(&search, r, moved, &obstacles, true).rank.0 <= search.collision_count)
+                search.obstacle_hits_of[r] == 0 || self.clear_detour_moves(&scan, r).into_iter().any(|moved| self.try_leg_move(&search, r, moved, &obstacles, true).rank.0 <= search.collision_count)
             })
             .collect()
     }
@@ -3493,14 +3602,15 @@ impl<'a> Layout<'a> {
             .collect()
     }
 
-    /// 경로의 가로 조각 가운데 가장 긴 것과 그 가운데 자리(들어갈 때만).
-    fn pool_edge_label_run(&self, width: usize, waypoints: &[(usize, usize)]) -> Option<PoolEdgeLabelRun> {
-        let (start, end, row) = self.horizontal_runs(waypoints).into_iter().next()?;
+    /// 경로의 가로 조각(`horizontal_runs()`) 가운데 가장 긴 것과 그 가운데 자리(들어갈 때만). `lane_sides`는 가로 조각을
+    /// 가로지르는 레인 변의 캔버스 열이다.
+    fn pool_edge_label_run(&self, width: usize, runs: &[(usize, usize, usize)], lane_sides: &[usize]) -> Option<PoolEdgeLabelRun> {
+        let &(start, end, row) = runs.first()?;
         if end - start < width + POOL_LABEL_RUN_MARGIN {
             return None;
         }
         let centered = centered_label_start(start, end, width);
-        let covers_lane_side = covers_any(centered, width, &self.lane_side_columns());
+        let covers_lane_side = covers_any(centered, width, lane_sides);
         Some(PoolEdgeLabelRun { start, end, row, centered, covers_lane_side })
     }
 
@@ -3516,12 +3626,12 @@ impl<'a> Layout<'a> {
     /// 메시지 이름표를 놓을 자리(첫 칸, 줄). 이름표가 들어가는 가로 조각을 긴 것부터 보며, 조각마다 가운데, 레인 테두리로
     /// 나뉜 조각 안 자리, 그 밖의 자리를 가운데에 가까운 것부터 본다. 흠(`LabelSpotFaults`)이 없는 첫 자리를 고른다 — 앞서
     /// 그린 노드 이름, 이름표, 표식, 레인 테두리, 다른 메시지의 세로선을 덮거나 글자에 붙지 않는다. 그런 자리가 없으면
-    /// 흠이 가장 가벼운 자리(같으면 조각 가운데에 가까운 자리)를 고른다. 들어가는 조각이 없으면 `None`.
-    fn pool_edge_label_x(&self, canvas: &Canvas, width: usize, waypoints: &[(usize, usize)]) -> Option<(usize, usize)> {
-        let sides = self.lane_side_columns();
-        let runs: Vec<(usize, usize, usize)> = self.horizontal_runs(waypoints).into_iter().filter(|&(start, end, _)| end - start >= width + POOL_LABEL_RUN_MARGIN).collect();
-        let faults_at = |x: usize, row: usize| label_spot_faults(canvas, x, row, width, &sides);
-        let clean = runs.iter().find_map(|&(start, end, row)| label_starts_by_preference(start, end, width, &sides).into_iter().find(|&x| faults_at(x, row) == LabelSpotFaults::default()).map(|x| (x, row)));
+    /// 흠이 가장 가벼운 자리(같으면 조각 가운데에 가까운 자리)를 고른다. 들어가는 조각이 없으면 `None`. `runs`는 경로의
+    /// 가로 조각들(`horizontal_runs()`), `lane_sides`는 그 조각을 가로지르는 레인 변의 캔버스 열이다.
+    fn pool_edge_label_x(&self, canvas: &Canvas, width: usize, runs: &[(usize, usize, usize)], lane_sides: &[usize]) -> Option<(usize, usize)> {
+        let runs: Vec<(usize, usize, usize)> = runs.iter().copied().filter(|&(start, end, _)| end - start >= width + POOL_LABEL_RUN_MARGIN).collect();
+        let faults_at = |x: usize, row: usize| label_spot_faults(canvas, x, row, width, lane_sides);
+        let clean = runs.iter().find_map(|&(start, end, row)| label_starts_by_preference(start, end, width, lane_sides).find(|&x| faults_at(x, row) == LabelSpotFaults::default()).map(|x| (x, row)));
         clean.or_else(|| {
             runs.iter()
                 .flat_map(|&(start, end, row)| {
@@ -3873,11 +3983,9 @@ fn put_text_over_lines(canvas: &mut Canvas, x: usize, y: usize, text: &str, styl
 
 /// 조각 `start`~`end`에 폭 `width` 이름표를 놓아 볼 첫 칸들, 먼저 볼 것부터: 가운데, `sides`(레인 테두리)로 나뉜 조각
 /// 안 자리, 조각 안의 나머지 자리(가운데에 가까운 것부터). 앞 칸이 겹칠 수 있다.
-fn label_starts_by_preference(start: usize, end: usize, width: usize, sides: &[usize]) -> Vec<usize> {
+fn label_starts_by_preference(start: usize, end: usize, width: usize, sides: &[usize]) -> impl Iterator<Item = usize> + use<> {
     let centered = centered_label_start(start, end, width);
-    let mut anywhere: Vec<usize> = (start + 1..=end - width).collect();
-    anywhere.sort_by_key(|&x| (x.abs_diff(centered), x));
-    std::iter::once(centered).chain(starts_between_sides(start, end, width, sides)).chain(anywhere).collect()
+    std::iter::once(centered).chain(starts_between_sides(start, end, width, sides)).chain(starts_nearest_first(start + 1, end - width, centered))
 }
 
 /// 캔버스 `row`줄 `x`칸부터 폭 `width` 이름표를 놓으면 생기는 흠. 앞 필드일수록 무거워 필드 순서대로 견준다.
@@ -3976,21 +4084,26 @@ fn covers_any(x: usize, width: usize, sides: &[usize]) -> bool {
 /// `low`, `high`(선의 꺾임이나 끝) 사이를 `sides` 칸으로 나눈 조각 가운데 폭 `width`가 들어가는 조각 안의 시작 칸들.
 /// 조각 가운데가 구간 가운데에 가까운 조각부터, 조각 안에서는 가운데에 맞춘 자리부터 바깥으로 늘어놓는다. 레인 안쪽이든
 /// 두 레인 사이 간격이든 들어가는 쪽을 고를 수 있다.
-fn starts_between_sides(low: usize, high: usize, width: usize, sides: &[usize]) -> Vec<usize> {
+fn starts_between_sides(low: usize, high: usize, width: usize, sides: &[usize]) -> impl Iterator<Item = usize> + use<> {
     let inner_sides = sides.iter().copied().filter(|&side| low < side && side < high);
     let cuts: Vec<usize> = std::iter::once(low).chain(inner_sides).chain(std::iter::once(high)).collect();
     let mut fitting: Vec<(usize, usize)> = cuts.windows(2).filter(|cut| cut[1] - cut[0] > width).map(|cut| (cut[0], cut[1])).collect();
     fitting.sort_by_key(|&(start, end)| (start + end).abs_diff(low + high));
-    fitting
-        .into_iter()
-        .flat_map(|(start, end)| {
-            let (first, last) = (start + 1, end - width);
-            let centered = first + (last - first) / 2;
-            let mut starts: Vec<usize> = (first..=last).collect();
-            starts.sort_by_key(|&x| (x.abs_diff(centered), x));
-            starts
-        })
-        .collect()
+    fitting.into_iter().flat_map(move |(start, end)| {
+        let (first, last) = (start + 1, end - width);
+        starts_nearest_first(first, last, first + (last - first) / 2)
+    })
+}
+
+/// `first..=last` 칸들을 `centered`에 가까운 것부터(거리가 같으면 앞 칸부터) — 차례대로 늘어놓아 정렬한 것과 같은
+/// 순서를, 긴 조각에서도 앞 몇 칸만 볼 때 모두 늘어놓지 않고 낸다.
+fn starts_nearest_first(first: usize, last: usize, centered: usize) -> impl Iterator<Item = usize> {
+    let reach = centered.abs_diff(first).max(centered.abs_diff(last));
+    (0..=reach).flat_map(move |distance| {
+        let before = centered.checked_sub(distance);
+        let after = (distance > 0).then(|| centered + distance);
+        [before, after].into_iter().flatten().filter(move |&x| first <= x && x <= last)
+    })
 }
 
 /// 끝 라벨을 선의 어느 쪽에 둘지: 접점이 둘이면 왼쪽 것은 선 왼쪽에, 그 밖에는 모두 오른쪽에 둔다
@@ -4017,6 +4130,45 @@ struct EndAttachment {
     other_along: usize,
     route: usize,
     is_from: bool,
+}
+
+/// 경로의 경유점이나 꺾임점. 많아야 여섯 개(풀 끝, 통로의 두 점, 비켜 가기의 두 점, 상대 끝)라 힙을 쓰지 않고
+/// 담는다 — 비켜 갈 자리를 훑을 때 후보마다 다리를 다시 센다.
+#[derive(Clone, Copy, Default)]
+struct RoutePoints {
+    points: [(usize, usize); 6],
+    len: usize,
+}
+
+impl RoutePoints {
+    fn push(&mut self, point: (usize, usize)) {
+        self.points[self.len] = point;
+        self.len += 1;
+    }
+
+    fn pop(&mut self) {
+        self.len -= 1;
+    }
+}
+
+impl PartialEq for RoutePoints {
+    fn eq(&self, other: &RoutePoints) -> bool {
+        **self == **other
+    }
+}
+
+impl std::ops::Deref for RoutePoints {
+    type Target = [(usize, usize)];
+
+    fn deref(&self) -> &[(usize, usize)] {
+        &self.points[..self.len]
+    }
+}
+
+impl std::ops::DerefMut for RoutePoints {
+    fn deref_mut(&mut self) -> &mut [(usize, usize)] {
+        &mut self.points[..self.len]
+    }
 }
 
 /// 풀 닻에 닿는 간선 하나의 경로. 끝은 `pool_edge_end()`와 같은 (흐름축, 교차축, 상대 쪽 부호).
@@ -4084,6 +4236,21 @@ impl LaneLabelFaults {
     }
 }
 
+/// 폭을 넘는 배치를 부른 쪽이 어떻게 쓰는지.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TooWideUse {
+    /// 버린다. 폭을 넘는지만 맞으면 된다.
+    Discarded,
+    /// 층 접기가 접을 줄을 고르고 폭을 견주는 데 쓴다.
+    Folded,
+}
+
+/// 메시지 이름표를 놓기 전까지 그린 것: 그린 메시지 경로와 놓은 구간 이름표.
+struct DrawnBeforePoolLabels {
+    pool_edge_routes: Vec<PoolEdgeRoute>,
+    segment_labels: Vec<PlacedLabel>,
+}
+
 /// 메시지 이름표를 놓는 방식.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PoolLabelPlacement {
@@ -4094,6 +4261,7 @@ enum PoolLabelPlacement {
 }
 
 /// 캔버스에 놓은 간선 이름표 하나(첫 칸, 줄, 글자)와, 메시지 이름표를 가장 긴 가로 조각 가운데에서 옮겼는지.
+#[derive(Clone)]
 struct PlacedLabel {
     x: usize,
     row: usize,
@@ -4185,18 +4353,42 @@ impl LegObstacles {
 
     /// 조각이 걸친 장애물 가운데 구간 이름표가 아닌 것의 수.
     fn hits_besides_labels(&self, piece: &StraightLine) -> usize {
+        self.obstacles_besides_labels(piece).count()
+    }
+
+    /// 조각이 걸친 장애물 가운데 구간 이름표가 아닌 것들, 하나씩. 걸렸는지만 볼 때 첫 장애물에서 멈출 수 있다.
+    fn obstacles_besides_labels<'o>(&'o self, piece: &'o StraightLine) -> impl Iterator<Item = ()> + 'o {
         let spans_at = if piece.is_across { &self.across_spans_at_along } else { &self.along_spans_at_across };
         let meets = |&&(low, high): &&(usize, usize)| low <= piece.high && piece.low <= high;
-        let cells = spans_at.at(piece.fixed).iter().filter(meets).count();
-        let parallel = |lines: &SpansOnLines| lines.on((piece.is_across, piece.fixed)).iter().map(|(_, span)| span).filter(meets).count();
-        let flows_at_ends = [piece.low, piece.high].into_iter().filter(|&end| self.has_flow_crossing(!piece.is_across, end, piece.fixed)).count();
-        cells + parallel(&self.flow_spans_on_line) + parallel(&self.frame_spans_on_line) + flows_at_ends
+        let cells = spans_at.at(piece.fixed).iter().filter(meets).map(|_| ());
+        let parallel = move |lines: &'o SpansOnLines| lines.on((piece.is_across, piece.fixed)).iter().map(|(_, span)| span).filter(meets).map(|_| ());
+        let flows_at_ends = [piece.low, piece.high].into_iter().filter(|&end| self.has_flow_crossing(!piece.is_across, end, piece.fixed)).map(|_| ());
+        cells.chain(parallel(&self.flow_spans_on_line)).chain(parallel(&self.frame_spans_on_line)).chain(flows_at_ends)
+    }
+
+    /// 경로의 다리들이 장애물에 걸리는 정도.
+    fn clearance(&self, route: &PoolEdgeRoute) -> LegClearance {
+        let mut clearance = LegClearance::Clear;
+        for line in route.legs() {
+            if self.obstacles_besides_labels(&line).next().is_some() {
+                return LegClearance::Blocked;
+            }
+            if self.labels_crossed(&line).next().is_some() {
+                clearance = LegClearance::CrossesLabels;
+            }
+        }
+        clearance
     }
 
     /// 조각이 지나는 구간 이름표 수.
     fn label_hits(&self, piece: &StraightLine) -> usize {
+        self.labels_crossed(piece).count()
+    }
+
+    /// 조각이 지나는 구간 이름표들.
+    fn labels_crossed<'o>(&'o self, piece: &'o StraightLine) -> impl Iterator<Item = &'o (usize, usize)> + 'o {
         let spans_at = if piece.is_across { &self.label_spans_at_along } else { &self.label_spans_at_across };
-        spans_at.at(piece.fixed).iter().filter(|&&(low, high)| low <= piece.high && piece.low <= high).count()
+        spans_at.at(piece.fixed).iter().filter(|&&(low, high)| low <= piece.high && piece.low <= high)
     }
 
     /// 줄 `(is_across, fixed)`의 흐름 선이 그 줄 위 `at` 칸을 지나는지.
@@ -4209,24 +4401,41 @@ impl LegObstacles {
     }
 }
 
-/// 줄(방향, 고정 좌표)마다 그 줄 위의 범위들. 줄 순서로 정렬해 두고 한 줄의 범위를 이분 탐색으로 찾는다.
+/// 줄(방향, 고정 좌표)마다 그 줄 위의 범위들. 줄 순서로 정렬해 두고 줄마다 시작 자리를 적어 두어 한 줄의 범위를 바로
+/// 찾는다 — 다리 비켜 놓기가 후보 다리마다 여러 줄을 찾아 이분 탐색이면 그것만으로 배치 시간의 큰 몫을 쓴다.
 #[derive(Default)]
 struct SpansOnLines {
     entries: Vec<SpanOnLine>,
+    /// 방향별(가로지르지 않는 줄, 가로지르는 줄)로 고정 좌표 `k`의 범위는 `entries[starts[k]..starts[k + 1]]`.
+    line_starts: [Vec<usize>; 2],
 }
 
 /// 줄(방향, 고정 좌표)과 그 줄 위의 범위.
 type SpanOnLine = ((bool, usize), (usize, usize));
 
 impl SpansOnLines {
+    /// 줄 순서로 정렬하고 줄마다 시작 자리를 적는다. 범위를 다 모은 뒤 한 번 부른다.
     fn sort(&mut self) {
         self.entries.sort_unstable();
+        let across_start = self.entries.partition_point(|((is_across, _), _)| !is_across);
+        for (is_across, (first, last)) in [(false, (0, across_start)), (true, (across_start, self.entries.len()))] {
+            let block = &self.entries[first..last];
+            let line_count = block.last().map_or(0, |((_, fixed), _)| fixed + 1);
+            let mut starts = vec![0; line_count + 1];
+            for ((_, fixed), _) in block {
+                starts[fixed + 1] += 1;
+            }
+            starts[0] = first;
+            for k in 0..line_count {
+                starts[k + 1] += starts[k];
+            }
+            self.line_starts[usize::from(is_across)] = starts;
+        }
     }
 
-    fn on(&self, line: (bool, usize)) -> &[SpanOnLine] {
-        let start = self.entries.partition_point(|(key, _)| *key < line);
-        let end = start + self.entries[start..].partition_point(|(key, _)| *key == line);
-        &self.entries[start..end]
+    fn on(&self, (is_across, fixed): (bool, usize)) -> &[SpanOnLine] {
+        let starts = &self.line_starts[usize::from(is_across)];
+        if fixed + 1 < starts.len() { &self.entries[starts[fixed]..starts[fixed + 1]] } else { &[] }
     }
 }
 
@@ -4432,13 +4641,13 @@ fn steps_toward_first(from: usize, toward: usize) -> Vec<usize> {
 }
 
 /// 경유점에서 겹친 점과 곧게 이어지는 가운데 점을 뺀, 실제로 꺾이는 점들(양 끝 포함).
-fn corner_points(waypoints: &[(usize, usize)]) -> Vec<(usize, usize)> {
-    let mut corners: Vec<(usize, usize)> = Vec::new();
+fn corner_points(waypoints: &[(usize, usize)]) -> RoutePoints {
+    let mut corners = RoutePoints::default();
     for &point in waypoints {
         if corners.last() == Some(&point) {
             continue;
         }
-        if let [.., before, last] = corners[..] {
+        if let [.., before, last] = *corners {
             let is_straight_through = (before.0 == last.0 && last.0 == point.0) || (before.1 == last.1 && last.1 == point.1);
             if is_straight_through {
                 corners.pop();
@@ -4491,13 +4700,17 @@ impl PoolEdgeRoute {
 
     /// 출발 끝에서 도착 끝까지의 경유점(흐름축, 교차축): 풀 쪽 끝, 통로 줄의 두 꺾임, 비켜 가기가 있으면 그 두
     /// 꺾임, 상대 끝. 통로를 따라갈 구간이 없으면 두 통로 꺾임이 한 점에 겹친다.
-    fn waypoints(&self) -> Vec<(usize, usize)> {
+    fn waypoints(&self) -> RoutePoints {
         let channel = self.channel();
         let ((pool_along, pool_across, _), (other_along, other_across, _)) = (self.pool_end(), self.other_end());
         let bend_along = self.other_bend_along();
-        let mut points = vec![(pool_along, pool_across), (pool_along, channel), (bend_along, channel)];
+        let mut points = RoutePoints::default();
+        for point in [(pool_along, pool_across), (pool_along, channel), (bend_along, channel)] {
+            points.push(point);
+        }
         if let Some(jog) = self.node_side_jog {
-            points.extend([(jog.shifted_along, jog.return_across), (other_along, jog.return_across)]);
+            points.push((jog.shifted_along, jog.return_across));
+            points.push((other_along, jog.return_across));
         }
         points.push((other_along, other_across));
         if !self.is_pool_at_from {
@@ -4548,6 +4761,52 @@ enum LegRoom {
 struct FrontRoom {
     at: usize,
     also_shifted: Vec<usize>,
+}
+
+/// 다리 비켜 놓기 후보가 장애물에 걸리는 정도.
+enum LegClearance {
+    /// 노드 상자, 흐름 선, 테두리에 걸린다.
+    Blocked,
+    /// 구간 이름표만 지난다.
+    CrossesLabels,
+    /// 아무 장애물에도 걸리지 않는다.
+    Clear,
+}
+
+/// 비켜 갈 후보 자리들(흐름축, 그 자리의 후보): 장애물에 걸리지 않는 것과 구간 이름표만 지나는 것까지 받은 것.
+#[derive(Default)]
+struct DetourPlaces {
+    clear: Vec<(usize, Vec<PoolEdgeRoute>)>,
+    crossing_labels: Vec<(usize, Vec<PoolEdgeRoute>)>,
+}
+
+impl DetourPlaces {
+    /// 흐름축 `along`의 후보를 아직 `DETOURS_PER_SIDE`곳이 차지 않은 쪽에 더한다.
+    fn add(&mut self, along: usize, clear: Vec<PoolEdgeRoute>, crossing_labels: Vec<PoolEdgeRoute>) {
+        for (places, moves) in [(&mut self.clear, clear), (&mut self.crossing_labels, crossing_labels)] {
+            if !moves.is_empty() && places.len() < DETOURS_PER_SIDE {
+                places.push((along, moves));
+            }
+        }
+    }
+
+    fn extend(&mut self, other: DetourPlaces) {
+        self.clear.extend(other.clear);
+        self.crossing_labels.extend(other.crossing_labels);
+    }
+}
+
+/// 비켜 갈 후보들, 가까운 자리부터: 장애물에 걸리지 않는 것과 구간 이름표만 지나는 것까지 받은 것.
+struct DetourCandidates {
+    clear: Vec<PoolEdgeRoute>,
+    crossing_labels: Vec<PoolEdgeRoute>,
+}
+
+/// 자리마다 모은 후보를 꺾임 `bend`에 가까운 자리부터 잇는다. 같은 순위면 먼저 본 후보를 두므로 가까운 자리부터
+/// 둔다(같은 거리면 먼저 훑은 앞쪽).
+fn nearest_places_first(mut places: Vec<(usize, Vec<PoolEdgeRoute>)>, bend: usize) -> Vec<PoolEdgeRoute> {
+    places.sort_by_key(|&(along, _)| along.abs_diff(bend));
+    places.into_iter().flat_map(|(_, moves)| moves).collect()
 }
 
 /// 다리를 비켜 놓을 자리를 훑을 때 함께 보는 것: 지금 경로들, 그 끝 칸, 장애물.
@@ -6006,5 +6265,35 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "같은 쪽 흐름이 노드 옆 칸에서 서로 다른 줄이 아니다({}건):\n{}", failures.len(), failures.join("\n\n"));
+    }
+
+    #[test]
+    fn starts_nearest_first_lists_every_start_in_the_sorted_order() {
+        // 이름표 자리 후보를 모두 늘어놓아 (가운데와의 거리, 칸)으로 정렬한 순서와 같아야 고르는 자리가 바뀌지 않는다.
+        for (first, last) in [(0, 0), (1, 2), (3, 9), (5, 40)] {
+            for centered in [0, first, (first + last) / 2, last, last + 3] {
+                let mut sorted: Vec<usize> = (first..=last).collect();
+                sorted.sort_by_key(|&x| (x.abs_diff(centered), x));
+                assert_eq!(starts_nearest_first(first, last, centered).collect::<Vec<_>>(), sorted, "first={first} last={last} centered={centered}");
+            }
+        }
+    }
+
+    #[test]
+    fn spans_on_lines_finds_the_spans_of_each_line() {
+        let documents: [Vec<SpanOnLine>; 3] = [
+            vec![((true, 4), (1, 3)), ((false, 0), (2, 5)), ((true, 0), (0, 9)), ((false, 7), (1, 1)), ((true, 4), (0, 2)), ((false, 7), (0, 4)), ((false, 2), (3, 3))],
+            vec![((true, 3), (0, 1)), ((true, 3), (0, 1))],
+            Vec::new(),
+        ];
+        for entries in documents {
+            let mut lines = SpansOnLines { entries: entries.clone(), ..SpansOnLines::default() };
+            lines.sort();
+            for line in [false, true].into_iter().flat_map(|is_across| (0..10).map(move |fixed| (is_across, fixed))) {
+                let mut expected: Vec<SpanOnLine> = entries.iter().copied().filter(|&(on, _)| on == line).collect();
+                expected.sort_unstable();
+                assert_eq!(lines.on(line), expected.as_slice(), "줄 {line:?}");
+            }
+        }
     }
 }

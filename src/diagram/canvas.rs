@@ -61,11 +61,49 @@ pub struct Canvas {
     cells: Vec<Vec<Cell>>,
     /// 켜져 있으면 지금 긋는 선은 간선이며, 다른 간선과 직교할 때 건너뛰기로 그린다.
     edge_mode: bool,
+    /// 켜져 있으면 칸을 바꾸기 전 내용을 적어 둔다(`start_journal()`).
+    journal: Option<CellJournal>,
+}
+
+/// 적기 시작한 때의 줄 수와 간선 모드, 그 뒤 바뀐 칸마다 바뀌기 전 내용(바뀐 차례대로). 바뀐 칸만 담아 캔버스를
+/// 복제하지 않고 그때로 되돌린다.
+struct CellJournal {
+    height: usize,
+    edge_mode: bool,
+    old_cells: Vec<(usize, usize, Cell)>,
 }
 
 impl Canvas {
     pub fn new(width: usize, height: usize) -> Canvas {
-        Canvas { width, cells: vec![vec![Cell::BLANK; width]; height], edge_mode: false }
+        Canvas { width, cells: vec![vec![Cell::BLANK; width]; height], edge_mode: false, journal: None }
+    }
+
+    /// 지금부터 바뀌는 칸을 적기 시작한다. `restore_journal()`이 이때 모습으로 되돌린다.
+    pub fn start_journal(&mut self) {
+        debug_assert!(self.journal.is_none(), "되돌리기 기록은 겹쳐 시작하지 않는다");
+        self.journal = Some(CellJournal { height: self.cells.len(), edge_mode: self.edge_mode, old_cells: Vec::new() });
+    }
+
+    /// 적기 시작한 때 모습으로 되돌리고 그때부터 다시 적는다. 적고 있지 않으면 아무것도 하지 않는다.
+    pub fn restore_journal(&mut self) {
+        let Some(journal) = self.journal.as_mut() else { return };
+        for (x, y, cell) in journal.old_cells.drain(..).rev() {
+            self.cells[y][x] = cell;
+        }
+        self.cells.truncate(journal.height);
+        self.edge_mode = journal.edge_mode;
+    }
+
+    /// 칸 적기를 그친다. 지금 모습은 그대로다.
+    pub fn stop_journal(&mut self) {
+        self.journal = None;
+    }
+
+    /// `(x, y)` 칸을 바꾸기 전에 부른다. 적는 중이면 그 칸의 지금 내용을 적어 둔다.
+    fn note_cell_change(&mut self, x: usize, y: usize) {
+        if let Some(journal) = self.journal.as_mut() {
+            journal.old_cells.push((x, y, self.cells[y][x]));
+        }
     }
 
     /// 간선 모드 전환. 테두리·상자·구분선은 끄고, 간선·생명선은 켜고 긋는다.
@@ -92,8 +130,10 @@ impl Canvas {
         if x + w > self.width {
             return;
         }
+        self.note_cell_change(x, y);
         self.cells[y][x] = Cell { ch, style, ..Cell::BLANK };
         if w == 2 {
+            self.note_cell_change(x + 1, y);
             self.cells[y][x + 1] = Cell { ch: ' ', style, continuation: true, ..Cell::BLANK };
         }
     }
@@ -153,6 +193,7 @@ impl Canvas {
         if !self.ensure(x, y) {
             return;
         }
+        self.note_cell_change(x, y);
         let cell = &mut self.cells[y][x];
         if cell.is_text() || cell.continuation {
             return;
@@ -231,6 +272,9 @@ impl Canvas {
         self.vline(x1, y, y1, kind, style);
         if round {
             for (cx, cy) in [(x, y), (x1, y), (x, y1), (x1, y1)] {
+                if self.cells.get(cy).is_some_and(|row| cx < row.len()) {
+                    self.note_cell_change(cx, cy);
+                }
                 if let Some(cell) = self.cells.get_mut(cy).and_then(|r| r.get_mut(cx)) {
                     cell.round = true;
                     cell.ch = line_char(cell.lines, cell.dashed, cell.dotted, cell.heavy, true);
@@ -244,6 +288,7 @@ impl Canvas {
         for yy in y..y + h {
             for xx in x..x + w {
                 if self.ensure(xx, yy) {
+                    self.note_cell_change(xx, yy);
                     self.cells[yy][xx] = Cell::BLANK;
                 }
             }
