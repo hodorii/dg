@@ -48,5 +48,5 @@
 - `src/diagram/mermaid/flow.rs`: 깃발을 켠다.
 - `src/diagram/layout/graph.rs`: `assign_layers` 안 곁가지 옮기기와 배치 전 판단, `route`의 빈 층 간격, `draw`의 높이 0 층, `reorder`의 사슬 키와 사슬 펴기, `choose_label_x`와 `reserve_label_room`.
 - 테스트: `layout/graph.rs`와 흐름도 렌더링 테스트.
-- 바뀌는 그림: 그룹 없는 흐름도도 1.5에 해당하면 바뀐다(사용자 결정). `examples/architecture.md`의 흐름도와 재현 문서의 단계, 회차 블록이 대상이다(4.1에서 하나씩 확인).
+- 바뀌는 그림: 그룹 없는 흐름도도 1.5에 해당하고 2.5의 판단을 통과하면 바뀐다(사용자 결정). 재현 문서의 단계, 회차, 10-02, 10-06 블록이 대상이고, `examples/*.md` 흐름도는 시제품에서 그대로였다(4.1에서 확인).
 - 순서: 같은 파일을 고치는 `bpmn-pool-message-layout`을 합친 뒤 구현한다. 그 스펙의 테스트가 모두 통과한 main에서 시작한다. BPMN은 깃발을 켜지 않으므로 그 스펙의 불변과 충돌하지 않는다. `layout-crossgroup-edge-blowup`의 기록 결과는 깃발 밖이라 그대로다.
