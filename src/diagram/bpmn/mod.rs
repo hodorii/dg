@@ -1420,7 +1420,7 @@ mod tests {
     #[test]
     fn message_channels_never_run_on_a_pool_border() {
         // 풀 면의 메시지 표식과 테두리를 가로지르는 칸(`┼`)은 테두리의 일부로 본다. 메시지 선 글자가 보이면 통로 줄이 테두리 위에 놓인 것이다.
-        let allowed = format!("{POOL_FRAME_GLYPHS}○△▽◁▷");
+        let allowed = pool_frame_and_face_marker_glyphs();
         for (source, titles) in DOCUMENTS_WITH_DEEP_CHANNELS_BESIDE_MOVED_LEGS {
             assert_no_defect_in_either_direction(source, |_, rows, grid| titles.iter().try_for_each(|title| pool_frame_break_defect(rows, grid, title, &allowed)));
         }
@@ -1573,6 +1573,12 @@ mod tests {
 
     /// 풀 테두리를 이루거나 테두리 위에서 선이 넘는 칸에 올 수 있는 글자.
     const POOL_FRAME_GLYPHS: &str = "─│┌┐└┘├┤┬┴┼";
+    /// 블랙박스 풀 면에 붙어 그 면의 테두리 칸을 차지하는 메시지 표식.
+    const POOL_FACE_MARKERS: &str = "○△▽◁▷";
+
+    fn pool_frame_and_face_marker_glyphs() -> String {
+        format!("{POOL_FRAME_GLYPHS}{POOL_FACE_MARKERS}")
+    }
 
     /// 제목 `title`이 든 풀의 바깥 테두리. `box_around`는 제목 칸 구분선(가로 배치의 오른변, 세로 배치의 `├─┤` 아랫변)을
     /// 테두리로 잡으므로 위아래 변과 오른변을 바깥 모서리 글자로만 다시 잡는다.
@@ -1595,26 +1601,45 @@ mod tests {
         }
     }
 
-    /// 메시지 이름표 `label`이 한 자리에 온전히 보이고, 제목이 `pool_titles`인 풀의 테두리가 어디서도 끊기지 않는지 본다.
-    /// 이름표가 풀 안, 풀 사이 간격 어디에 놓이든 상관없다.
+    /// 이름표 `label`이 선 위에 놓인 자리(줄, 첫 칸)들. 이름표는 선, 표식, 테두리 사이에 놓이므로 양옆이 빈칸도 글자도
+    /// 아니다. 같은 낱말이 든 노드 이름(`주문 검토`)은 옆이 빈칸이라 빠지고, 다른 글자에 붙은 이름표도 빠진다.
+    fn label_on_line_starts(rows: &[String], grid: &[Vec<char>], label: &str) -> Vec<Cell> {
+        let width = crate::text::width_of(label);
+        let is_line_side = |row: usize, col: Option<usize>| col.and_then(|col| grid[row].get(col).copied()).is_some_and(|glyph| glyph != ' ' && glyph != '\0' && !glyph.is_alphanumeric());
+        rows.iter()
+            .enumerate()
+            .flat_map(|(row, text)| text.match_indices(label).map(move |(byte, _)| (row, crate::text::width_of(&text[..byte]))))
+            .filter(|&(row, start)| is_line_side(row, start.checked_sub(1)) && is_line_side(row, Some(start + width)))
+            .collect()
+    }
+
+    /// 아래로 이어지는 선 글자와 위로 이어지는 선 글자. 위아래가 이어진 칸에 이름표가 있으면 세로선을 끊은 것이다.
+    const LINE_GOING_DOWN: &str = "│╎┊├┤┼┬┌┐╭╮△▲";
+    const LINE_GOING_UP: &str = "│╎┊├┤┼┴└┘╰╯▽▼";
+
+    /// 이름표가 덮은 선이나 노드: 이름표 칸의 위아래가 이어진 세로선(풀, 레인 테두리와 구분선, 다른 흐름, 노드 상자 변)이거나,
+    /// 이름표 양옆이 실선(가로 테두리, 구분선, 노드 상자 변, 시퀀스 흐름)이다. 메시지 선은 대시라 이름표 양옆의 실선은
+    /// 이름표가 다른 가로선 위에 놓였다는 뜻이다.
+    fn covered_line_defect(grid: &[Vec<char>], (row, start): Cell, width: usize) -> Result<(), String> {
+        let glyph_at = |row: Option<usize>, col: usize| row.and_then(|row| grid.get(row)).and_then(|cells| cells.get(col)).copied().unwrap_or(' ');
+        let cut = (start..start + width).find(|&col| LINE_GOING_DOWN.contains(glyph_at(row.checked_sub(1), col)) && LINE_GOING_UP.contains(glyph_at(Some(row + 1), col)));
+        require(cut.is_none(), || format!("이름표가 ({row}, {cut:?}) 칸에서 세로선을 끊었다"))?;
+        let solid_side = [start.checked_sub(1), Some(start + width)].into_iter().flatten().find(|&col| glyph_at(Some(row), col) == '─');
+        require(solid_side.is_none(), || format!("이름표 옆 ({row}, {solid_side:?}) 칸이 실선이다 — 이름표가 다른 가로선을 덮었다"))
+    }
+
+    /// 메시지 이름표 `label`이 선 위 한 자리에 온전히 한 번 보이고, 그 칸들이 다른 선이나 노드를 덮지 않으며, 제목이
+    /// `pool_titles`인 풀의 테두리가 어디서도 끊기지 않는지 본다. 이름표가 풀 안, 풀 사이 간격 어디에 놓이든 상관없다.
+    /// 간격을 이름표 폭만큼 늘리면 이름표가 두 테두리 사이에 꼭 맞게 붙을 수 있어 테두리 옆자리는 막지 않는다.
     fn message_label_defect<'a>(label: &'a str, pool_titles: &'a [&'a str]) -> impl Fn(Direction, &[String], &[Vec<char>]) -> Result<(), String> + 'a {
         move |_, rows, grid| {
-            let occurrences: usize = rows.iter().map(|row| row.matches(label).count()).sum();
-            require(occurrences == 1, || format!("이름표 `{label}`의 글자가 모두 이어져 한 번 보여야 한다({occurrences}번)"))?;
+            let starts = label_on_line_starts(rows, grid, label);
+            require(starts.len() == 1, || format!("이름표 `{label}`의 글자가 모두 이어져 선 위에 한 번 보여야 한다({starts:?})"))?;
+            let allowed = pool_frame_and_face_marker_glyphs();
             for title in pool_titles {
-                pool_frame_break_defect(rows, grid, title, POOL_FRAME_GLYPHS)?;
+                pool_frame_break_defect(rows, grid, title, &allowed)?;
             }
-            let row = row_of_text(rows, label);
-            let start = display_col(&rows[row], label);
-            let end = start + crate::text::width_of(label);
-            // 이름표 바로 옆에 다른 글자가 붙으면 이름표가 노드 이름이나 다른 이름표를 덮었거나 그것과 한 낱말로 읽힌다.
-            // 테두리 칸은 막지 않는다: 간격을 이름표 폭만큼 늘리면 이름표가 두 테두리 사이에 꼭 맞게 붙는다.
-            for beside in [start.checked_sub(1), Some(end)].into_iter().flatten() {
-                let glyph = grid[row].get(beside).copied().unwrap_or(' ');
-                let is_other_text = glyph.is_alphanumeric() || glyph == '\0';
-                require(!is_other_text, || format!("이름표 `{label}` 바로 옆 ({row}, {beside}) 칸에 다른 글자 {glyph:?}가 붙었다"))?;
-            }
-            Ok(())
+            covered_line_defect(grid, starts[0], crate::text::width_of(label))
         }
     }
 
@@ -1636,6 +1661,120 @@ mod tests {
   </process>
 </definitions>"#;
         assert_no_defect_in_either_direction(source, message_label_defect("주문", &["고객", "판매사"]));
+    }
+
+    #[test]
+    fn the_example_message_name_covers_no_pool_or_lane_line() {
+        // 예제 셋째 그림에서 블랙박스 풀 `고객`이 보낸 `주문`이 판매사 풀 테두리를 넘어 레인 안 시작 이벤트로 간다.
+        assert_no_defect_in_either_direction(example_bpmn_block(2), message_label_defect("주문", &["고객", "판매사"]));
+    }
+
+    #[test]
+    fn a_message_name_too_long_for_any_free_place_widens_the_gap_between_the_pools() {
+        // 세로 배치에서 이름표가 들어갈 자리가 구간 안 어느 풀에도, 선 옆에도 없다. 두 풀 사이 간격을 이름표 폭만큼 늘려야 한다.
+        let source = "participants:\n  - p1:\n      name: 갑\n      nodes:\n        - a: task 가\n        - c: task 다\n  - p2:\n      name: 을\n      nodes:\n        - x: task 라\n        - b: task 나\nflows:\n  - a --> c\n  - x --> b\n  - a -- 아주 긴 메시지 이름표 --> b\n";
+        assert_no_defect_in_either_direction(source, message_label_defect("아주 긴 메시지 이름표", &["갑", "을"]));
+    }
+
+    #[test]
+    fn a_blackbox_message_name_with_no_free_place_widens_the_gap_it_crosses() {
+        // 세로 배치에서 블랙박스 풀 사이 메시지의 이름표가 레인 테두리로 나뉜 어느 조각에도 들어가지 않는다. 이름표가 지나는
+        // 간격을 늘려 그 안에 온전히 놓여야 한다.
+        let documents: [(&str, &[&str]); 2] = [
+            ("participants:\n  - p0:\n      name: 레0\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\n        - n2: task 다2\n  - b1: 풀1\n  - b2: 풀2\nflows:\n  - n0 -- 주문 --> n1\n  - n1 -- 확인 요청 --> n2\n  - b1 -- 배송 일정 알림 메시지 --> b2\n  - b1 -- ok --> n1\n  - b1 -- 결제 --> n0\n  - n2 -- 주문 --> b2\n  - b2 -- 확인 요청 --> b1\n", &["레0", "풀1", "풀2"]),
+            ("participants:\n  - b0: 풀0\n  - b1: 풀1\n  - p2:\n      name: 레2\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\n  - b3: 풀3\nflows:\n  - n0 -- 확인 요청 --> n1\n  - b3 -- 배송 일정 알림 메시지 --> b0\n  - b1 -- ok --> n1\n  - b0 -- 결제 --> n0\n  - b0 -- 주문 --> b3\n", &["풀0", "풀1", "레2", "풀3"]),
+        ];
+        for (source, pool_titles) in documents {
+            assert_no_defect_in(&[Direction::TopDown], source, message_label_defect("배송 일정 알림 메시지", pool_titles));
+        }
+    }
+
+    /// 선 위에 놓인 이름표 `label`이 모두 다른 세로선(흐름, 테두리, 노드 상자 변)을 끊지 않고, 하나 이상 보이는지 본다.
+    fn labels_cover_no_line_defect(label: &str) -> impl Fn(Direction, &[String], &[Vec<char>]) -> Result<(), String> + '_ {
+        move |_, rows, grid| {
+            let starts = label_on_line_starts(rows, grid, label);
+            require(!starts.is_empty(), || format!("이름표 `{label}`이 선 위에 보여야 한다"))?;
+            starts.into_iter().try_for_each(|start| covered_line_defect(grid, start, crate::text::width_of(label)))
+        }
+    }
+
+    #[test]
+    fn a_message_name_moved_off_a_border_covers_no_other_line() {
+        // 세로 배치에서 `결제`가 레인 테두리를 비켜 옮겨 갈 때 다른 메시지의 세로선이나 다른 이름표 위에 놓이면 안 된다.
+        for source in ["participants:\n  - b0: 풀0\n  - b1: 풀1\n  - p2:\n      name: 레2\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\n        - n2: task 다2\nflows:\n  - n0 -- 주문 --> n1\n  - n1 -- 확인 요청 --> n2\n  - n2 -- 배송 일정 알림 메시지 --> b1\n  - b1 -- ok --> n1\n  - n2 -- 결제 --> b0\n  - b1 -- 주문 --> n2\n  - n1 -- 확인 요청 --> b0\n  - b0 -- 배송 일정 알림 메시지 --> n1\n", "participants:\n  - p0:\n      name: 레0\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\n        - n2: task 다2\n  - b1: 풀1\n  - p2:\n      name: 레2\n      nodes:\n        - n3: task 라3\n  - p3:\n      name: 레3\n      nodes:\n        - n4: task 마4\n        - n5: task 바5\nflows:\n  - n0 -- 배송 일정 알림 메시지 --> n1\n  - n1 -- ok --> n2\n  - n4 -- 결제 --> n5\n  - n4 -- 주문 --> n2\n  - n1 -- 확인 요청 --> n3\n  - n0 -- 배송 일정 알림 메시지 --> n3\n  - n0 -- ok --> b1\n  - n2 -- 결제 --> b1\n  - n0 -- 주문 --> n4\n"] {
+            assert_no_defect_in(&[Direction::TopDown], source, labels_cover_no_line_defect("결제"));
+        }
+    }
+
+    /// 제목이 `title`인 레인이 `min_width`칸보다 좁아지지 않았는지 본다.
+    fn lane_narrower_than_defect(rows: &[String], grid: &[Vec<char>], title: &str, min_width: usize) -> Result<(), String> {
+        let frame = pool_frame(rows, grid, title);
+        let width = frame.right - frame.left + 1;
+        require(width >= min_width, || format!("`{title}` 레인 폭이 {width}칸으로 {min_width}칸보다 좁아졌다"))
+    }
+
+    #[test]
+    fn widening_a_gap_for_a_message_name_keeps_the_lanes_widened_for_straight_flows() {
+        // 세로 배치에서 `배송 일정 알림 메시지`가 레인 테두리를 피할 자리가 없어 간격을 늘린다. 레인 안 흐름을 곧게 하려고
+        // 넓힌 레인(25칸)은 그대로여야 하고, 이름표는 선 위에 온전히 한 번 보여야 한다.
+        let documents: [(&str, &str, &[&str]); 2] = [
+            ("participants:\n  - b0: 풀0\n  - p1:\n      name: 레1\n      nodes:\n        - n0: task 가0\n  - p2:\n      name: 레2\n      nodes:\n        - n1: task 나1\n        - n2: task 다2\n        - n3: task 라3\nflows:\n  - n1 -- 결제 --> n2\n  - n2 -- 주문 --> n3\n  - n3 -- 확인 요청 --> n0\n  - n2 -- 배송 일정 알림 메시지 --> b0\n  - b0 -- ok --> n1\n", "레2", &["풀0", "레1", "레2"]),
+            ("participants:\n  - b0: 풀0\n  - p1:\n      name: 레1\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\n        - n2: task 다2\n  - p2:\n      name: 레2\n      nodes:\n        - n3: task 라3\nflows:\n  - n0 -- ok --> n1\n  - n1 -- 결제 --> n2\n  - n2 -- 주문 --> n3\n  - n1 -- 확인 요청 --> b0\n  - n0 -- 배송 일정 알림 메시지 --> b0\n", "레1", &["풀0", "레1", "레2"]),
+        ];
+        for (source, widened_lane, pool_titles) in documents {
+            let label_defect = message_label_defect("배송 일정 알림 메시지", pool_titles);
+            assert_no_defect_in(&[Direction::TopDown], source, |direction, rows, grid| {
+                label_defect(direction, rows, grid)?;
+                lane_narrower_than_defect(rows, grid, widened_lane, 25)
+            });
+        }
+    }
+
+    #[test]
+    fn a_message_name_longer_than_its_leg_widens_the_gap_the_leg_crosses() {
+        // 세로 배치에서 블랙박스 풀 `풀1`이 레인 `레0`의 `나1`에 보내는 `배송 일정 알림 메시지`의 다리가 이름표보다 짧다.
+        // 다리가 지나는 간격을 늘려 이름표가 빠지지 않고 선 위에 온전히 보여야 한다.
+        let source = "participants:\n  - p0:\n      name: 레0\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\n  - b1: 풀1\n  - p2:\n      name: 레2\n      nodes:\n        - n2: task 다2\n  - p3:\n      name: 레3\n      nodes:\n        - n3: task 라3\n        - n4: task 마4\nflows:\n  - n0 -- ok --> n1\n  - n3 -- 결제 --> n4\n  - n0 -- 주문 --> n3\n  - b1 -- 확인 요청 --> n2\n  - b1 -- 배송 일정 알림 메시지 --> n1\n  - b1 -- ok --> n4\n";
+        assert_no_defect_in(&[Direction::TopDown], source, message_label_defect("배송 일정 알림 메시지", &["레0", "풀1", "레2", "레3"]));
+    }
+
+    /// 이름 `names`가 모두 그림에 보이고, 이름표 `labels`가 저마다 (이름표, 그 이름을 단 흐름 수)만큼 온전히 보이는지 본다.
+    /// 이름표가 노드 이름이나 다른 이름표를 덮거나 메시지 선이 이름표 글자 사이를 지나면 개수가 모자란다.
+    fn names_visible_defect<'a>(names: &'a [&'a str], labels: &'a [(&'a str, usize)]) -> impl Fn(Direction, &[String], &[Vec<char>]) -> Result<(), String> + 'a {
+        move |_, rows, _| {
+            let occurrences = |text: &str| rows.iter().map(|row| row.matches(text).count()).sum::<usize>();
+            if let Some(hidden) = names.iter().find(|name| occurrences(name) == 0) {
+                return Err(format!("노드 이름 `{hidden}`이 가려졌다"));
+            }
+            match labels.iter().find(|&&(label, flows)| occurrences(label) != flows) {
+                Some(&(label, flows)) => Err(format!("이름표 `{label}`이 {}번 보인다({flows}번이어야 한다)", occurrences(label))),
+                None => Ok(()),
+            }
+        }
+    }
+
+    #[test]
+    fn a_message_name_never_hides_a_node_name() {
+        // 세로 배치에서 메시지 이름표가 레인 테두리를 비키거나 다른 메시지를 비켜 옮길 때 노드 이름(`마4`, `라3`, `가0`)을 덮으면
+        // 안 되고, 모든 이름표가 온전히 보여야 한다. 가로 배치에서도 노드 이름은 가려지지 않는다.
+        let documents: [(&str, &[(&str, usize)]); 2] = [
+            ("participants:\n  - b0: 풀0\n  - p1:\n      name: 레1\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\n        - n2: task 다2\n  - p2:\n      name: 레2\n      nodes:\n        - n3: task 라3\n        - n4: task 마4\n  - p3:\n      name: 레3\n      nodes:\n        - n5: task 바5\n        - n6: task 사6\nflows:\n  - n0 -- ok --> n1\n  - n1 -- 결제 --> n2\n  - n3 -- 주문 --> n4\n  - n5 -- 확인 요청 --> n6\n  - n2 -- 배송 일정 알림 메시지 --> n6\n  - n4 -- ok --> n5\n  - n0 -- 결제 --> b0\n  - b0 -- 주문 --> n1\n", &[("ok", 2), ("결제", 2), ("주문", 2), ("확인 요청", 1), ("배송 일정 알림 메시지", 1)]),
+            ("participants:\n  - p0:\n      name: 레0\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\n        - n2: task 다2\n  - b1: 풀1\n  - p2:\n      name: 레2\n      nodes:\n        - n3: task 라3\n        - n4: task 마4\n        - n5: task 바5\n  - b3: 풀3\nflows:\n  - n0 -- ok --> n1\n  - n1 -- 결제 --> n2\n  - n3 -- 주문 --> n4\n  - n4 -- 확인 요청 --> n5\n  - b3 -- 배송 일정 알림 메시지 --> n2\n  - n3 -- ok --> n1\n  - b1 -- 결제 --> n0\n  - b3 -- 주문 --> n4\n  - b3 -- 확인 요청 --> n5\n  - b1 -- 배송 일정 알림 메시지 --> b3\n", &[("ok", 2), ("결제", 2), ("주문", 2), ("확인 요청", 2), ("배송 일정 알림 메시지", 2)]),
+        ];
+        let node_names = ["가0", "나1", "다2", "라3", "마4", "바5"];
+        for (source, labels) in documents {
+            assert_no_defect_in(&[Direction::TopDown], source, names_visible_defect(&node_names, labels));
+            assert_no_defect_in(&[Direction::LeftRight], source, names_visible_defect(&node_names, &[]));
+        }
+    }
+
+    #[test]
+    fn a_message_line_never_breaks_a_flow_name_it_passes() {
+        // 세로 배치에서 `풀3`이 보낸 `주문`이 `나1`→`다2` 흐름의 이름표 `배송 일정 알림 메시지` 줄을 지난다. 이름표 글자 사이
+        // 빈칸이 메시지 선 글자로 바뀌면 안 되고, 메시지 이름표들도 온전히 보여야 한다.
+        let source = "participants:\n  - p0:\n      name: 레0\n      nodes:\n        - n0: task 가0\n        - n1: task 나1\n        - n2: task 다2\n  - p1:\n      name: 레1\n      nodes:\n        - n3: task 라3\n  - p2:\n      name: 레2\n      nodes:\n        - n4: task 마4\n        - n5: task 바5\n  - b3: 풀3\nflows:\n  - n0 -- 확인 요청 --> n1\n  - n1 -- 배송 일정 알림 메시지 --> n2\n  - n4 -- ok --> n5\n  - n4 -- 결제 --> n1\n  - b3 -- 주문 --> n3\n  - b3 -- 확인 요청 --> n5\n  - b3 -- 배송 일정 알림 메시지 --> n0\n  - n2 -- ok --> b3\n";
+        let node_names = ["가0", "나1", "다2", "라3", "마4", "바5"];
+        assert_no_defect_in(&[Direction::TopDown], source, names_visible_defect(&node_names, &[("배송 일정 알림 메시지", 2), ("주문", 1), ("확인 요청", 2)]));
     }
 
     #[test]

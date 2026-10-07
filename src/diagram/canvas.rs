@@ -98,6 +98,33 @@ impl Canvas {
         }
     }
 
+    /// `y`줄의 `[x, x + width)` 칸이 모두 가로로만 지나는 선 칸인지 — 글자, 표식, 빈칸도, 다른 선과 엇갈리거나 건너뛰는
+    /// 칸도 없다.
+    pub fn is_line_run(&self, x: usize, y: usize, width: usize) -> bool {
+        let is_plain_horizontal = |cell: &Cell| cell.lines != 0 && cell.lines & (NORTH | SOUTH) == 0 && !cell.is_hop;
+        self.cells.get(y).is_some_and(|row| (x..x + width).all(|col| row.get(col).is_some_and(is_plain_horizontal)))
+    }
+
+    /// `(x, y)` 칸이 글자(선이 아닌 글자, 표식, 넓은 글자의 둘째 칸)인지. 캔버스 밖이나 빈칸은 아니다.
+    pub fn is_text_cell(&self, x: usize, y: usize) -> bool {
+        self.cells.get(y).and_then(|row| row.get(x)).is_some_and(|cell| cell.is_text() || cell.continuation)
+    }
+
+    /// `y`줄의 칸마다 그 칸의 글자가 제 터미널 열에 보이면 그 글자. 넓은 글자의 절반을 다른 글자가 덮으면 그 뒤 칸들이
+    /// 한 열씩 밀려 보이므로 밀린 칸과 넓은 글자의 둘째 칸은 `None`이다.
+    pub fn aligned_glyphs(&self, y: usize) -> Vec<Option<char>> {
+        let Some(row) = self.cells.get(y) else { return Vec::new() };
+        let mut glyphs = vec![None; row.len()];
+        let mut column = 0;
+        for (index, cell) in row.iter().enumerate().filter(|(_, cell)| !cell.continuation) {
+            if column == index {
+                glyphs[index] = Some(cell.ch);
+            }
+            column += char_width(cell.ch).max(1);
+        }
+        glyphs
+    }
+
     /// 글자열을 놓는다. 돌려주는 값은 쓴 폭.
     pub fn text(&mut self, x: usize, y: usize, s: &str, style: Style) -> usize {
         let mut cursor = x;

@@ -58,7 +58,7 @@
   - _Difficulty: high_
   - _Boundary: layout::graph_
   - _Depends: 1.2, 3.4_
-- [ ] 3.6 메시지 이름표의 풀 테두리 피하기
+- [x] 3.6 메시지 이름표의 풀 테두리 피하기
   - _DoneWhen: 입력 F의 TB, LR 출력과 `examples/bpmn.md`에서 메시지 이름표가 풀, 레인 테두리와 다른 선, 노드를 덮지 않고 테두리가 끊기지 않음, 1.3 테스트 통과, BPMN이 아닌 `examples/*.md` 바이트 동일_
   - _Requirements: 1.6, 2.6, 3.4, 3.5_
   - _Difficulty: mid_
