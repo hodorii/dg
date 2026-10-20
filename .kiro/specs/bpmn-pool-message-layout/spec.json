@@ -1,22 +1,22 @@
 {
   "feature_name": "bpmn-pool-message-layout",
   "created_at": "2026-10-02T06:10:53Z",
-  "updated_at": "2026-10-08T00:00:00Z",
+  "updated_at": "2026-10-20T00:00:00Z",
   "language": "ko",
-  "phase": "bugfix-generated",
+  "phase": "implementation",
   "approvals": {
     "bugfix": {
       "generated": true,
-      "approved": false
+      "approved": true
     },
     "design": {
       "generated": true,
-      "approved": false
+      "approved": true
     },
     "tasks": {
       "generated": true,
-      "approved": false
+      "approved": true
     }
   },
-  "ready_for_implementation": false
+  "ready_for_implementation": true
 }
