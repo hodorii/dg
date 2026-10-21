@@ -1,9 +1,9 @@
 {
   "feature_name": "bpmn-boundary-interrupting",
   "created_at": "2026-10-21T09:57:25Z",
-  "updated_at": "2026-10-21T16:39:47Z",
+  "updated_at": "2026-10-21T16:40:32Z",
   "language": "ko",
-  "phase": "design-approved",
+  "phase": "tasks-generated",
   "approvals": {
     "requirements": {
       "generated": true,
@@ -18,7 +18,7 @@
       "approved": true
     },
     "tasks": {
-      "generated": false,
+      "generated": true,
       "approved": false
     }
   },
