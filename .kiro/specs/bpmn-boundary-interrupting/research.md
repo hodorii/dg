@@ -12,17 +12,19 @@
 
 ### 비방해 표기 수단
 - **배경**: 사용자 결정 "식별성 좋은 것, 아니면 점선 간선".
-- **참고 출처**: BPMN 2.0.2 명세 10.5.4(비방해 경계 이벤트 = 점선 이중 원), `fc-list ":family=Noto Sans Mono CJK KR:charset=<코드>"` 실측, Python `unicodedata.east_asian_width`.
+- **참고 출처**: BPMN 2.0.2 명세 10.5.4(비방해 경계 이벤트 = 점선 이중 원), `fc-list ":family=Noto Sans Mono CJK KR:charset=<코드>"`와 `fc-list ":family=D2Coding:charset=<코드>"` 실측, fontTools 전진 폭 실측, Python `unicodedata.east_asian_width`.
 - **발견**: 점선 간선은 메시지 흐름의 파선, 연결의 점선과 겹쳐 오히려 식별성을 떨어뜨린다. 글자 후보 실측 결과는 아래 표.
 - **시사점**: 선은 그대로 두고 이벤트 글자만 바꾼다.
 
-| 글자 | 이름 | CJK 모노 커버리지 | 폭 분류 |
-|---|---|---|---|
-| U+25CC | DOTTED CIRCLE | 있음 | N |
-| U+2299 | CIRCLED DOT OPERATOR | 있음 | A |
-| U+25D0 | CIRCLE WITH LEFT HALF BLACK | 있음 | A |
-| U+25CD | CIRCLE WITH VERTICAL FILL | 없음 | N |
-| U+229A | CIRCLED RING OPERATOR | 없음 | N |
+| 글자 | 이름 | Noto Sans Mono CJK | D2Coding 1.3.3 (너비) | 폭 분류 |
+|---|---|---|---|---|
+| U+25CC | DOTTED CIRCLE | 있음 | 있음 (1.0) | N |
+| U+2299 | CIRCLED DOT OPERATOR | 있음 | 있음 (1.0) | A |
+| U+25D0 | CIRCLE WITH LEFT HALF BLACK | 있음 | 측정 안 함 | A |
+| U+25CD | CIRCLE WITH VERTICAL FILL | 없음 | 측정 안 함 | N |
+| U+229A | CIRCLED RING OPERATOR | 없음 | 측정 안 함 | N |
+
+D2Coding 너비는 fontTools `hmtx` 전진 폭을 `a` 기준으로 나눈 값이다. 같은 측정에서 기존 BPMN 글자(○, ◎, ◉, 파선, 잔 점선, 빈 삼각형, 채운 화살촉, 가로 실선, 겹화살괄호)도 모두 1.0, 한글은 2.0이었다.
 
 ## 아키텍처 패턴 평가
 

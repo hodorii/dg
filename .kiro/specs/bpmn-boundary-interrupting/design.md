@@ -25,12 +25,12 @@ BPMN 다이어그램을 터미널에서 읽는 사용자가 경계 이벤트가 
 ### 재검증 조건
 - 경계 이벤트를 호스트 테두리 위에 올리는 배치가 들어오면(이벤트 글자 위치 전제가 바뀜).
 - 이벤트 서브프로세스의 비방해 시작 이벤트를 다루게 되면(`Shape::Event`의 방해 여부를 시작 이벤트에도 써야 함).
-- 기본 CJK 모노 폰트가 Noto Sans Mono CJK가 아니게 되면(`◌` 커버리지 재측정).
+- 확인 기준 폰트(Noto Sans Mono CJK, D2Coding)가 바뀌거나 늘면(`◌` 커버리지와 폭 재측정).
 
 ## 아키텍처
 
 ### 핵심 결정
-- **비방해 = 이벤트 글자 `◌`(DOTTED CIRCLE, U+25CC)**: BPMN 비방해 이벤트의 점선 원과 같은 운율이고, Noto Sans Mono CJK KR에 있고(`fc-list ... charset=25CC` 실측), 한 칸 폭(East Asian Width N)이다 - 이유: 사용자 결정 "식별성 우선", 선 무늬는 메시지(파선), 연결(점선)과 충돌. 대안은 research.md.
+- **비방해 = 이벤트 글자 `◌`(DOTTED CIRCLE, U+25CC)**: BPMN 비방해 이벤트의 점선 원과 같은 운율이고, Noto Sans Mono CJK KR와 D2Coding 1.3.3 두 폰트에 있고(`fc-list ... charset=25CC` 실측), 두 폰트에서 한 칸 폭(D2Coding 글자 너비 실측 1.0, East Asian Width N)이다 - 이유: 사용자 결정 "식별성 우선", 선 무늬는 메시지(파선), 연결(점선)과 충돌. 대안은 research.md.
 - **선은 바꾸지 않음**: 호스트 -> 이벤트 간선과 이벤트에서 나가는 시퀀스 흐름은 지금처럼 실선(2.4) - 이유: 선 무늬는 흐름 종류만 뜻한다는 `bpmn-flow-kind-notation` 규칙 유지.
 - **`attached_to: Option<String>` -> `Option<Attachment>`**: 방해 여부는 경계 이벤트에만 의미가 있으므로 호스트 참조와 한 값으로 묶는다 - 이유: 경계가 아닌 요소에 방해 여부가 생기는 상태를 표현할 수 없게 하고, `attached_to: None`인 기존 생성 지점(약 66곳)을 건드리지 않는다.
 - **`Shape::Event(EventPosition)` -> `Shape::Event { position, is_interrupting }`**: 그리기가 방해 여부를 알아야 하므로 IR 도형에 둔다 - 이유: `EventPosition`에 변형을 더하면 모델 쪽 exhaustive match(위치 검사, 어휘표)까지 번진다.
@@ -119,7 +119,7 @@ pub enum Shape {
 - 요구사항: 2.1~2.3, 2.5, 4.2
 - 글자 표(first match): `Intermediate` + 비방해 -> `◌`, `Start` -> `○`, `Intermediate` -> `◎`, `End` -> `◉`.
 - 글자는 지금처럼 노드 원점에 그린다 - 가로, 세로 배치 모두 같은 자리(2.5).
-- `CJK_MONO_COVERED_GLYPHS`에 `◌` 추가.
+- `CJK_MONO_COVERED_GLYPHS`에 `◌` 추가하고, 목록 설명에 확인 기준 폰트로 D2Coding을 더한다(목록 글자는 두 폰트 모두에 있고 한 칸 폭).
 
 ## 데이터 모델
 위 인터페이스로 충분하다. 불변식: `attached_to`가 `Some`인 요소만 방해 여부를 가진다(타입으로 보장).
