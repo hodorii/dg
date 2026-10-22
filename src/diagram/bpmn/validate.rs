@@ -6,7 +6,7 @@
 //! 이벤트·호스트가 활동·소속이 없거나 호스트와 같음·`parent`가 호스트와 같음) → 중첩(`parent`가
 //! `Subprocess`·사이클 없음) → 그룹(멤버가 그룹과 같은 `parent`·한 그룹에만 소속).
 
-use super::model::{Attachment, ElementKind, EventPosition, FlowKind, Model};
+use super::model::{Attachment, ElementKind, EventPosition, EventTrigger, FlowKind, Model};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +20,8 @@ pub enum ModelError {
     BoundaryEventNotIntermediate(String),
     BoundaryHostNotActivity(String),
     BoundaryContainerMismatch(String),
+    /// 경계 이벤트 id — 오류·취소 트리거는 BPMN 2.0.2에서 항상 방해인데 비방해로 지정됐다.
+    BoundaryTriggerMustInterrupt(String),
     /// 요소 id — `parent`가 가리키는 요소가 `Subprocess`가 아니다.
     ParentNotSubprocess(String),
     /// 요소 id — `parent` 사슬을 따라가면 자기 자신으로 되돌아온다.
@@ -45,6 +47,7 @@ impl std::fmt::Display for ModelError {
             ModelError::BoundaryEventNotIntermediate(id) => write!(f, "BoundaryEventNotIntermediate({id})"),
             ModelError::BoundaryHostNotActivity(id) => write!(f, "BoundaryHostNotActivity({id})"),
             ModelError::BoundaryContainerMismatch(id) => write!(f, "BoundaryContainerMismatch({id})"),
+            ModelError::BoundaryTriggerMustInterrupt(id) => write!(f, "BoundaryTriggerMustInterrupt({id})"),
             ModelError::ParentNotSubprocess(id) => write!(f, "ParentNotSubprocess({id})"),
             ModelError::ParentCycle(id) => write!(f, "ParentCycle({id})"),
             ModelError::SequenceFlowCrossesSubprocess(id) => write!(f, "SequenceFlowCrossesSubprocess({id})"),
@@ -302,13 +305,16 @@ fn check_message_flows(model: &Model, broken_flow: &HashSet<&str>, broken_contai
 
 fn check_boundary_events(model: &Model, broken_attach: &HashSet<&str>, broken_container: &HashSet<&str>, broken_parent: &HashSet<&str>, errors: &mut Vec<ModelError>) {
     for element in &model.elements {
-        let Some(Attachment { host: host_id, .. }) = &element.attached_to else { continue };
+        let Some(Attachment { host: host_id, is_interrupting }) = &element.attached_to else { continue };
         if broken_attach.contains(element.id.as_str()) {
             continue;
         }
         let host = model.element(host_id).expect("참조 해석 검사를 통과했다");
         if !matches!(element.kind, ElementKind::Event { position: EventPosition::Intermediate, .. }) {
             errors.push(ModelError::BoundaryEventNotIntermediate(element.id.clone()));
+        }
+        if !is_interrupting && matches!(element.kind, ElementKind::Event { trigger: Some(EventTrigger::Error | EventTrigger::Cancel), .. }) {
+            errors.push(ModelError::BoundaryTriggerMustInterrupt(element.id.clone()));
         }
         if !host.kind.is_activity() {
             errors.push(ModelError::BoundaryHostNotActivity(element.id.clone()));
@@ -426,6 +432,26 @@ mod tests {
         target.kind = ElementKind::DataObject;
         let model = Model { elements: vec![flow_node("a", None), target], flows: vec![sequence("f1", "a", "d")], ..Model::default() };
         assert_eq!(validate(&model), Err(vec![ModelError::SequenceFlowEndsAtNonFlowNode("f1".into())]));
+    }
+
+    #[test]
+    fn non_interrupting_boundary_is_rejected_only_for_error_and_cancel_triggers() {
+        let cases = [
+            (Some(EventTrigger::Error), true, false),
+            (Some(EventTrigger::Error), false, true),
+            (Some(EventTrigger::Cancel), true, false),
+            (Some(EventTrigger::Cancel), false, true),
+            (Some(EventTrigger::Timer), true, false),
+            (Some(EventTrigger::Timer), false, false),
+            (None, true, false),
+            (None, false, false),
+        ];
+        for (trigger, is_interrupting, is_rejected) in cases {
+            let boundary = Element { id: "b".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger }, container: None, attached_to: Some(Attachment { host: "host".into(), is_interrupting }), parent: None };
+            let model = Model { elements: vec![flow_node("host", None), boundary], ..Model::default() };
+            let expected = if is_rejected { Err(vec![ModelError::BoundaryTriggerMustInterrupt("b".into())]) } else { Ok(()) };
+            assert_eq!(validate(&model), expected, "trigger={trigger:?} is_interrupting={is_interrupting}");
+        }
     }
 
     #[test]

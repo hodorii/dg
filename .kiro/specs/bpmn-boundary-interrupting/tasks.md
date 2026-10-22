@@ -33,7 +33,7 @@
   - _Requirements: 1.3, 1.4, 1.6_
   - _Difficulty: low_
   - _Boundary: bpmn::parse_yaml_
-- [ ] 2.3 (P) 오류, 취소 트리거의 비방해 거부
+- [x] 2.3 (P) 오류, 취소 트리거의 비방해 거부
   - 경계 이벤트 검사에서 비방해 + 오류 또는 취소 트리거를 새 모델 오류로.
   - _DoneWhen: 트리거(오류, 취소, 타이머, 없음) x 방해 여부 단위 테스트 통과, 비방해 오류 경계 문서의 `bpmn::render` 결과가 원문 물러남_
   - _Requirements: 3.1, 3.2_
