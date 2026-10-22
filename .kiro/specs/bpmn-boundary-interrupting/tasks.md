@@ -21,7 +21,7 @@
   - _Boundary: diagram::ir, layout::shape_
 
 - [ ] 2. 핵심
-- [ ] 2.1 (P) XML `cancelActivity` 읽기
+- [x] 2.1 (P) XML `cancelActivity` 읽기
   - 속성 없음, `"true"`는 방해, `"false"`는 비방해, 그 밖 값은 새 파서 오류.
   - _DoneWhen: 네 경우(없음, true, false, no) 단위 테스트 통과, `"no"` 입력의 `bpmn::render` 결과가 원문 물러남_
   - _Requirements: 1.1, 1.2, 1.5_
