@@ -4,7 +4,7 @@
 //! 흐름을 채운다. 검증은 하지 않는다(`render_model`이 `validate`를 부른다). 어휘는
 //! `super::vocabulary`의 `from_xml_name`만 호출 — 새 매핑표를 두지 않는다.
 
-use super::model::{Element, ElementKind, EventTrigger, Flow, FlowKind, Lane, Model, Participant};
+use super::model::{Attachment, Element, ElementKind, EventTrigger, Flow, FlowKind, Lane, Model, Participant};
 use super::xml::{self, XmlElement, XmlError};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -14,6 +14,8 @@ pub enum ParseError {
     Xml(XmlError),
     /// 루트 로컬 이름이 `definitions`·`process`·`collaboration`이 아님.
     UnexpectedRoot(String),
+    /// `boundaryEvent`의 `cancelActivity`가 `true`·`false`가 아님. `element`는 경계 이벤트 id.
+    InvalidCancelActivity { element: String, value: String },
 }
 
 impl fmt::Display for ParseError {
@@ -21,6 +23,7 @@ impl fmt::Display for ParseError {
         match self {
             ParseError::Xml(err) => write!(f, "{err}"),
             ParseError::UnexpectedRoot(name) => write!(f, "루트 요소 {name:?}는 definitions·process·collaboration이 아니다"),
+            ParseError::InvalidCancelActivity { element, value } => write!(f, "경계 이벤트 {element:?}의 cancelActivity {value:?}는 true·false가 아니다"),
         }
     }
 }
@@ -47,6 +50,14 @@ pub fn looks_like_bpmn(source: &str) -> bool {
 pub fn parse(source: &str) -> Result<Model, ParseError> {
     let root = xml::parse_document(source, OPAQUE_ELEMENTS).map_err(ParseError::Xml)?;
     build_model(&root)
+}
+
+fn is_interrupting_of(boundary_event: &XmlElement, element_id: &str) -> Result<bool, ParseError> {
+    match boundary_event.attribute("cancelActivity") {
+        None | Some("true") => Ok(true),
+        Some("false") => Ok(false),
+        Some(other) => Err(ParseError::InvalidCancelActivity { element: element_id.to_string(), value: other.to_string() }),
+    }
 }
 
 fn build_model(root: &XmlElement) -> Result<Model, ParseError> {
@@ -128,7 +139,12 @@ fn build_model(root: &XmlElement) -> Result<Model, ParseError> {
             if let Some(kind) = element_kind_of(&child.name, child) {
                 let id = literal_id.map(str::to_string).unwrap_or_else(|| synth_id(&mut counter));
                 let name = element_name(&child.name, child);
-                let attached_to = if child.name == "boundaryEvent" { child.attribute("attachedToRef").map(str::to_string) } else { None };
+                let attached_to = if child.name == "boundaryEvent" {
+                    let is_interrupting = is_interrupting_of(child, &id)?;
+                    child.attribute("attachedToRef").map(|host| Attachment { host: host.to_string(), is_interrupting })
+                } else {
+                    None
+                };
                 let container = literal_id.and_then(|lid| node_lane_map.get(lid).cloned()).or_else(|| container_id.clone());
                 elements.push(Element { id, name, kind, container, attached_to, parent: None });
             }
@@ -182,7 +198,7 @@ fn build_model(root: &XmlElement) -> Result<Model, ParseError> {
     // 경계 이벤트 container := 호스트 container(전부 만든 뒤).
     let host_containers: HashMap<String, Option<String>> = elements.iter().map(|e| (e.id.clone(), e.container.clone())).collect();
     for element in &mut elements {
-        if let Some(host_id) = element.attached_to.clone()
+        if let Some(host_id) = element.attached_to.as_ref().map(|attachment| attachment.host.clone())
             && let Some(host_container) = host_containers.get(&host_id)
         {
             element.container = host_container.clone();
@@ -481,8 +497,45 @@ mod tests {
         )
         .unwrap();
         let boundary = model.element("boundary").unwrap();
-        assert_eq!(boundary.attached_to.as_deref(), Some("host"));
+        assert_eq!(boundary.attached_to.as_ref().map(|attachment| attachment.host.as_str()), Some("host"));
         assert_eq!(boundary.container.as_deref(), Some("host-lane"));
+    }
+
+    fn boundary_document(attributes: &str, trigger: &str) -> String {
+        format!(r#"<process id="p1"><task id="host"/><boundaryEvent id="boundary" attachedToRef="host"{attributes}><{trigger}/></boundaryEvent></process>"#)
+    }
+
+    fn boundary_is_interrupting(attributes: &str, trigger: &str) -> bool {
+        let model = parse(&boundary_document(attributes, trigger)).unwrap();
+        model.element("boundary").unwrap().attached_to.as_ref().unwrap().is_interrupting
+    }
+
+    #[test]
+    fn boundary_event_without_cancel_activity_is_interrupting() {
+        assert!(boundary_is_interrupting("", "errorEventDefinition"));
+    }
+
+    #[test]
+    fn boundary_event_with_cancel_activity_true_is_interrupting() {
+        assert!(boundary_is_interrupting(r#" cancelActivity="true""#, "errorEventDefinition"));
+    }
+
+    #[test]
+    fn boundary_event_with_cancel_activity_false_is_non_interrupting() {
+        assert!(!boundary_is_interrupting(r#" cancelActivity="false""#, "timerEventDefinition"));
+    }
+
+    #[test]
+    fn boundary_event_with_unknown_cancel_activity_value_is_a_parse_error() {
+        let result = parse(&boundary_document(r#" cancelActivity="no""#, "errorEventDefinition"));
+        assert_eq!(result.unwrap_err(), ParseError::InvalidCancelActivity { element: "boundary".to_string(), value: "no".to_string() });
+    }
+
+    #[test]
+    fn boundary_event_with_unknown_cancel_activity_value_makes_render_fall_back() {
+        let source = boundary_document(r#" cancelActivity="no""#, "errorEventDefinition");
+        let theme = crate::style::Theme::none();
+        assert!(super::super::render(&source, &theme, 80, Default::default()).is_none());
     }
 
     #[test]

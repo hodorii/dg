@@ -276,7 +276,7 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::model::{Element, ElementKind, EventPosition, EventTrigger, Flow, FlowKind, GatewayKind, Lane, Participant, TaskKind};
+    use super::model::{Attachment, Element, ElementKind, EventPosition, EventTrigger, Flow, FlowKind, GatewayKind, Lane, Participant, TaskKind};
     use super::*;
     use crate::diagram::ir::Direction;
     use crate::diagram::options::DiagramOptions;
@@ -403,7 +403,7 @@ mod tests {
                 // container를 호스트와 같은 값으로 명시(1.7 "소속이 없거나 호스트와 같음") — 검증의
                 // 풀 판정은 리터럴 container만 보므로(호스트 상속은 lower 몫), 풀 안쪽으로 나가는
                 // 시퀀스 흐름(5.2)이 통과하려면 여기서 명시적으로 맞춰 둔다.
-                Element { id: "boundary".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: Some("p1".into()), attached_to: Some("host".into()), parent: None },
+                Element { id: "boundary".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: Some("p1".into()), attached_to: Some(Attachment { host: "host".into(), is_interrupting: true }), parent: None },
                 Element { id: "end".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("p1".into()), attached_to: None, parent: None },
             ],
             flows: vec![Flow { id: "f1".into(), source: "boundary".into(), target: "end".into(), label: String::new(), kind: FlowKind::Sequence { is_default: false } }],
@@ -643,8 +643,8 @@ mod tests {
             elements: vec![
                 task("a", "", Some("l1-1")),
                 task("b", "", Some("l1-1")),
-                Element { id: "boundary1".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Timer) }, container: None, attached_to: Some("a".into()), parent: None },
-                Element { id: "boundary2".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: None, attached_to: Some("a".into()), parent: None },
+                Element { id: "boundary1".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Timer) }, container: None, attached_to: Some(Attachment { host: "a".into(), is_interrupting: true }), parent: None },
+                Element { id: "boundary2".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: None, attached_to: Some(Attachment { host: "a".into(), is_interrupting: true }), parent: None },
                 Element { id: "gw".into(), name: "".into(), kind: ElementKind::Gateway(GatewayKind::Exclusive), container: Some("l1-1".into()), attached_to: None, parent: None },
             ],
             flows: vec![
@@ -694,7 +694,7 @@ mod tests {
                     name: "시한 초과".into(),
                     kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) },
                     container: Some("lane-sales".into()),
-                    attached_to: Some("review-task".into()),
+                    attached_to: Some(Attachment { host: "review-task".into(), is_interrupting: true }),
                     parent: None,
                 },
                 Element { id: "end-cancel".into(), name: "취소".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("lane-sales".into()), attached_to: None, parent: None },
@@ -1296,6 +1296,86 @@ mod tests {
         let source = "participants:\n  - p1:\n      nodes:\n        - a: task 가\nflows:\n  - p1 --> a\n";
         assert_eq!(parse_yaml::parse(source).expect("파싱은 된다").flows[0].kind, FlowKind::Message);
         assert_eq!(fenced_bpmn_rows(source), None);
+    }
+
+    const MIXED_BOUNDARY_XML: &str = r#"<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL">
+  <process id="p">
+    <userTask id="review" name="주문 검토"/>
+    <boundaryEvent id="reminder" name="30분 경과" attachedToRef="review" cancelActivity="false"><timerEventDefinition/></boundaryEvent>
+    <boundaryEvent id="timeout" name="2일 초과" attachedToRef="review"><timerEventDefinition/></boundaryEvent>
+    <serviceTask id="notify" name="알림 발송"/>
+    <endEvent id="cancel" name="취소"/>
+    <userTask id="ship" name="출고 준비"/>
+    <sequenceFlow id="f1" sourceRef="review" targetRef="ship"/>
+    <sequenceFlow id="f2" sourceRef="reminder" targetRef="notify"/>
+    <sequenceFlow id="f3" sourceRef="timeout" targetRef="cancel"/>
+  </process>
+</definitions>"#;
+
+    const MIXED_BOUNDARY_YAML: &str = "nodes:
+  - review: userTask 주문 검토
+  - reminder:
+      kind: boundaryEvent
+      name: 30분 경과
+      trigger: timerEventDefinition
+      attached_to: review
+      cancel_activity: false
+  - timeout:
+      kind: boundaryEvent
+      name: 2일 초과
+      trigger: timerEventDefinition
+      attached_to: review
+  - notify: serviceTask 알림 발송
+  - cancel: endEvent 취소
+  - ship: userTask 출고 준비
+flows:
+  - review --> ship
+  - reminder --> notify
+  - timeout --> cancel
+";
+
+    fn mixed_boundary_rows(source: &str, direction: Direction) -> Vec<String> {
+        let options = DiagramOptions { direction: Some((direction, false)), ..DiagramOptions::default() };
+        let (_, lines) = render(source, &Theme::none(), 120, options).expect("렌더링돼야 한다");
+        lines.iter().map(Line::plain).collect()
+    }
+
+    /// `glyph` 한 칸 둘레(왼쪽·오른쪽·위·아래)에 있는 글자.
+    fn cells_around_glyph(rows: &[String], glyph: char) -> (usize, char, Option<char>, Option<char>, Option<char>) {
+        let row = rows.iter().position(|r| r.contains(glyph)).expect("도형 글자가 있어야 한다");
+        let byte_index = rows[row].find(glyph).unwrap();
+        let col = crate::text::width_of(&rows[row][..byte_index]);
+        let before = rows[row][..byte_index].chars().last().unwrap_or(' ');
+        let after = rows[row][byte_index + glyph.len_utf8()..].chars().next();
+        let above = row.checked_sub(1).and_then(|r| char_at_display_col(&rows[r], col));
+        let below = rows.get(row + 1).and_then(|r| char_at_display_col(r, col));
+        (row, before, after, above, below)
+    }
+
+    #[test]
+    fn interrupting_and_non_interrupting_boundary_events_render_with_distinct_glyphs_and_no_dashed_lines() {
+        const DASHED_GLYPHS: &str = "╌╎┈┊";
+        for (format, source) in [("XML", MIXED_BOUNDARY_XML), ("YAML", MIXED_BOUNDARY_YAML)] {
+            for direction in [Direction::LeftRight, Direction::TopDown] {
+                let rows = mixed_boundary_rows(source, direction);
+                let rendered = rows.join("\n");
+                let context = format!("{format} {direction:?}:\n{rendered}");
+                assert_eq!(rendered.matches('◌').count(), 1, "비방해 경계 이벤트 ◌는 하나: {context}");
+                assert_eq!(rendered.matches('◎').count(), 1, "방해 경계 이벤트 ◎는 하나: {context}");
+                assert!(!rendered.contains(|c| DASHED_GLYPHS.contains(c)), "점선·파선 글자가 없어야 한다: {context}");
+                let non_interrupting_row = rows.iter().find(|r| r.contains('◌')).unwrap();
+                let interrupting_row = rows.iter().find(|r| r.contains('◎')).unwrap();
+                assert!(non_interrupting_row.contains("30분 경과"), "◌ 줄에 비방해 이벤트 이름: {context}");
+                assert!(interrupting_row.contains("2일 초과"), "◎ 줄에 방해 이벤트 이름: {context}");
+                for glyph in ['◌', '◎'] {
+                    let (_, before, after, above, below) = cells_around_glyph(&rows, glyph);
+                    for neighbour in [Some(before), after, above, below].into_iter().flatten() {
+                        assert!(!DASHED_GLYPHS.contains(neighbour), "{glyph} 둘레에 점선 글자가 있다({neighbour}): {context}");
+                    }
+                    assert!(before == ' ' || "─│╭╮╰╯├┤┬┴┼".contains(before), "{glyph} 바로 앞은 공백이나 실선이어야 한다({before}): {context}");
+                }
+            }
+        }
     }
 }
 

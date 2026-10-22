@@ -6,7 +6,7 @@
 //! `parent`가 없는 모델(XML·YAML)은 모든 요소가 깊이 0이라 펼칠 것이 없고, 이 스펙 이전과 바이트
 //! 단위로 같은 그래프가 된다(7.6).
 
-use super::model::{Element, ElementKind, FlowKind, Lane, Model, Orientation};
+use super::model::{Attachment, Element, ElementKind, FlowKind, Lane, Model, Orientation};
 use super::vocabulary::{CALL_ACTIVITY_LABEL, DATA_OBJECT_LABEL};
 use crate::diagram::ir::{Direction, Edge, Graph, LineKind, Marker, Shape};
 use crate::diagram::options::ExpandPolicy;
@@ -250,7 +250,7 @@ fn build_graph(model: &Model, subtree_root: Option<&str>, max_depth: Option<usiz
         }
         // 경계 이벤트의 소속이 비어 있으면 호스트의 그룹을 따른다(기존 규약).
         let effective_container = element.container.as_deref().or_else(|| {
-            let host = model.element(element.attached_to.as_deref()?)?;
+            let host = model.element(&element.attached_to.as_ref()?.host)?;
             host.container.as_deref()
         });
         let group = member_group_of
@@ -258,7 +258,7 @@ fn build_graph(model: &Model, subtree_root: Option<&str>, max_depth: Option<usiz
             .copied()
             .or_else(|| element.parent.as_deref().filter(|p| Some(*p) != subtree_root).and_then(|p| box_of.get(p)).copied())
             .or_else(|| effective_container.and_then(|c| lane_group_of.get(c)).copied());
-        let index = graph.intern(&element.id, &element.name, shape_of(element.kind), group);
+        let index = graph.intern(&element.id, &element.name, shape_of(element), group);
         graph.set_label(index, &section_text(element.kind, &element.name));
     }
 
@@ -328,7 +328,7 @@ fn add_placeholders_for_empty_groups(graph: &mut Graph) {
 /// 노드에서 바로 잇는다.
 fn add_boundary_edges(graph: &mut Graph, model: &Model, box_of: &HashMap<String, usize>) {
     for element in &model.elements {
-        let Some(host_id) = &element.attached_to else { continue };
+        let Some(Attachment { host: host_id, .. }) = &element.attached_to else { continue };
         let Some(to) = graph.find(&element.id) else { continue };
         let from = match box_of.get(host_id) {
             Some(&g) => graph.group_anchor(g),
@@ -341,9 +341,12 @@ fn add_boundary_edges(graph: &mut Graph, model: &Model, box_of: &HashMap<String,
     }
 }
 
-fn shape_of(kind: ElementKind) -> Shape {
-    match kind {
-        ElementKind::Event { position, .. } => Shape::Event(position),
+fn shape_of(element: &Element) -> Shape {
+    match element.kind {
+        ElementKind::Event { position, .. } => {
+            let is_interrupting = element.attached_to.as_ref().is_none_or(|attachment| attachment.is_interrupting);
+            Shape::Event { position, is_interrupting }
+        }
         ElementKind::Task(_) => Shape::Round,
         ElementKind::Subprocess => Shape::Subprocess,
         ElementKind::CallActivity => Shape::Round,
@@ -392,7 +395,7 @@ fn line_for(kind: FlowKind) -> (LineKind, Marker, Marker) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::model::{Element, EventPosition, EventTrigger, Flow, GatewayKind, Group, Participant, TaskKind};
+    use super::super::model::{Attachment, Element, EventPosition, EventTrigger, Flow, GatewayKind, Group, Participant, TaskKind};
     use crate::diagram::ir::GroupKind;
 
     fn element(id: &str, kind: ElementKind) -> Element {
@@ -421,7 +424,7 @@ mod tests {
         let graph = lower(&model);
         let node = |id: &str| &graph.nodes[graph.find(id).unwrap()];
 
-        assert_eq!(node("e1").shape, Shape::Event(EventPosition::Start));
+        assert_eq!(node("e1").shape, Shape::Event { position: EventPosition::Start, is_interrupting: true });
         assert_eq!(node("e1").sections, vec![vec!["타이머".to_string(), "«timer»".to_string()]]);
         assert_eq!(node("e2").sections, vec![Vec::<String>::new()]);
         assert_eq!(node("e3").sections, vec![vec!["«timer»".to_string()]]);
@@ -512,7 +515,7 @@ mod tests {
             participants: vec![Participant { id: "p1".into(), name: "P1".into(), lanes: Vec::new() }],
             elements: vec![
                 Element { id: "host".into(), name: "작업".into(), kind: ElementKind::Task(TaskKind::None), container: Some("p1".into()), attached_to: None, parent: None },
-                Element { id: "boundary".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: None, attached_to: Some("host".into()), parent: None },
+                Element { id: "boundary".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: None, attached_to: Some(Attachment { host: "host".into(), is_interrupting: true }), parent: None },
             ],
             ..Model::default()
         };
@@ -526,6 +529,24 @@ mod tests {
         assert_eq!(extra_edges[0].tail, Marker::None);
         assert_eq!(extra_edges[0].head, Marker::None);
         assert!(extra_edges[0].label.is_empty());
+    }
+
+    #[test]
+    fn boundary_event_shape_follows_its_interrupting_flag_and_lines_stay_solid() {
+        let boundary = |id: &str, is_interrupting: bool| Element { id: id.into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Timer) }, container: None, attached_to: Some(Attachment { host: "host".into(), is_interrupting }), parent: None };
+        let task = |id: &str| Element { id: id.into(), name: id.into(), kind: ElementKind::Task(TaskKind::None), container: None, attached_to: None, parent: None };
+        let model = Model {
+            elements: vec![task("host"), task("next"), boundary("soft", false), boundary("hard", true)],
+            flows: vec![Flow { id: "s1".into(), source: "soft".into(), target: "next".into(), label: String::new(), kind: FlowKind::Sequence { is_default: false } }],
+            ..Model::default()
+        };
+        let graph = lower(&model);
+        let shape_of_id = |id: &str| graph.nodes[graph.find(id).unwrap()].shape;
+        assert_eq!(shape_of_id("soft"), Shape::Event { position: EventPosition::Intermediate, is_interrupting: false });
+        assert_eq!(shape_of_id("hard"), Shape::Event { position: EventPosition::Intermediate, is_interrupting: true });
+        let edge_between = |from: &str, to: &str| graph.edges.iter().find(|e| e.from == graph.find(from).unwrap() && e.to == graph.find(to).unwrap()).unwrap();
+        assert_eq!(edge_between("host", "soft").kind, LineKind::Solid);
+        assert_eq!(edge_between("soft", "next").kind, LineKind::Solid);
     }
 
     #[test]
@@ -699,7 +720,7 @@ mod tests {
             name: "오류".into(),
             kind: ElementKind::Event { position: super::super::model::EventPosition::Intermediate, trigger: Some(EventTrigger::Error) },
             container: Some("laneA".into()),
-            attached_to: Some("a1".into()),
+            attached_to: Some(Attachment { host: "a1".into(), is_interrupting: true }),
             parent: None,
         });
         let graph = &lower_with(&model, ExpandPolicy::Depth(1))[0].graph;

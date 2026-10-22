@@ -18,6 +18,15 @@ const BASE_SEED: u64 = 0x5EED_F10E;
 /// 규칙이고 이 기능의 설계가 그대로 둔다(건너뛰기 글자는 선 무늬와 무관). 커버리지 판정에서 이것만 뺀다.
 const PREEXISTING_UNCOVERED_HOP: char = '◠';
 
+const TASK_KINDS: [&str; 2] = ["task", "userTask"];
+
+/// 호스트 작업에 붙는 타이머 경계 이벤트. `cancel_activity`는 원문을 만들 때 정한다.
+struct GeneratedBoundary {
+    id: String,
+    name: Option<&'static str>,
+    host: String,
+}
+
 struct GeneratedNode {
     id: String,
     kind: &'static str,
@@ -30,6 +39,7 @@ struct GeneratedDocument {
     participant_count: usize,
     nodes: Vec<GeneratedNode>,
     flow_ends: Vec<(String, String)>,
+    boundaries: Vec<GeneratedBoundary>,
 }
 
 impl GeneratedDocument {
@@ -59,7 +69,32 @@ impl GeneratedDocument {
                 (endpoints[source].clone(), endpoints[target].clone())
             })
             .collect();
-        GeneratedDocument { participant_count, nodes, flow_ends }
+        GeneratedDocument { participant_count, nodes, flow_ends, boundaries: Vec::new() }
+    }
+
+    /// 기존 생성 결과에 경계 이벤트 1~2개를 얹는다. 호스트는 작업 노드이고(없으면 첫 노드를 작업으로 바꾼다),
+    /// 나가는 흐름은 호스트와 같은 참여자의 다른 노드로만 이어 풀을 가로지르는 흐름 오류를 피한다.
+    fn generate_with_boundaries(rng: &mut Xorshift64) -> Self {
+        let mut document = Self::generate(rng);
+        if !document.nodes.iter().any(|node| TASK_KINDS.contains(&node.kind)) {
+            document.nodes[0].kind = TASK_KINDS[0];
+        }
+        let hosts: Vec<usize> = (0..document.nodes.len()).filter(|&i| TASK_KINDS.contains(&document.nodes[i].kind)).collect();
+        for boundary_index in 0..1 + rng.below(2) {
+            let host = &document.nodes[hosts[rng.below(hosts.len())]];
+            let boundary = GeneratedBoundary {
+                id: format!("b{boundary_index}"),
+                name: if rng.below(2) == 0 { None } else { Some(NODE_NAMES[rng.below(NODE_NAMES.len())]) },
+                host: host.id.clone(),
+            };
+            let targets: Vec<&GeneratedNode> = document.nodes.iter().filter(|node| node.id != host.id && node.participant == host.participant).collect();
+            if !targets.is_empty() {
+                let target = targets[rng.below(targets.len())].id.clone();
+                document.flow_ends.push((boundary.id.clone(), target));
+            }
+            document.boundaries.push(boundary);
+        }
+        document
     }
 
     fn node_line(node: &GeneratedNode, indent: &str) -> String {
@@ -71,6 +106,11 @@ impl GeneratedDocument {
 
     /// 흐름마다 `arrows[i]`를 화살 표기로 쓴 YAML 원문.
     fn to_yaml(&self, arrows: &[&str]) -> String {
+        self.to_yaml_with_cancel_activity(arrows, None)
+    }
+
+    /// `to_yaml`에 경계 이벤트마다 `cancel_activity`를 `cancel_activity` 값으로 적는다(`None`이면 키를 생략).
+    fn to_yaml_with_cancel_activity(&self, arrows: &[&str], cancel_activity: Option<bool>) -> String {
         let mut yaml = String::new();
         if self.participant_count > 0 {
             yaml.push_str("participants:\n");
@@ -87,10 +127,19 @@ impl GeneratedDocument {
             }
         }
         let loose: Vec<&GeneratedNode> = self.nodes.iter().filter(|node| node.participant.is_none()).collect();
-        if !loose.is_empty() {
+        if !loose.is_empty() || !self.boundaries.is_empty() {
             yaml.push_str("nodes:\n");
             for node in loose {
                 yaml.push_str(&Self::node_line(node, "  "));
+            }
+            for boundary in &self.boundaries {
+                yaml.push_str(&format!("  - {}:\n      kind: boundaryEvent\n      trigger: timerEventDefinition\n      attached_to: {}\n", boundary.id, boundary.host));
+                if let Some(name) = boundary.name {
+                    yaml.push_str(&format!("      name: {name}\n"));
+                }
+                if let Some(is_interrupting) = cancel_activity {
+                    yaml.push_str(&format!("      cancel_activity: {is_interrupting}\n"));
+                }
             }
         }
         yaml.push_str("flows:\n");
@@ -160,6 +209,14 @@ fn is_hangul(c: char) -> bool {
     matches!(c, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}')
 }
 
+/// 커버리지 허용 목록 밖 글자(ASCII·한글·기존 건너뛰기 글자 제외), 정렬·중복 제거.
+fn uncovered_glyphs(lines: &[Line]) -> Vec<char> {
+    let mut uncovered: Vec<char> = lines.iter().flat_map(|line| line.text().chars().collect::<Vec<_>>()).filter(|&c| !c.is_ascii() && !is_hangul(c) && c != PREEXISTING_UNCOVERED_HOP && !CJK_MONO_COVERED_GLYPHS.contains(&c)).collect();
+    uncovered.sort_unstable();
+    uncovered.dedup();
+    uncovered
+}
+
 #[test]
 fn bpmn_rendering_draws_only_glyphs_within_cjk_mono_coverage() {
     let mut rendered_count = 0;
@@ -175,9 +232,7 @@ fn bpmn_rendering_draws_only_glyphs_within_cjk_mono_coverage() {
             let rendered = render_text(&source, Some((direction, false)));
             let Some((_, lines)) = &rendered else { continue };
             is_rendered = true;
-            let mut uncovered: Vec<char> = lines.iter().flat_map(|line| line.text().chars().collect::<Vec<_>>()).filter(|&c| !c.is_ascii() && !is_hangul(c) && c != PREEXISTING_UNCOVERED_HOP && !CJK_MONO_COVERED_GLYPHS.contains(&c)).collect();
-            uncovered.sort_unstable();
-            uncovered.dedup();
+            let uncovered = uncovered_glyphs(lines);
             if !uncovered.is_empty() && smallest_failure.as_ref().is_none_or(|(size, _)| source.len() < *size) {
                 let codepoints = uncovered.iter().map(|c| format!("{c:?}(U+{:04X})", *c as u32)).collect::<Vec<_>>().join(", ");
                 let report = format!("seed={seed:#x} iteration={iteration} direction={direction:?}\n허용 목록 밖 글자: {codepoints}\n--- YAML\n{source}--- 렌더링\n{}", describe(&rendered));
@@ -192,4 +247,82 @@ fn bpmn_rendering_draws_only_glyphs_within_cjk_mono_coverage() {
         panic!("BPMN 렌더링에 커버리지 허용 목록 밖 글자가 있다(가장 작은 실패):\n{report}");
     }
     assert_mostly_rendered(rendered_count, "커버리지 허용 목록");
+}
+
+fn plain_text_of(rendered: &Option<(&'static str, Vec<Line>)>) -> Option<String> {
+    rendered.as_ref().map(|(_, lines)| lines.iter().map(Line::plain).collect::<Vec<_>>().join("\n"))
+}
+
+#[test]
+fn omitting_or_true_cancel_activity_renders_the_same_and_false_only_turns_the_boundary_glyph_into_dotted() {
+    let mut rendered_count = 0;
+    let mut smallest_failure: Option<(usize, String)> = None;
+    for iteration in 0..ITERATIONS {
+        let seed = BASE_SEED + iteration;
+        let mut rng = Xorshift64::new(seed);
+        let document = GeneratedDocument::generate_with_boundaries(&mut rng);
+        let arrows = document.uniform_arrows(ACCEPTED_ARROWS[0]);
+        let absent_source = document.to_yaml_with_cancel_activity(&arrows, None);
+        let true_source = document.to_yaml_with_cancel_activity(&arrows, Some(true));
+        let false_source = document.to_yaml_with_cancel_activity(&arrows, Some(false));
+        let mut is_rendered = false;
+        for direction in [Direction::TopDown, Direction::LeftRight] {
+            let absent = render_text(&absent_source, Some((direction, false)));
+            let explicit_true = render_text(&true_source, Some((direction, false)));
+            let non_interrupting = render_text(&false_source, Some((direction, false)));
+            is_rendered |= absent.is_some();
+            let absent_text = plain_text_of(&absent);
+            let non_interrupting_as_interrupting = plain_text_of(&non_interrupting).map(|text| text.replace('◌', "◎"));
+            let has_dotted_glyph_per_boundary = absent_text.is_none() || plain_text_of(&non_interrupting).is_some_and(|text| text.matches('◌').count() == document.boundaries.len());
+            let is_violated = explicit_true != absent || non_interrupting_as_interrupting != absent_text || !has_dotted_glyph_per_boundary;
+            if is_violated && smallest_failure.as_ref().is_none_or(|(size, _)| absent_source.len() < *size) {
+                let report = format!(
+                    "seed={seed:#x} iteration={iteration} direction={direction:?}\n--- cancel_activity 생략 YAML\n{absent_source}--- 생략 렌더링\n{}\n--- cancel_activity: true YAML\n{true_source}--- true 렌더링\n{}\n--- cancel_activity: false YAML\n{false_source}--- false 렌더링\n{}",
+                    describe(&absent),
+                    describe(&explicit_true),
+                    describe(&non_interrupting)
+                );
+                smallest_failure = Some((absent_source.len(), report));
+            }
+        }
+        if is_rendered {
+            rendered_count += 1;
+        }
+    }
+    if let Some((_, report)) = smallest_failure {
+        panic!("경계 이벤트의 cancel_activity 생략·true·false 렌더링 관계가 어긋났다(가장 작은 실패):\n{report}");
+    }
+    assert_mostly_rendered(rendered_count, "경계 이벤트 방해 여부");
+}
+
+#[test]
+fn non_interrupting_boundary_rendering_draws_only_glyphs_within_cjk_mono_coverage() {
+    let mut rendered_count = 0;
+    let mut smallest_failure: Option<(usize, String)> = None;
+    for iteration in 0..ITERATIONS {
+        let seed = BASE_SEED + iteration;
+        let mut rng = Xorshift64::new(seed);
+        let document = GeneratedDocument::generate_with_boundaries(&mut rng);
+        let source = document.to_yaml_with_cancel_activity(&document.uniform_arrows(ACCEPTED_ARROWS[0]), Some(false));
+        let mut is_rendered = false;
+        for direction in [Direction::TopDown, Direction::LeftRight] {
+            let rendered = render_text(&source, Some((direction, false)));
+            let Some((_, lines)) = &rendered else { continue };
+            is_rendered = true;
+            let uncovered = uncovered_glyphs(lines);
+            let has_dotted_glyph = lines.iter().any(|line| line.text().contains('◌'));
+            if (!uncovered.is_empty() || !has_dotted_glyph) && smallest_failure.as_ref().is_none_or(|(size, _)| source.len() < *size) {
+                let codepoints = uncovered.iter().map(|c| format!("{c:?}(U+{:04X})", *c as u32)).collect::<Vec<_>>().join(", ");
+                let report = format!("seed={seed:#x} iteration={iteration} direction={direction:?}\n허용 목록 밖 글자: {codepoints} / ◌ 있음: {has_dotted_glyph}\n--- YAML\n{source}--- 렌더링\n{}", describe(&rendered));
+                smallest_failure = Some((source.len(), report));
+            }
+        }
+        if is_rendered {
+            rendered_count += 1;
+        }
+    }
+    if let Some((_, report)) = smallest_failure {
+        panic!("비방해 경계 이벤트가 있는 BPMN 렌더링에 커버리지 허용 목록 밖 글자가 있거나 ◌가 없다(가장 작은 실패):\n{report}");
+    }
+    assert_mostly_rendered(rendered_count, "비방해 경계 이벤트 커버리지");
 }

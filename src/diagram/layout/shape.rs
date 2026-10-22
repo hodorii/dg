@@ -30,7 +30,7 @@ pub fn measure(shape: Shape, sections: &[Vec<String>]) -> (usize, usize) {
         Shape::Rect | Shape::Round | Shape::Note | Shape::Circle | Shape::Subprocess => (tw + 4, th + 2),
         // 테두리 없음 — 위치 글자 자체가 도형이다. 위치 글자·공백·본문 폭, 본문이 비어도
         // 높이는 한 줄 확보한다(2.4).
-        Shape::Event(_) => (if tw == 0 { 1 } else { tw + 2 }, th.max(1)),
+        Shape::Event { .. } => (if tw == 0 { 1 } else { tw + 2 }, th.max(1)),
         Shape::Stadium | Shape::Diamond | Shape::Hexagon | Shape::Subroutine => (tw + 6, th + 2),
         Shape::Cylinder => (tw + 4, th + 3),
         Shape::Actor => (tw.max(3), th + 3),
@@ -68,17 +68,18 @@ pub fn draw(canvas: &mut Canvas, x: usize, y: usize, shape: Shape, sections: &[V
             // 글자 칸(is_text())을 건너뛰므로 배치기가 여기로 선을 그어도 `[+]`가 남는다(2.2).
             canvas.text_centered(x, y + h - 1, w, "[+]", border);
         }
-        Shape::Event(position) => {
-            // 테두리 없음 — 위치 글자(○/◎/◉) 자체가 도형이고, 이름·둘째 줄은 그 오른쪽에
+        Shape::Event { position, is_interrupting } => {
+            // 테두리 없음 — 위치 글자(○/◎/◉, 비방해 중간은 ◌) 자체가 도형이고, 이름·둘째 줄은 그 오른쪽에
             // 왼쪽 맞춤으로 붙는다. `draw_sections()`의 가운데 정렬 관례는 양옆 테두리를
             // 전제하므로 쓰지 않는다(`Plain` 분기와 같은 이유). 배치기가 접점 벌림·형제 정렬로
             // `min_width`/`min_height`를 측정값보다 넓게 주더라도, 위치 글자는 항상 노드
             // 원점(`x`, `y`)에 그려진다 — 배치기의 접점·정렬 기준(`Shape::is_point_anchored`)과
             // 짝을 이루는 그리기 쪽 약속이다. 여분은 이름 뒤·아래로만 남는다(2.5).
-            let glyph = match position {
-                EventPosition::Start => '○',
-                EventPosition::Intermediate => '◎',
-                EventPosition::End => '◉',
+            let glyph = match (position, is_interrupting) {
+                (EventPosition::Intermediate, false) => '◌',
+                (EventPosition::Start, _) => '○',
+                (EventPosition::Intermediate, _) => '◎',
+                (EventPosition::End, _) => '◉',
             };
             canvas.put(x, y, glyph, theme.diagram_accent);
             let mut row = y;
@@ -188,12 +189,12 @@ fn line_style(section: usize, text: &str, theme: &Theme) -> Style {
     }
 }
 
-/// BPMN 렌더링이 그리는 ASCII·한글 밖 글자 중 기본 CJK 모노 폰트(Noto Sans Mono CJK) 커버리지를
-/// 실측한(`fc-list ":family=Noto Sans Mono CJK KR:charset=<코드>"`) 허용 목록. 커버리지 고정 테스트와
-/// BPMN 렌더링 글자 속성 테스트가 함께 참조한다.
+/// BPMN 렌더링이 그리는 ASCII·한글 밖 글자 중 기준 모노 폰트(Noto Sans Mono CJK·D2Coding) 두 곳
+/// 모두에 있고 한 칸 너비인 글자의 허용 목록(`fc-list ":family=<폰트>:charset=<코드>"`와 글리프
+/// advance width로 실측). 커버리지 고정 테스트와 BPMN 렌더링 글자 속성 테스트가 함께 참조한다.
 #[cfg(test)]
 pub(crate) const CJK_MONO_COVERED_GLYPHS: &[char] = &[
-    '○', '◎', '◉', '╱', '×', '+', '*', // 게이트웨이 기호·이벤트 위치 글자·기본 흐름 빗금
+    '○', '◎', '◉', '◌', '╱', '×', '+', '*', // 게이트웨이 기호·이벤트 위치 글자·기본 흐름 빗금
     '╲', '‹', '›', // 게이트웨이 마름모 테두리
     '─', '│', '┌', '┐', '└', '┘', '╭', '╮', '╰', '╯', '├', '┤', '┬', '┴', '┼', // 실선·모서리·이음
     '━', '┃', '┏', '┓', '┗', '┛', '┣', '┫', '┳', '┻', '╋', // 굵은 선
@@ -343,7 +344,7 @@ mod tests {
         }
     }
 
-    /// (bpmn-shapes) 게이트웨이 기호 다섯 개·이벤트 위치 글자 세 개·빗금이 기본 CJK 모노
+    /// (bpmn-shapes) 게이트웨이 기호 다섯 개·이벤트 위치 글자 네 개·빗금이 기본 CJK 모노
     /// 폰트(Noto Sans Mono CJK) 커버리지 실측 안에 있는지 고정한다(요구사항 5.2,
     /// research.md "글자 커버리지 실측"). `⬠`(U+2B20)·`∗`(U+2217)는 커버리지 밖이라
     /// design §Key Decisions에서 `◎`·`*`로 교체됐다 — 그 교체 결과만 허용 목록에 남는다.
@@ -351,7 +352,7 @@ mod tests {
     #[test]
     fn bpmn_glyph_codepoints_are_within_cjk_mono_coverage() {
         let gateway_symbols = ['×', '+', '○', '*', '◎'];
-        let event_position_glyphs = ['○', '◎', '◉'];
+        let event_position_glyphs = ['○', '◎', '◉', '◌'];
         let slash = ['╱'];
         let flow_kind_glyphs = ['╌', '╎', '┈', '┊', '▷', '◁', '△', '▽'];
         for ch in gateway_symbols.into_iter().chain(event_position_glyphs).chain(slash).chain(flow_kind_glyphs) {
@@ -362,18 +363,28 @@ mod tests {
         }
     }
 
+    /// (bpmn-boundary-interrupting) 비방해 중간 이벤트는 `◌`, 방해 중간 이벤트는 기존 `◎`로 그려진다(요구사항 2.1·2.2).
+    #[test]
+    fn intermediate_event_glyph_depends_on_is_interrupting() {
+        let non_interrupting = draw_rows(Shape::Event { position: EventPosition::Intermediate, is_interrupting: false }, vec![vec!["Go".into()]]);
+        assert_eq!(non_interrupting, vec!["◌ Go"]);
+
+        let interrupting = draw_rows(Shape::Event { position: EventPosition::Intermediate, is_interrupting: true }, vec![vec!["Go".into()]]);
+        assert_eq!(interrupting, vec!["◎ Go"]);
+    }
+
     /// (bpmn-event-shape-notation) 시작·중간·종료 이벤트는 테두리 없이 위치 글자 +
     /// 오른쪽 이름 한 줄로 그려진다(요구사항 2.1~2.3) — `Round`의 둥근 상자 실루엣과는
     /// 다르다(1.1~1.3의 재현: 이전엔 이 셋이 `Round`·`Stadium`과 같은 세 줄 상자였다).
     #[test]
     fn event_start_intermediate_end_render_with_position_glyphs() {
-        let start = draw_rows(Shape::Event(EventPosition::Start), vec![vec!["Go".into()]]);
+        let start = draw_rows(Shape::Event { position: EventPosition::Start, is_interrupting: true }, vec![vec!["Go".into()]]);
         assert_eq!(start, vec!["○ Go"]);
 
-        let intermediate = draw_rows(Shape::Event(EventPosition::Intermediate), vec![vec!["Go".into()]]);
+        let intermediate = draw_rows(Shape::Event { position: EventPosition::Intermediate, is_interrupting: true }, vec![vec!["Go".into()]]);
         assert_eq!(intermediate, vec!["◎ Go"]);
 
-        let end = draw_rows(Shape::Event(EventPosition::End), vec![vec!["Go".into()]]);
+        let end = draw_rows(Shape::Event { position: EventPosition::End, is_interrupting: true }, vec![vec!["Go".into()]]);
         assert_eq!(end, vec!["◉ Go"]);
 
         let round = draw_rows(Shape::Round, vec![vec!["Go".into()]]);
@@ -389,7 +400,7 @@ mod tests {
     /// 패닉이 없다(요구사항 2.4).
     #[test]
     fn event_with_empty_body_has_one_line_height_and_does_not_panic() {
-        let rows = draw_rows(Shape::Event(EventPosition::Start), vec![vec![]]);
+        let rows = draw_rows(Shape::Event { position: EventPosition::Start, is_interrupting: true }, vec![vec![]]);
         assert_eq!(rows, vec!["○"]);
     }
 
@@ -397,7 +408,7 @@ mod tests {
     /// 오고, 태스크와 같은 흐림·기울임 규칙을 따른다. 위치 글자는 강조색이다(요구사항 2.5).
     #[test]
     fn event_stereotype_second_line_is_dim_and_italic() {
-        let runs = draw_runs(Shape::Event(EventPosition::Start), vec![vec!["Go".into(), "«timer»".into()]]);
+        let runs = draw_runs(Shape::Event { position: EventPosition::Start, is_interrupting: true }, vec![vec!["Go".into(), "«timer»".into()]]);
         assert_eq!(runs.len(), 2, "테두리 없이 이름 줄 + 둘째 줄");
         let name_row = runs.iter().find(|row| row.iter().any(|(text, _)| text.contains("Go"))).expect("이름 줄이 있어야 한다");
         let stereotype_row = runs.iter().find(|row| row.iter().any(|(text, _)| text.contains("«timer»"))).expect("둘째 줄이 있어야 한다");
@@ -405,7 +416,7 @@ mod tests {
         assert!(name_row.iter().any(|(text, style)| text.contains('○') && *style == Theme::none().diagram_accent));
         assert!(stereotype_row.iter().any(|(text, style)| text.contains("«timer»") && style.dim && style.italic));
 
-        let (_, single_line_height) = measure(Shape::Event(EventPosition::Start), &[vec!["Go".into()]]);
+        let (_, single_line_height) = measure(Shape::Event { position: EventPosition::Start, is_interrupting: true }, &[vec!["Go".into()]]);
         assert_eq!(single_line_height, 1);
     }
 
@@ -416,11 +427,11 @@ mod tests {
     #[test]
     fn event_glyph_stays_pinned_to_the_node_origin_when_stretched_by_min_width_and_min_height() {
         let sections = vec![vec!["Go".into()]];
-        let (measured_width, measured_height) = measure(Shape::Event(EventPosition::End), &sections);
+        let (measured_width, measured_height) = measure(Shape::Event { position: EventPosition::End, is_interrupting: true }, &sections);
         let min_width = measured_width + 4;
         let min_height = measured_height + 2;
         let mut canvas = Canvas::new(min_width, min_height);
-        draw(&mut canvas, 0, 0, Shape::Event(EventPosition::End), &sections, &Theme::none(), min_width, min_height);
+        draw(&mut canvas, 0, 0, Shape::Event { position: EventPosition::End, is_interrupting: true }, &sections, &Theme::none(), min_width, min_height);
         let rows: Vec<String> = canvas.into_lines().iter().map(Line::plain).collect();
         let first_row: Vec<char> = rows[0].chars().collect();
         assert_eq!(first_row.first(), Some(&'◉'), "원 글자가 노드 원점 (0, 0)에 있어야 한다: {rows:?}");
