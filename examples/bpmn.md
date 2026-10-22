@@ -88,3 +88,25 @@ flows:
   </process>
 </definitions>
 ```
+
+```bpmn
+title: 비방해 경계 이벤트
+nodes:
+  - review: userTask 주문 검토
+  - reminder:
+      kind: boundaryEvent
+      name: 30분 경과
+      trigger: timerEventDefinition
+      attached_to: review
+      cancel_activity: false
+  - timeout:
+      kind: boundaryEvent
+      name: 2일 초과
+      trigger: timerEventDefinition
+      attached_to: review
+  - notify: serviceTask 알림 발송
+  - cancel: endEvent 주문 취소
+flows:
+  - reminder --> notify
+  - timeout --> cancel
+```
