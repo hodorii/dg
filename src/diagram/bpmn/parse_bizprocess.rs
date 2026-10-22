@@ -2,7 +2,7 @@
 //! 않는다(그건 `validate`의 몫). `bizprocess`(개요)만 알고 BPMN 어휘는 여기서 처음 등장한다.
 
 use super::bizprocess::{self, Heading, LogicItem, Outcome, OutlineError};
-use super::model::{Element, ElementKind, EventPosition, EventTrigger, Flow, FlowKind, GatewayKind, Group, Lane, Model, Participant, TaskKind};
+use super::model::{Attachment, Element, ElementKind, EventPosition, EventTrigger, Flow, FlowKind, GatewayKind, Group, Lane, Model, Participant, TaskKind};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParseError {
@@ -222,7 +222,7 @@ fn build_logic(ctx: &mut Ctx, items: &[LogicItem], owner_id: &str, owner_parent:
                         ctx.add_flow(&gw_id, &throw_id, &label, FlowKind::Sequence { is_default });
                         *error_counter += 1;
                         let boundary_id = format!("{l2_id}#error{error_counter}");
-                        ctx.model.elements.push(Element { id: boundary_id, name: error_name.clone(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: l2_container.clone(), attached_to: Some(l2_id.to_string()), parent: None });
+                        ctx.model.elements.push(Element { id: boundary_id, name: error_name.clone(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: l2_container.clone(), attached_to: Some(Attachment { host: l2_id.to_string(), is_interrupting: true }), parent: None });
                     }
                 }
             }
@@ -452,7 +452,9 @@ mod tests {
         assert_eq!(throw.name, "문제발생");
         let boundary = find(&model, "a1#error1");
         assert_eq!(boundary.kind, ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) });
-        assert_eq!(boundary.attached_to.as_deref(), Some("a1"));
+        let attachment = boundary.attached_to.as_ref().expect("경계 이벤트는 호스트를 가진다");
+        assert_eq!(attachment.host, "a1");
+        assert!(attachment.is_interrupting);
         assert_eq!(boundary.parent, None);
         assert!(!model.elements.iter().any(|e| e.id == "a1.s1#error1"), "경계 이벤트는 L4가 아니라 L2에만 붙는다");
     }

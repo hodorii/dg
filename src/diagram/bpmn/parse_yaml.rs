@@ -4,7 +4,7 @@
 //! 표기를 스키마대로 걷는다. 검증은 하지 않는다(`render_model`이 `validate`를 부른다). 어휘는
 //! `super::vocabulary`만 부른다 — BPMN 이름 표를 여기 두지 않는다.
 
-use super::model::{Element, ElementKind, EventTrigger, Flow, FlowKind, Lane, Model, Orientation, Participant};
+use super::model::{Attachment, Element, ElementKind, EventTrigger, Flow, FlowKind, Lane, Model, Orientation, Participant};
 use super::vocabulary;
 use super::yaml::{self, YamlError, YamlValue};
 use crate::diagram::ir::{LineKind, Marker};
@@ -281,7 +281,7 @@ fn build_element(raw: &RawNode, default_pairs: &mut Vec<(String, String)>) -> Re
     };
 
     let attached_to = match (kind_token == "boundaryEvent", attached_to_field) {
-        (true, Some(host)) => Some(host),
+        (true, Some(host)) => Some(Attachment { host, is_interrupting: true }),
         (true, None) => return Err(ParseError::MissingKey { path: raw.path.clone(), key: "attached_to" }),
         (false, Some(_)) => return Err(ParseError::FieldNotAllowed { path: raw.path.clone(), key: "attached_to" }),
         (false, None) => None,
@@ -298,7 +298,7 @@ fn build_element(raw: &RawNode, default_pairs: &mut Vec<(String, String)>) -> Re
 fn apply_boundary_containers(elements: &mut [Element]) {
     let host_containers: HashMap<String, Option<String>> = elements.iter().map(|e| (e.id.clone(), e.container.clone())).collect();
     for element in elements.iter_mut() {
-        if let Some(host_id) = element.attached_to.clone()
+        if let Some(host_id) = element.attached_to.as_ref().map(|attachment| attachment.host.clone())
             && let Some(host_container) = host_containers.get(&host_id)
         {
             element.container = host_container.clone();
@@ -532,7 +532,7 @@ mod tests {
     fn boundary_event_requires_attached_to_and_inherits_the_hosts_container() {
         let source = "nodes:\n  - host: task 작업\n  - b:\n      kind: boundaryEvent\n      trigger: errorEventDefinition\n      attached_to: host\n";
         let model = parse(source).unwrap();
-        assert_eq!(model.element("b").unwrap().attached_to.as_deref(), Some("host"));
+        assert_eq!(model.element("b").unwrap().attached_to.as_ref().map(|attachment| attachment.host.as_str()), Some("host"));
         assert!(matches!(parse("nodes:\n  - b:\n      kind: boundaryEvent\n"), Err(ParseError::MissingKey { key: "attached_to", .. })));
         assert!(matches!(parse("nodes:\n  - b:\n      kind: task\n      attached_to: host\n"), Err(ParseError::FieldNotAllowed { key: "attached_to", .. })));
     }

@@ -101,6 +101,12 @@ pub struct Lane {
     pub sub_lanes: Vec<Lane>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attachment {
+    pub host: String,
+    pub is_interrupting: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Element {
     pub id: String,
@@ -108,8 +114,8 @@ pub struct Element {
     pub kind: ElementKind,
     /// 소속 참여자 id 또는 가장 안쪽 레인 id(laneSet/flowNodeRef). `None` = 참여자 밖.
     pub container: Option<String>,
-    /// 경계 이벤트의 호스트 활동 id.
-    pub attached_to: Option<String>,
+    /// 경계 이벤트가 붙은 호스트와 방해 여부.
+    pub attached_to: Option<Attachment>,
     /// 품은 `Subprocess` 요소 id. `None` = 프로세스 최상위(펼쳐진 적 없는 XML·YAML 파서는 항상 `None`).
     pub parent: Option<String>,
 }

@@ -6,7 +6,7 @@
 //! 이벤트·호스트가 활동·소속이 없거나 호스트와 같음·`parent`가 호스트와 같음) → 중첩(`parent`가
 //! `Subprocess`·사이클 없음) → 그룹(멤버가 그룹과 같은 `parent`·한 그룹에만 소속).
 
-use super::model::{ElementKind, EventPosition, FlowKind, Model};
+use super::model::{Attachment, ElementKind, EventPosition, FlowKind, Model};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,7 +79,7 @@ pub fn validate(model: &Model) -> Result<(), Vec<ModelError>> {
             errors.push(ModelError::UnknownReference { owner: element.id.clone(), reference: container.clone() });
             broken_container.insert(&element.id);
         }
-        if let Some(host) = &element.attached_to
+        if let Some(Attachment { host, .. }) = &element.attached_to
             && !element_ids.contains(host.as_str())
         {
             errors.push(ModelError::UnknownReference { owner: element.id.clone(), reference: host.clone() });
@@ -302,7 +302,7 @@ fn check_message_flows(model: &Model, broken_flow: &HashSet<&str>, broken_contai
 
 fn check_boundary_events(model: &Model, broken_attach: &HashSet<&str>, broken_container: &HashSet<&str>, broken_parent: &HashSet<&str>, errors: &mut Vec<ModelError>) {
     for element in &model.elements {
-        let Some(host_id) = &element.attached_to else { continue };
+        let Some(Attachment { host: host_id, .. }) = &element.attached_to else { continue };
         if broken_attach.contains(element.id.as_str()) {
             continue;
         }
@@ -328,7 +328,7 @@ fn check_boundary_events(model: &Model, broken_attach: &HashSet<&str>, broken_co
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::model::{Element, Flow, GatewayKind, Lane, Participant, TaskKind};
+    use super::super::model::{Attachment, Element, Flow, GatewayKind, Lane, Participant, TaskKind};
 
     fn flow_node(id: &str, container: Option<&str>) -> Element {
         Element { id: id.into(), name: id.into(), kind: ElementKind::Task(TaskKind::None), container: container.map(str::to_string), attached_to: None, parent: None }
@@ -430,19 +430,19 @@ mod tests {
 
     #[test]
     fn boundary_event_must_be_intermediate_attached_to_an_activity_and_match_host_container() {
-        let not_intermediate = Element { id: "e1".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Start, trigger: None }, container: None, attached_to: Some("host".into()), parent: None };
+        let not_intermediate = Element { id: "e1".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Start, trigger: None }, container: None, attached_to: Some(Attachment { host: "host".into(), is_interrupting: true }), parent: None };
         let host = flow_node("host", None);
         let model = Model { elements: vec![host, not_intermediate], ..Model::default() };
         assert_eq!(validate(&model), Err(vec![ModelError::BoundaryEventNotIntermediate("e1".into())]));
 
         let mut gateway_host = flow_node("g", None);
         gateway_host.kind = ElementKind::Gateway(GatewayKind::Exclusive);
-        let boundary = Element { id: "e2".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: None }, container: None, attached_to: Some("g".into()), parent: None };
+        let boundary = Element { id: "e2".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: None }, container: None, attached_to: Some(Attachment { host: "g".into(), is_interrupting: true }), parent: None };
         let model = Model { elements: vec![gateway_host, boundary], ..Model::default() };
         assert_eq!(validate(&model), Err(vec![ModelError::BoundaryHostNotActivity("e2".into())]));
 
         let host_in_pool = flow_node("host2", Some("p1"));
-        let mismatched = Element { id: "e3".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: None }, container: Some("p2".into()), attached_to: Some("host2".into()), parent: None };
+        let mismatched = Element { id: "e3".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: None }, container: Some("p2".into()), attached_to: Some(Attachment { host: "host2".into(), is_interrupting: true }), parent: None };
         let model = Model {
             participants: vec![Participant { id: "p1".into(), name: "P1".into(), lanes: Vec::new() }, Participant { id: "p2".into(), name: "P2".into(), lanes: Vec::new() }],
             elements: vec![host_in_pool, mismatched],
@@ -551,7 +551,7 @@ mod tests {
                 subprocess("sp1", None),
                 subprocess("sp2", None),
                 child_of("host", "sp1"),
-                Element { id: "boundary".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: None }, container: None, attached_to: Some("host".into()), parent: Some("sp2".into()) },
+                Element { id: "boundary".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: None }, container: None, attached_to: Some(Attachment { host: "host".into(), is_interrupting: true }), parent: Some("sp2".into()) },
             ],
             ..Model::default()
         };

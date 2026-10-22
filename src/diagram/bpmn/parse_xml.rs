@@ -4,7 +4,7 @@
 //! 흐름을 채운다. 검증은 하지 않는다(`render_model`이 `validate`를 부른다). 어휘는
 //! `super::vocabulary`의 `from_xml_name`만 호출 — 새 매핑표를 두지 않는다.
 
-use super::model::{Element, ElementKind, EventTrigger, Flow, FlowKind, Lane, Model, Participant};
+use super::model::{Attachment, Element, ElementKind, EventTrigger, Flow, FlowKind, Lane, Model, Participant};
 use super::xml::{self, XmlElement, XmlError};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -128,7 +128,7 @@ fn build_model(root: &XmlElement) -> Result<Model, ParseError> {
             if let Some(kind) = element_kind_of(&child.name, child) {
                 let id = literal_id.map(str::to_string).unwrap_or_else(|| synth_id(&mut counter));
                 let name = element_name(&child.name, child);
-                let attached_to = if child.name == "boundaryEvent" { child.attribute("attachedToRef").map(str::to_string) } else { None };
+                let attached_to = if child.name == "boundaryEvent" { child.attribute("attachedToRef").map(|host| Attachment { host: host.to_string(), is_interrupting: true }) } else { None };
                 let container = literal_id.and_then(|lid| node_lane_map.get(lid).cloned()).or_else(|| container_id.clone());
                 elements.push(Element { id, name, kind, container, attached_to, parent: None });
             }
@@ -182,7 +182,7 @@ fn build_model(root: &XmlElement) -> Result<Model, ParseError> {
     // 경계 이벤트 container := 호스트 container(전부 만든 뒤).
     let host_containers: HashMap<String, Option<String>> = elements.iter().map(|e| (e.id.clone(), e.container.clone())).collect();
     for element in &mut elements {
-        if let Some(host_id) = element.attached_to.clone()
+        if let Some(host_id) = element.attached_to.as_ref().map(|attachment| attachment.host.clone())
             && let Some(host_container) = host_containers.get(&host_id)
         {
             element.container = host_container.clone();
@@ -481,7 +481,7 @@ mod tests {
         )
         .unwrap();
         let boundary = model.element("boundary").unwrap();
-        assert_eq!(boundary.attached_to.as_deref(), Some("host"));
+        assert_eq!(boundary.attached_to.as_ref().map(|attachment| attachment.host.as_str()), Some("host"));
         assert_eq!(boundary.container.as_deref(), Some("host-lane"));
     }
 

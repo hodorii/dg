@@ -276,7 +276,7 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::model::{Element, ElementKind, EventPosition, EventTrigger, Flow, FlowKind, GatewayKind, Lane, Participant, TaskKind};
+    use super::model::{Attachment, Element, ElementKind, EventPosition, EventTrigger, Flow, FlowKind, GatewayKind, Lane, Participant, TaskKind};
     use super::*;
     use crate::diagram::ir::Direction;
     use crate::diagram::options::DiagramOptions;
@@ -403,7 +403,7 @@ mod tests {
                 // container를 호스트와 같은 값으로 명시(1.7 "소속이 없거나 호스트와 같음") — 검증의
                 // 풀 판정은 리터럴 container만 보므로(호스트 상속은 lower 몫), 풀 안쪽으로 나가는
                 // 시퀀스 흐름(5.2)이 통과하려면 여기서 명시적으로 맞춰 둔다.
-                Element { id: "boundary".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: Some("p1".into()), attached_to: Some("host".into()), parent: None },
+                Element { id: "boundary".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: Some("p1".into()), attached_to: Some(Attachment { host: "host".into(), is_interrupting: true }), parent: None },
                 Element { id: "end".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("p1".into()), attached_to: None, parent: None },
             ],
             flows: vec![Flow { id: "f1".into(), source: "boundary".into(), target: "end".into(), label: String::new(), kind: FlowKind::Sequence { is_default: false } }],
@@ -643,8 +643,8 @@ mod tests {
             elements: vec![
                 task("a", "", Some("l1-1")),
                 task("b", "", Some("l1-1")),
-                Element { id: "boundary1".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Timer) }, container: None, attached_to: Some("a".into()), parent: None },
-                Element { id: "boundary2".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: None, attached_to: Some("a".into()), parent: None },
+                Element { id: "boundary1".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Timer) }, container: None, attached_to: Some(Attachment { host: "a".into(), is_interrupting: true }), parent: None },
+                Element { id: "boundary2".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: None, attached_to: Some(Attachment { host: "a".into(), is_interrupting: true }), parent: None },
                 Element { id: "gw".into(), name: "".into(), kind: ElementKind::Gateway(GatewayKind::Exclusive), container: Some("l1-1".into()), attached_to: None, parent: None },
             ],
             flows: vec![
@@ -694,7 +694,7 @@ mod tests {
                     name: "시한 초과".into(),
                     kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) },
                     container: Some("lane-sales".into()),
-                    attached_to: Some("review-task".into()),
+                    attached_to: Some(Attachment { host: "review-task".into(), is_interrupting: true }),
                     parent: None,
                 },
                 Element { id: "end-cancel".into(), name: "취소".into(), kind: ElementKind::Event { position: EventPosition::End, trigger: None }, container: Some("lane-sales".into()), attached_to: None, parent: None },

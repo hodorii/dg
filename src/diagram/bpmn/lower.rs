@@ -6,7 +6,7 @@
 //! `parent`가 없는 모델(XML·YAML)은 모든 요소가 깊이 0이라 펼칠 것이 없고, 이 스펙 이전과 바이트
 //! 단위로 같은 그래프가 된다(7.6).
 
-use super::model::{Element, ElementKind, FlowKind, Lane, Model, Orientation};
+use super::model::{Attachment, Element, ElementKind, FlowKind, Lane, Model, Orientation};
 use super::vocabulary::{CALL_ACTIVITY_LABEL, DATA_OBJECT_LABEL};
 use crate::diagram::ir::{Direction, Edge, Graph, LineKind, Marker, Shape};
 use crate::diagram::options::ExpandPolicy;
@@ -250,7 +250,7 @@ fn build_graph(model: &Model, subtree_root: Option<&str>, max_depth: Option<usiz
         }
         // 경계 이벤트의 소속이 비어 있으면 호스트의 그룹을 따른다(기존 규약).
         let effective_container = element.container.as_deref().or_else(|| {
-            let host = model.element(element.attached_to.as_deref()?)?;
+            let host = model.element(&element.attached_to.as_ref()?.host)?;
             host.container.as_deref()
         });
         let group = member_group_of
@@ -328,7 +328,7 @@ fn add_placeholders_for_empty_groups(graph: &mut Graph) {
 /// 노드에서 바로 잇는다.
 fn add_boundary_edges(graph: &mut Graph, model: &Model, box_of: &HashMap<String, usize>) {
     for element in &model.elements {
-        let Some(host_id) = &element.attached_to else { continue };
+        let Some(Attachment { host: host_id, .. }) = &element.attached_to else { continue };
         let Some(to) = graph.find(&element.id) else { continue };
         let from = match box_of.get(host_id) {
             Some(&g) => graph.group_anchor(g),
@@ -392,7 +392,7 @@ fn line_for(kind: FlowKind) -> (LineKind, Marker, Marker) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::model::{Element, EventPosition, EventTrigger, Flow, GatewayKind, Group, Participant, TaskKind};
+    use super::super::model::{Attachment, Element, EventPosition, EventTrigger, Flow, GatewayKind, Group, Participant, TaskKind};
     use crate::diagram::ir::GroupKind;
 
     fn element(id: &str, kind: ElementKind) -> Element {
@@ -512,7 +512,7 @@ mod tests {
             participants: vec![Participant { id: "p1".into(), name: "P1".into(), lanes: Vec::new() }],
             elements: vec![
                 Element { id: "host".into(), name: "작업".into(), kind: ElementKind::Task(TaskKind::None), container: Some("p1".into()), attached_to: None, parent: None },
-                Element { id: "boundary".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: None, attached_to: Some("host".into()), parent: None },
+                Element { id: "boundary".into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Error) }, container: None, attached_to: Some(Attachment { host: "host".into(), is_interrupting: true }), parent: None },
             ],
             ..Model::default()
         };
@@ -699,7 +699,7 @@ mod tests {
             name: "오류".into(),
             kind: ElementKind::Event { position: super::super::model::EventPosition::Intermediate, trigger: Some(EventTrigger::Error) },
             container: Some("laneA".into()),
-            attached_to: Some("a1".into()),
+            attached_to: Some(Attachment { host: "a1".into(), is_interrupting: true }),
             parent: None,
         });
         let graph = &lower_with(&model, ExpandPolicy::Depth(1))[0].graph;
