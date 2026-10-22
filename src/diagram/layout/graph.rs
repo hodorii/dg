@@ -3394,9 +3394,9 @@ mod tests {
     #[test]
     fn event_shapes_attach_edges_using_existing_contact_rules_top_down() {
         let mut g = Graph::default();
-        let start = g.intern("start", "Go", Shape::Event(EventPosition::Start), None);
+        let start = g.intern("start", "Go", Shape::Event { position: EventPosition::Start, is_interrupting: true }, None);
         let mid = g.intern("mid", "Mid", Shape::Round, None);
-        let end = g.intern("end", "Done", Shape::Event(EventPosition::End), None);
+        let end = g.intern("end", "Done", Shape::Event { position: EventPosition::End, is_interrupting: true }, None);
         g.add_edge(Edge { from: start, to: mid, head: Marker::Arrow, ..Edge::default() });
         g.add_edge(Edge { from: mid, to: end, head: Marker::Arrow, ..Edge::default() });
         let out = rows(render(&g, &Theme::none(), 80).unwrap());
@@ -3416,8 +3416,8 @@ mod tests {
     #[test]
     fn event_shapes_attach_edges_using_existing_contact_rules_left_right() {
         let mut g = Graph::default();
-        let start = g.intern("start", "Go", Shape::Event(EventPosition::Start), None);
-        let end = g.intern("end", "Done", Shape::Event(EventPosition::End), None);
+        let start = g.intern("start", "Go", Shape::Event { position: EventPosition::Start, is_interrupting: true }, None);
+        let end = g.intern("end", "Done", Shape::Event { position: EventPosition::End, is_interrupting: true }, None);
         g.add_edge(Edge { from: start, to: end, head: Marker::Arrow, ..Edge::default() });
         g.direction = Some(Direction::LeftRight);
         let out = rows(render(&g, &Theme::none(), 80).unwrap());
@@ -3435,7 +3435,7 @@ mod tests {
         for name in ["", "Done", "주문 취소"] {
             let mut g = Graph::default();
             let task = g.intern("task", "Task", Shape::Round, None);
-            let end = g.intern("end", "end", Shape::Event(EventPosition::End), None);
+            let end = g.intern("end", "end", Shape::Event { position: EventPosition::End, is_interrupting: true }, None);
             g.set_label(end, name);
             g.add_edge(Edge { from: task, to: end, head: Marker::Arrow, ..Edge::default() });
             let out = rows(render(&g, &Theme::none(), 80).unwrap());
@@ -3453,7 +3453,7 @@ mod tests {
     fn start_event_outgoing_edge_leaves_directly_below_the_glyph_regardless_of_name_length() {
         for name in ["", "Go", "주문 접수 «message»"] {
             let mut g = Graph::default();
-            let start = g.intern("start", "start", Shape::Event(EventPosition::Start), None);
+            let start = g.intern("start", "start", Shape::Event { position: EventPosition::Start, is_interrupting: true }, None);
             g.set_label(start, name);
             let task = g.intern("task", "Task", Shape::Round, None);
             g.add_edge(Edge { from: start, to: task, head: Marker::Arrow, ..Edge::default() });
@@ -3476,7 +3476,7 @@ mod tests {
         let mut g = Graph::default();
         let a = g.intern("a", "A", Shape::Round, None);
         let b = g.intern("b", "B", Shape::Round, None);
-        let end = g.intern("end", "Done", Shape::Event(EventPosition::End), None);
+        let end = g.intern("end", "Done", Shape::Event { position: EventPosition::End, is_interrupting: true }, None);
         g.add_edge(Edge { from: a, to: end, head: Marker::Arrow, ..Edge::default() });
         g.add_edge(Edge { from: b, to: end, head: Marker::Arrow, ..Edge::default() });
         let out = rows(render(&g, &Theme::none(), 80).unwrap());
@@ -3498,7 +3498,7 @@ mod tests {
         let mut g = Graph::default();
         let a = g.intern("a", "A", Shape::Round, None);
         let b = g.intern("b", "B", Shape::Round, None);
-        let end = g.intern("end", "one\ntwo\nthree", Shape::Event(EventPosition::End), None);
+        let end = g.intern("end", "one\ntwo\nthree", Shape::Event { position: EventPosition::End, is_interrupting: true }, None);
         g.add_edge(Edge { from: a, to: end, head: Marker::Arrow, ..Edge::default() });
         g.add_edge(Edge { from: b, to: end, head: Marker::Arrow, ..Edge::default() });
         g.direction = Some(Direction::LeftRight);
@@ -3535,11 +3535,11 @@ mod tests {
     fn new_shapes_and_slash_marker_do_not_panic_across_edge_cases() {
         let mut g = Graph::default();
         let lane = g.add_lane("Lane", None);
-        let unnamed_start = g.intern("s0", "s0", Shape::Event(EventPosition::Start), Some(lane));
+        let unnamed_start = g.intern("s0", "s0", Shape::Event { position: EventPosition::Start, is_interrupting: true }, Some(lane));
         g.set_label(unnamed_start, ""); // 이름 없는 이벤트: 본문 줄 없음
-        let one_char = g.intern("s1", "X", Shape::Event(EventPosition::Intermediate), Some(lane));
+        let one_char = g.intern("s1", "X", Shape::Event { position: EventPosition::Intermediate, is_interrupting: true }, Some(lane));
         let three_line = g.intern("s2", "one\ntwo\nthree", Shape::Subprocess, Some(lane));
-        let end = g.intern("s3", "Done", Shape::Event(EventPosition::End), None);
+        let end = g.intern("s3", "Done", Shape::Event { position: EventPosition::End, is_interrupting: true }, None);
         g.add_edge(Edge { from: unnamed_start, to: one_char, tail: Marker::Slash, head: Marker::Arrow, ..Edge::default() });
         g.add_edge(Edge { from: one_char, to: three_line, head: Marker::Arrow, ..Edge::default() });
         // 빗금 양끝: 꼬리·머리 둘 다 Slash.
@@ -3566,14 +3566,14 @@ mod tests {
         let sales = g.add_lane("영업", None);
         let warehouse = g.add_lane("창고", None);
 
-        let received = g.intern("received", "주문 접수", Shape::Event(EventPosition::Start), Some(sales));
+        let received = g.intern("received", "주문 접수", Shape::Event { position: EventPosition::Start, is_interrupting: true }, Some(sales));
         let review = task_with_stereotype(&mut g, "review", "주문 검토", "user", Some(sales));
         let check_stock = g.intern("check_stock", "× 재고 있음?", Shape::Diamond, Some(warehouse));
         let prepare = task_with_stereotype(&mut g, "prepare", "출고 준비", "user", Some(warehouse));
-        let shipped_end = g.intern("shipped_end", "shipped_end", Shape::Event(EventPosition::End), Some(warehouse));
+        let shipped_end = g.intern("shipped_end", "shipped_end", Shape::Event { position: EventPosition::End, is_interrupting: true }, Some(warehouse));
         g.set_label(shipped_end, ""); // 이름 없는 종료 이벤트
         let notify = task_with_stereotype(&mut g, "notify", "품절 안내 발송", "service", Some(sales));
-        let cancel_end = g.intern("cancel_end", "품절 취소", Shape::Event(EventPosition::End), Some(sales));
+        let cancel_end = g.intern("cancel_end", "품절 취소", Shape::Event { position: EventPosition::End, is_interrupting: true }, Some(sales));
 
         g.add_edge(Edge { from: received, to: review, head: Marker::Arrow, ..Edge::default() });
         g.add_edge(Edge { from: review, to: check_stock, head: Marker::Arrow, ..Edge::default() });
@@ -3805,7 +3805,7 @@ mod tests {
             out,
             ["     ┌────┐", "  ╭─▶│ o0 │", "  │  └────┘", "  │", "  │  ┌────┐", "●─┴┬▶│ o1 │", "   │ └────┘", "   │", "   │ ┌────┐", "   ╰▶│ o2 │", "     └────┘"]
         );
-        let out = rows(render(&lr_hub_graph(Shape::Event(EventPosition::Start), 0, 3), &Theme::none(), 80).unwrap());
+        let out = rows(render(&lr_hub_graph(Shape::Event { position: EventPosition::Start, is_interrupting: true }, 0, 3), &Theme::none(), 80).unwrap());
         assert_eq!(
             out,
             ["     ┌────┐", "  ╭─▶│ o0 │", "  │  └────┘", "  │", "  │  ┌────┐", "○─┴┬▶│ o1 │", "   │ └────┘", "   │", "   │ ┌────┐", "   ╰▶│ o2 │", "     └────┘"]
@@ -3844,9 +3844,9 @@ mod tests {
             Shape::Start,
             Shape::End,
             Shape::Anchor,
-            Shape::Event(EventPosition::Start),
-            Shape::Event(EventPosition::Intermediate),
-            Shape::Event(EventPosition::End),
+            Shape::Event { position: EventPosition::Start, is_interrupting: true },
+            Shape::Event { position: EventPosition::Intermediate, is_interrupting: true },
+            Shape::Event { position: EventPosition::End, is_interrupting: true },
             Shape::Subprocess,
         ];
         let border_boxes: Vec<Shape> = ALL_SHAPES.into_iter().filter(|shape| shape.is_border_box()).collect();

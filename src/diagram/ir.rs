@@ -48,8 +48,8 @@ pub enum Shape {
     End,
     /// 그룹을 가리키는 간선이 닿는 보이지 않는 점.
     Anchor,
-    /// BPMN 이벤트: 테두리 없음, 위치 글자(○/◎/◉) 자체가 도형이고 이름이 그 오른쪽에 온다.
-    Event(EventPosition),
+    /// BPMN 이벤트: 테두리 없음, 위치 글자(○/◎/◉, 비방해 경계 이벤트는 ◌) 자체가 도형이고 이름이 그 오른쪽에 온다.
+    Event { position: EventPosition, is_interrupting: bool },
     /// BPMN 접힌 서브프로세스: Round와 같은 테두리·본문에 아래 테두리 가운데 `[+]`.
     Subprocess,
 }
@@ -61,7 +61,7 @@ impl Shape {
     /// 선이 닿아야 한다(bpmn-event-notation-anchor). 상태도 `Start`/`End`는 이미 1×1이라
     /// 넣지 않는다 — 넣으면 `center()`가 0.5 이동해 기존 상태도 배치가 흔들릴 수 있다.
     pub fn is_point_anchored(self) -> bool {
-        matches!(self, Shape::Event(_))
+        matches!(self, Shape::Event { .. })
     }
 
     /// 테두리로 둘러싼 상자 도형인지(글자 줄이 없으면 위아래 테두리 두 줄로만 그려진다).
@@ -270,9 +270,9 @@ mod tests {
             (Shape::Cylinder, true),
             (Shape::Start, false),
             (Shape::End, false),
-            (Shape::Event(EventPosition::Start), false),
-            (Shape::Event(EventPosition::Intermediate), false),
-            (Shape::Event(EventPosition::End), false),
+            (Shape::Event { position: EventPosition::Start, is_interrupting: true }, false),
+            (Shape::Event { position: EventPosition::Intermediate, is_interrupting: true }, false),
+            (Shape::Event { position: EventPosition::End, is_interrupting: true }, false),
             (Shape::Interface, false),
             (Shape::Anchor, false),
             (Shape::Plain, false),

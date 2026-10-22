@@ -343,7 +343,7 @@ fn add_boundary_edges(graph: &mut Graph, model: &Model, box_of: &HashMap<String,
 
 fn shape_of(kind: ElementKind) -> Shape {
     match kind {
-        ElementKind::Event { position, .. } => Shape::Event(position),
+        ElementKind::Event { position, .. } => Shape::Event { position, is_interrupting: true },
         ElementKind::Task(_) => Shape::Round,
         ElementKind::Subprocess => Shape::Subprocess,
         ElementKind::CallActivity => Shape::Round,
@@ -421,7 +421,7 @@ mod tests {
         let graph = lower(&model);
         let node = |id: &str| &graph.nodes[graph.find(id).unwrap()];
 
-        assert_eq!(node("e1").shape, Shape::Event(EventPosition::Start));
+        assert_eq!(node("e1").shape, Shape::Event { position: EventPosition::Start, is_interrupting: true });
         assert_eq!(node("e1").sections, vec![vec!["타이머".to_string(), "«timer»".to_string()]]);
         assert_eq!(node("e2").sections, vec![Vec::<String>::new()]);
         assert_eq!(node("e3").sections, vec![vec!["«timer»".to_string()]]);
