@@ -27,7 +27,7 @@
   - _Requirements: 1.1, 1.2, 1.5_
   - _Difficulty: low_
   - _Boundary: bpmn::parse_xml_
-- [ ] 2.2 (P) YAML `cancel_activity` 읽기
+- [x] 2.2 (P) YAML `cancel_activity` 읽기
   - 노드 키 목록에 더하고, 스칼라 `true`, `false`만 허용, 그 밖은 새 불리언 오류, 경계 아닌 노드에 있으면 기존 허용 안 됨 오류.
   - _DoneWhen: 네 경우와 경계 아닌 노드 단위 테스트 통과, 잘못된 값 입력의 `bpmn::render` 결과가 원문 물러남_
   - _Requirements: 1.3, 1.4, 1.6_

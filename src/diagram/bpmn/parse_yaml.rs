@@ -21,8 +21,10 @@ pub enum ParseError {
     UnknownKey { path: String, key: String },
     /// 확장형의 `kind`, `boundaryEvent`의 `attached_to`.
     MissingKey { path: String, key: &'static str },
-    /// 이벤트 아닌 노드의 `trigger`, `boundaryEvent` 아닌 노드의 `attached_to`.
+    /// 이벤트 아닌 노드의 `trigger`, `boundaryEvent` 아닌 노드의 `attached_to`·`cancel_activity`.
     FieldNotAllowed { path: String, key: &'static str },
+    /// `true`·`false` 외 스칼라가 온 불리언 키(`cancel_activity`).
+    InvalidBoolean { path: String, key: &'static str, token: String },
     UnknownKind { path: String, token: String },
     UnknownTrigger { path: String, token: String },
     UnknownOrientation(String),
@@ -41,6 +43,7 @@ impl fmt::Display for ParseError {
             ParseError::UnknownKey { path, key } => write!(f, "{path}에 스키마 밖 키 {key:?}가 있다"),
             ParseError::MissingKey { path, key } => write!(f, "{path}에 필수 키 {key:?}가 없다"),
             ParseError::FieldNotAllowed { path, key } => write!(f, "{path}에는 {key:?}를 쓸 수 없다"),
+            ParseError::InvalidBoolean { path, key, token } => write!(f, "{path}의 {key:?} 값 {token:?}는 true 또는 false여야 한다"),
             ParseError::UnknownKind { path, token } => write!(f, "{path}의 종류 토큰 {token:?}를 모른다"),
             ParseError::UnknownTrigger { path, token } => write!(f, "{path}의 트리거 토큰 {token:?}를 모른다"),
             ParseError::UnknownOrientation(value) => write!(f, "방향 {value:?}를 모른다"),
@@ -55,7 +58,7 @@ impl fmt::Display for ParseError {
 pub const TOP_LEVEL_KEYS: &[&str] = &["title", "orientation", "participants", "nodes", "flows"];
 
 const PARTICIPANT_OR_LANE_KEYS: &[&str] = &["name", "lanes", "nodes"];
-const NODE_KEYS: &[&str] = &["kind", "name", "trigger", "attached_to", "default"];
+const NODE_KEYS: &[&str] = &["kind", "name", "trigger", "attached_to", "cancel_activity", "default"];
 
 /// 열 0 내용 줄(주석·빈 줄·선두 `---` 제외)이 전부 `TOP_LEVEL_KEYS`의 `키:` 줄이고
 /// `participants`·`nodes`·`flows` 중 하나 이상이 있으면 참. 문서를 파싱하지 않는다.
@@ -250,10 +253,10 @@ fn collect_raw_nodes(value: &YamlValue, path: &str, container: Option<String>, r
 // --- 노드: 압축형 · 확장형 → Element ---
 
 fn build_element(raw: &RawNode, default_pairs: &mut Vec<(String, String)>) -> Result<Element, ParseError> {
-    let (kind_token, name, trigger_token, attached_to_field, default_target) = match &raw.value {
+    let (kind_token, name, trigger_token, attached_to_field, cancel_activity_field, default_target) = match &raw.value {
         YamlValue::Scalar(s) => match s.split_once(' ') {
-            Some((token, rest)) => (token.to_string(), rest.trim().to_string(), None, None, None),
-            None => (s.clone(), String::new(), None, None, None),
+            Some((token, rest)) => (token.to_string(), rest.trim().to_string(), None, None, None, None),
+            None => (s.clone(), String::new(), None, None, None, None),
         },
         YamlValue::Map(entries) => {
             check_allowed_keys(entries, &raw.path, NODE_KEYS)?;
@@ -261,8 +264,9 @@ fn build_element(raw: &RawNode, default_pairs: &mut Vec<(String, String)>) -> Re
             let name = optional_scalar_field(&raw.value, &raw.path, "name")?.unwrap_or_default();
             let trigger = optional_scalar_field(&raw.value, &raw.path, "trigger")?;
             let attached_to = optional_scalar_field(&raw.value, &raw.path, "attached_to")?;
+            let cancel_activity = optional_scalar_field(&raw.value, &raw.path, "cancel_activity")?;
             let default_target = optional_scalar_field(&raw.value, &raw.path, "default")?;
-            (kind_token, name, trigger, attached_to, default_target)
+            (kind_token, name, trigger, attached_to, cancel_activity, default_target)
         }
         YamlValue::Seq(_) => return Err(ParseError::UnexpectedShape { path: raw.path.clone(), expected: "매핑 또는 스칼라" }),
     };
@@ -280,8 +284,18 @@ fn build_element(raw: &RawNode, default_pairs: &mut Vec<(String, String)>) -> Re
         },
     };
 
-    let attached_to = match (kind_token == "boundaryEvent", attached_to_field) {
-        (true, Some(host)) => Some(Attachment { host, is_interrupting: true }),
+    let is_boundary_event = kind_token == "boundaryEvent";
+    if cancel_activity_field.is_some() && !is_boundary_event {
+        return Err(ParseError::FieldNotAllowed { path: raw.path.clone(), key: "cancel_activity" });
+    }
+    let is_interrupting = match cancel_activity_field.as_deref() {
+        None | Some("true") => true,
+        Some("false") => false,
+        Some(token) => return Err(ParseError::InvalidBoolean { path: raw.path.clone(), key: "cancel_activity", token: token.to_string() }),
+    };
+
+    let attached_to = match (is_boundary_event, attached_to_field) {
+        (true, Some(host)) => Some(Attachment { host, is_interrupting }),
         (true, None) => return Err(ParseError::MissingKey { path: raw.path.clone(), key: "attached_to" }),
         (false, Some(_)) => return Err(ParseError::FieldNotAllowed { path: raw.path.clone(), key: "attached_to" }),
         (false, None) => None,
@@ -535,6 +549,39 @@ mod tests {
         assert_eq!(model.element("b").unwrap().attached_to.as_ref().map(|attachment| attachment.host.as_str()), Some("host"));
         assert!(matches!(parse("nodes:\n  - b:\n      kind: boundaryEvent\n"), Err(ParseError::MissingKey { key: "attached_to", .. })));
         assert!(matches!(parse("nodes:\n  - b:\n      kind: task\n      attached_to: host\n"), Err(ParseError::FieldNotAllowed { key: "attached_to", .. })));
+    }
+
+    fn boundary_source_with(extra_lines: &str) -> String {
+        format!("nodes:\n  - host: task 작업\n  - b:\n      kind: boundaryEvent\n      trigger: timerEventDefinition\n      attached_to: host\n{extra_lines}")
+    }
+
+    fn is_boundary_interrupting(extra_lines: &str) -> bool {
+        parse(&boundary_source_with(extra_lines)).unwrap().element("b").unwrap().attached_to.as_ref().unwrap().is_interrupting
+    }
+
+    #[test]
+    fn boundary_event_without_cancel_activity_is_interrupting() {
+        assert!(is_boundary_interrupting(""));
+    }
+
+    #[test]
+    fn boundary_event_with_cancel_activity_true_is_interrupting() {
+        assert!(is_boundary_interrupting("      cancel_activity: true\n"));
+    }
+
+    #[test]
+    fn boundary_event_with_cancel_activity_false_is_non_interrupting() {
+        assert!(!is_boundary_interrupting("      cancel_activity: false\n"));
+    }
+
+    #[test]
+    fn cancel_activity_rejects_non_boolean_scalars() {
+        assert!(matches!(parse(&boundary_source_with("      cancel_activity: no\n")), Err(ParseError::InvalidBoolean { key: "cancel_activity", ref token, .. }) if token == "no"));
+    }
+
+    #[test]
+    fn cancel_activity_is_allowed_only_on_boundary_events() {
+        assert!(matches!(parse("nodes:\n  - a:\n      kind: task\n      cancel_activity: false\n"), Err(ParseError::FieldNotAllowed { key: "cancel_activity", .. })));
     }
 
     #[test]
