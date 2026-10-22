@@ -258,7 +258,7 @@ fn build_graph(model: &Model, subtree_root: Option<&str>, max_depth: Option<usiz
             .copied()
             .or_else(|| element.parent.as_deref().filter(|p| Some(*p) != subtree_root).and_then(|p| box_of.get(p)).copied())
             .or_else(|| effective_container.and_then(|c| lane_group_of.get(c)).copied());
-        let index = graph.intern(&element.id, &element.name, shape_of(element.kind), group);
+        let index = graph.intern(&element.id, &element.name, shape_of(element), group);
         graph.set_label(index, &section_text(element.kind, &element.name));
     }
 
@@ -341,9 +341,12 @@ fn add_boundary_edges(graph: &mut Graph, model: &Model, box_of: &HashMap<String,
     }
 }
 
-fn shape_of(kind: ElementKind) -> Shape {
-    match kind {
-        ElementKind::Event { position, .. } => Shape::Event { position, is_interrupting: true },
+fn shape_of(element: &Element) -> Shape {
+    match element.kind {
+        ElementKind::Event { position, .. } => {
+            let is_interrupting = element.attached_to.as_ref().is_none_or(|attachment| attachment.is_interrupting);
+            Shape::Event { position, is_interrupting }
+        }
         ElementKind::Task(_) => Shape::Round,
         ElementKind::Subprocess => Shape::Subprocess,
         ElementKind::CallActivity => Shape::Round,
@@ -526,6 +529,24 @@ mod tests {
         assert_eq!(extra_edges[0].tail, Marker::None);
         assert_eq!(extra_edges[0].head, Marker::None);
         assert!(extra_edges[0].label.is_empty());
+    }
+
+    #[test]
+    fn boundary_event_shape_follows_its_interrupting_flag_and_lines_stay_solid() {
+        let boundary = |id: &str, is_interrupting: bool| Element { id: id.into(), name: "".into(), kind: ElementKind::Event { position: EventPosition::Intermediate, trigger: Some(EventTrigger::Timer) }, container: None, attached_to: Some(Attachment { host: "host".into(), is_interrupting }), parent: None };
+        let task = |id: &str| Element { id: id.into(), name: id.into(), kind: ElementKind::Task(TaskKind::None), container: None, attached_to: None, parent: None };
+        let model = Model {
+            elements: vec![task("host"), task("next"), boundary("soft", false), boundary("hard", true)],
+            flows: vec![Flow { id: "s1".into(), source: "soft".into(), target: "next".into(), label: String::new(), kind: FlowKind::Sequence { is_default: false } }],
+            ..Model::default()
+        };
+        let graph = lower(&model);
+        let shape_of_id = |id: &str| graph.nodes[graph.find(id).unwrap()].shape;
+        assert_eq!(shape_of_id("soft"), Shape::Event { position: EventPosition::Intermediate, is_interrupting: false });
+        assert_eq!(shape_of_id("hard"), Shape::Event { position: EventPosition::Intermediate, is_interrupting: true });
+        let edge_between = |from: &str, to: &str| graph.edges.iter().find(|e| e.from == graph.find(from).unwrap() && e.to == graph.find(to).unwrap()).unwrap();
+        assert_eq!(edge_between("host", "soft").kind, LineKind::Solid);
+        assert_eq!(edge_between("soft", "next").kind, LineKind::Solid);
     }
 
     #[test]

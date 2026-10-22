@@ -20,7 +20,7 @@
   - _Difficulty: mid_
   - _Boundary: diagram::ir, layout::shape_
 
-- [ ] 2. 핵심
+- [x] 2. 핵심
 - [x] 2.1 (P) XML `cancelActivity` 읽기
   - 속성 없음, `"true"`는 방해, `"false"`는 비방해, 그 밖 값은 새 파서 오류.
   - _DoneWhen: 네 경우(없음, true, false, no) 단위 테스트 통과, `"no"` 입력의 `bpmn::render` 결과가 원문 물러남_
@@ -39,7 +39,7 @@
   - _Requirements: 3.1, 3.2_
   - _Difficulty: low_
   - _Boundary: bpmn::validate_
-- [ ] 2.4 경계 이벤트 방해 여부를 도형으로 전달
+- [x] 2.4 경계 이벤트 방해 여부를 도형으로 전달
   - 경계 이벤트는 호스트 참조의 방해 여부, 그 밖 이벤트는 방해로 이벤트 도형을 만든다. 경계 간선은 그대로 실선.
   - _DoneWhen: 하강 단위 테스트에서 비방해 경계 이벤트 노드 도형이 비방해이고 호스트에서 오는 간선이 실선_
   - _Requirements: 2.2, 2.4_
