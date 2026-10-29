@@ -71,6 +71,8 @@ dg -s light -w 80 doc.md      # 밝은 테마, 폭 80
 | `-w, --width N` | 폭. 기본은 문단은 터미널 폭(최대 120)에서 접고 다이어그램·표·코드블록은 터미널 폭을 다 씀. 주면 둘 다 이 값 |
 | `-s, --style auto\|dark\|light\|none` | 색 테마. auto는 TTY면 dark, `COLORFGBG`로 밝은 배경 감지 |
 | `-P, --print` | 페이저 없이 stdout으로 (파이프면 자동) |
+| `-W, --watch` | 파일 변경을 감시해 자동 재렌더링. 페이저에서 파일을 볼 때는 기본으로 켜져 있고, `-P`·파이프 출력에서 계속 감시하려면 명시 (표준입력 불가) |
+| `--no-watch` | 파일 변경 감시를 끔 (페이저 기본 감시 해제) |
 | `-d, --diagram` | 입력을 다이어그램 소스로 취급 |
 | `-l, --lang mermaid\|plantuml\|bpmn\|bizprocess` | 다이어그램 언어 지정 (기본 자동 판별) |
 | `--er-notation crow\|text\|both` | ERD 카디널리티 표기: 까치발(기본)·글자(`1`, `0..N`)·둘 다. 환경변수 `DG_ER_NOTATION` |

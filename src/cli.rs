@@ -39,9 +39,14 @@ pub struct Cli {
     #[arg(long, value_parser = parse_depth)]
     pub depth: Option<dg::diagram::options::ExpandPolicy>,
 
-    /// 파일 변경을 감시해 자동으로 다시 렌더링(페이저·print 모드 모두 지원, 표준입력 불가)
-    #[arg(short = 'W', long)]
+    /// 파일 변경을 감시해 자동으로 다시 렌더링. 페이저에서 파일을 볼 때는 기본이며,
+    /// print 모드(-P·파이프)에서 계속 감시하려면 이 옵션을 명시(표준입력 불가)
+    #[arg(short = 'W', long, conflicts_with = "no_watch")]
     pub watch: bool,
+
+    /// 파일 변경 감시를 끈다(페이저 기본 감시 해제)
+    #[arg(long)]
+    pub no_watch: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

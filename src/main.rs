@@ -72,7 +72,8 @@ fn run() -> io::Result<()> {
     let use_pager = stdout_is_tty && !cli.print;
     if use_pager {
         let max_width = cli.width.unwrap_or(MAX_WIDTH);
-        let watcher = cli.watch.then(|| Watcher::new(cli.file.as_deref().expect("--watch는 위에서 파일 경로 유무를 이미 검증함")));
+        // 페이저에서는 파일 경로가 있으면 기본 감시. 표준입력은 감시할 수 없으니 조용히 끈다.
+        let watcher = (!cli.no_watch).then_some(current_path.as_deref()).flatten().map(Watcher::new);
         return pager::Pager::new(&title, &theme, max_width, source, render, watcher, current_path).run();
     }
     let columns = crossterm::terminal::size().map(|(c, _)| c as usize).unwrap_or(80);
